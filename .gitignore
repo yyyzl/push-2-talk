@@ -30,4 +30,6 @@ target/
 
 # Tauri
 src-tauri/target/
+# 但保留打包后的安装文件
+!src-tauri/target/release/bundle/
 src-tauri/Cargo.lock
