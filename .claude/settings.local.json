@@ -15,7 +15,9 @@
       "Bash(git push:*)",
       "Bash(powershell -Command:*)",
       "Bash(timeout:*)",
-      "Bash(if not exist \"src-tauri\\capabilities\" mkdir src-tauricapabilities)"
+      "Bash(if not exist \"src-tauri\\capabilities\" mkdir src-tauricapabilities)",
+      "Bash(git commit:*)",
+      "Bash(git clean:*)"
     ],
     "deny": [],
     "ask": []
