@@ -214,7 +214,7 @@ function App() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
       <div className="max-w-2xl mx-auto bg-white rounded-xl shadow-xl p-8">
         <h1 className="text-3xl font-bold text-gray-800 mb-6 text-center">
-          PushToTalk - MVP
+          PushToTalk
         </h1>
 
         {/* 状态指示器 */}
@@ -309,10 +309,7 @@ function App() {
 
         {/* 底部提示 */}
         <div className="mt-6 text-center text-sm text-gray-500">
-          <p>MVP v0.1.0 | 快捷键: <kbd className="px-2 py-1 bg-gray-100 rounded">Ctrl+Win</kbd></p>
-          <p className="mt-2">
-            ⚠️ 需要管理员权限才能监听全局快捷键
-          </p>
+          <p>快捷键: <kbd className="px-2 py-1 bg-gray-100 rounded">Ctrl+Win</kbd></p>
         </div>
       </div>
     </div>

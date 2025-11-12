@@ -14,7 +14,7 @@ impl QwenASRClient {
     pub fn new(api_key: String) -> Self {
         // 创建带超时配置的HTTP客户端
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))  // 10秒总超时
+            .timeout(Duration::from_secs(6))  // 6秒总超时
             .connect_timeout(Duration::from_secs(5))  // 5秒连接超时
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());

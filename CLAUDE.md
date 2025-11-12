@@ -65,7 +65,7 @@ The Rust backend is organized into independent modules that communicate through 
    - Base64 encodes audio before upload
    - **Important**: Automatically strips trailing punctuation from transcription
    - Uses multimodal-generation endpoint (not the old ASR endpoint)
-   - **Timeout & Retry**: 10s request timeout with automatic retry (max 2 retries)
+   - **Timeout & Retry**: 6s request timeout with automatic retry (max 2 retries)
    - Error handling with detailed logging for debugging
 
 4. **text_inserter.rs** - Clipboard-based text injection
@@ -165,7 +165,7 @@ Run specific binary: `cargo run --bin test_api`
 
 ### "Transcription timeout" or API hangs
 - Cause: API request taking too long or network issues
-- Solution: Automatic 10s timeout with 2 retry attempts
+- Solution: Automatic 6s timeout with 2 retry attempts
 - Implementation: Uses `reqwest::Client` with timeout configuration
 
 ## Configuration
