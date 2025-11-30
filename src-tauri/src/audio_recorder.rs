@@ -2,11 +2,15 @@
 use hound::{WavSpec, WavWriter};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::io::Cursor;
 use anyhow::Result;
 use cpal::Stream;
 
+// API 要求的目标采样率
+const TARGET_SAMPLE_RATE: u32 = 16000;
+
 pub struct AudioRecorder {
-    sample_rate: u32,
+    device_sample_rate: u32,  // 设备实际采样率
     channels: u16,
     audio_data: Arc<Mutex<Vec<f32>>>,
     is_recording: Arc<Mutex<bool>>,
@@ -16,12 +20,57 @@ pub struct AudioRecorder {
 impl AudioRecorder {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            sample_rate: 16000,
+            device_sample_rate: 48000,  // 默认值，会在 start_recording 时更新
             channels: 1,
             audio_data: Arc::new(Mutex::new(Vec::new())),
             is_recording: Arc::new(Mutex::new(false)),
             stream: None,
         })
+    }
+
+    /// 将音频从设备采样率降采样到目标采样率 (16kHz)
+    fn resample(&self, input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+        if from_rate == to_rate {
+            return input.to_vec();
+        }
+
+        let ratio = from_rate as f64 / to_rate as f64;
+        let output_len = (input.len() as f64 / ratio) as usize;
+        let mut output = Vec::with_capacity(output_len);
+
+        for i in 0..output_len {
+            let src_idx = i as f64 * ratio;
+            let idx_floor = src_idx.floor() as usize;
+            let idx_ceil = (idx_floor + 1).min(input.len() - 1);
+            let frac = src_idx - idx_floor as f64;
+
+            // 线性插值
+            let sample = input[idx_floor] as f64 * (1.0 - frac) + input[idx_ceil] as f64 * frac;
+            output.push(sample as f32);
+        }
+
+        output
+    }
+
+    /// 将多声道音频转换为单声道
+    fn to_mono(&self, input: &[f32], channels: u16) -> Vec<f32> {
+        if channels == 1 {
+            return input.to_vec();
+        }
+
+        let channels = channels as usize;
+        let output_len = input.len() / channels;
+        let mut output = Vec::with_capacity(output_len);
+
+        for i in 0..output_len {
+            let mut sum = 0.0f32;
+            for ch in 0..channels {
+                sum += input[i * channels + ch];
+            }
+            output.push(sum / channels as f32);
+        }
+
+        output
     }
 
     pub fn start_recording(&mut self) -> Result<()> {
@@ -49,10 +98,11 @@ impl AudioRecorder {
         let config = supported_config.config();
 
         // 更新采样率和声道为设备实际支持的值
-        self.sample_rate = config.sample_rate.0;
+        self.device_sample_rate = config.sample_rate.0;
         self.channels = config.channels;
 
-        tracing::info!("使用配置: 采样率={}Hz, 声道={}", self.sample_rate, self.channels);
+        tracing::info!("设备配置: 采样率={}Hz, 声道={}, 目标采样率={}Hz",
+            self.device_sample_rate, self.channels, TARGET_SAMPLE_RATE);
 
         let audio_data = Arc::clone(&self.audio_data);
         let is_recording = Arc::clone(&self.is_recording);
@@ -120,6 +170,56 @@ impl AudioRecorder {
         Ok(())
     }
 
+    /// 停止录音并返回处理后的音频数据（16kHz 单声道 WAV 格式的字节数组）
+    pub fn stop_recording_to_memory(&mut self) -> Result<Vec<u8>> {
+        tracing::info!("停止录音...");
+
+        // 停止录音
+        *self.is_recording.lock().unwrap() = false;
+
+        // Drop stream，停止音频流
+        self.stream = None;
+
+        // 等待一小段时间确保所有数据都已写入
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let raw_audio = self.audio_data.lock().unwrap().clone();
+        let original_len = raw_audio.len();
+
+        // 1. 转换为单声道
+        let mono_audio = self.to_mono(&raw_audio, self.channels);
+        tracing::info!("转单声道: {} -> {} 样本", original_len, mono_audio.len());
+
+        // 2. 降采样到 16kHz
+        let resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
+        tracing::info!("降采样: {}Hz -> {}Hz, {} -> {} 样本",
+            self.device_sample_rate, TARGET_SAMPLE_RATE, mono_audio.len(), resampled_audio.len());
+
+        // 3. 写入内存中的 WAV 格式
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: TARGET_SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = WavWriter::new(&mut cursor, spec)?;
+            for &sample in resampled_audio.iter() {
+                let amplitude = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                writer.write_sample(amplitude)?;
+            }
+            writer.finalize()?;
+        }
+
+        let wav_data = cursor.into_inner();
+        tracing::info!("音频已转换为内存 WAV: {} bytes, 采样率: {}Hz", wav_data.len(), TARGET_SAMPLE_RATE);
+
+        Ok(wav_data)
+    }
+
+    /// 停止录音并保存到文件（保留兼容性）
     pub fn stop_recording(&mut self) -> Result<PathBuf> {
         tracing::info!("停止录音...");
 
@@ -130,7 +230,15 @@ impl AudioRecorder {
         self.stream = None;
 
         // 等待一小段时间确保所有数据都已写入
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let raw_audio = self.audio_data.lock().unwrap().clone();
+
+        // 1. 转换为单声道
+        let mono_audio = self.to_mono(&raw_audio, self.channels);
+
+        // 2. 降采样到 16kHz
+        let resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
 
         // 保存音频文件
         let temp_dir = std::env::temp_dir();
@@ -140,22 +248,21 @@ impl AudioRecorder {
         let file_path = temp_dir.join(format!("recording_{}.wav", timestamp));
 
         let spec = WavSpec {
-            channels: self.channels,
-            sample_rate: self.sample_rate,
+            channels: 1,
+            sample_rate: TARGET_SAMPLE_RATE,
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
 
         let mut writer = WavWriter::create(&file_path, spec)?;
-        let audio_data = self.audio_data.lock().unwrap();
 
-        for &sample in audio_data.iter() {
-            let amplitude = (sample * i16::MAX as f32) as i16;
+        for &sample in resampled_audio.iter() {
+            let amplitude = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
             writer.write_sample(amplitude)?;
         }
 
         writer.finalize()?;
-        tracing::info!("音频已保存到: {:?}, 采样率: {}Hz", file_path, self.sample_rate);
+        tracing::info!("音频已保存到: {:?}, 采样率: {}Hz", file_path, TARGET_SAMPLE_RATE);
 
         Ok(file_path)
     }

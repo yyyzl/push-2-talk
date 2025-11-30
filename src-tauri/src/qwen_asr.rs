@@ -27,8 +27,14 @@ impl QwenASRClient {
         }
     }
 
-    // 带重试逻辑的转录（用于单独使用千问时）
+    // 带重试逻辑的转录（用于单独使用千问时）- 文件版本
     pub async fn transcribe(&self, audio_path: &Path) -> Result<String> {
+        let audio_data = tokio::fs::read(audio_path).await?;
+        self.transcribe_bytes(&audio_data).await
+    }
+
+    // 带重试逻辑的转录（用于单独使用千问时）- 内存版本
+    pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {
         let mut last_error = None;
 
         // 尝试转录，包含重试逻辑
@@ -37,7 +43,7 @@ impl QwenASRClient {
                 tracing::warn!("第 {} 次重试转录...", attempt);
             }
 
-            match self.transcribe_once(audio_path).await {
+            match self.transcribe_from_memory(audio_data).await {
                 Ok(text) => return Ok(text),
                 Err(e) => {
                     tracing::error!("转录失败 (尝试 {}/{}): {}", attempt + 1, self.max_retries + 1, e);
@@ -61,9 +67,14 @@ impl QwenASRClient {
 
         // 读取音频文件并转换为 base64
         let audio_data = tokio::fs::read(audio_path).await?;
-        let audio_base64 = general_purpose::STANDARD.encode(&audio_data);
+        self.transcribe_from_memory(&audio_data).await
+    }
 
-        tracing::info!("音频文件大小: {} bytes", audio_data.len());
+    /// 从内存中的 WAV 数据直接转录（跳过文件 I/O）
+    pub async fn transcribe_from_memory(&self, audio_data: &[u8]) -> Result<String> {
+        let audio_base64 = general_purpose::STANDARD.encode(audio_data);
+
+        tracing::info!("音频数据大小: {} bytes", audio_data.len());
 
         // 构建请求体 - 使用 qwen3-asr-flash 的多模态对话 API
         let request_body = serde_json::json!({
@@ -162,18 +173,20 @@ impl SenseVoiceClient {
     }
 
     pub async fn transcribe(&self, audio_path: &Path) -> Result<String> {
-        tracing::info!("开始使用 SenseVoice 转录音频文件: {:?}", audio_path);
-
-        // 读取音频文件
         let audio_data = tokio::fs::read(audio_path).await?;
-        tracing::info!("音频文件大小: {} bytes", audio_data.len());
+        self.transcribe_bytes(&audio_data).await
+    }
+
+    /// 从内存中的 WAV 数据直接转录
+    pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {
+        tracing::info!("开始使用 SenseVoice 转录音频数据: {} bytes", audio_data.len());
 
         // 构建 multipart/form-data 请求
         let form = reqwest::multipart::Form::new()
             .text("model", "FunAudioLLM/SenseVoiceSmall")
             .part(
                 "file",
-                reqwest::multipart::Part::bytes(audio_data)
+                reqwest::multipart::Part::bytes(audio_data.to_vec())
                     .file_name("audio.wav")
                     .mime_str("audio/wav")?,
             );
@@ -223,21 +236,30 @@ impl SenseVoiceClient {
     }
 }
 
-// 主备并行调用：优先使用千问，在重试前检查 SenseVoice 结果
+// 主备并行调用：优先使用千问，在重试前检查 SenseVoice 结果（文件版本）
 pub async fn transcribe_with_fallback(
     qwen_api_key: String,
     sensevoice_api_key: String,
     audio_path: &Path,
 ) -> Result<String> {
-    tracing::info!("启动主备并行转录");
+    let audio_data = tokio::fs::read(audio_path).await?;
+    transcribe_with_fallback_bytes(qwen_api_key, sensevoice_api_key, audio_data).await
+}
+
+// 主备并行调用：优先使用千问，在重试前检查 SenseVoice 结果（内存版本）
+pub async fn transcribe_with_fallback_bytes(
+    qwen_api_key: String,
+    sensevoice_api_key: String,
+    audio_data: Vec<u8>,
+) -> Result<String> {
+    tracing::info!("启动主备并行转录 (内存模式), 音频大小: {} bytes", audio_data.len());
 
     // 创建两个客户端
     let qwen_client = QwenASRClient::new(qwen_api_key);
     let sensevoice_client = SenseVoiceClient::new(sensevoice_api_key);
 
-    // 克隆路径用于并行任务
-    let audio_path_qwen = audio_path.to_path_buf();
-    let audio_path_sensevoice = audio_path.to_path_buf();
+    // 克隆音频数据用于并行任务
+    let audio_data_sensevoice = audio_data.clone();
 
     // 使用共享状态存储 SenseVoice 结果
     let sensevoice_result: Arc<Mutex<Option<Result<String>>>> = Arc::new(Mutex::new(None));
@@ -246,7 +268,7 @@ pub async fn transcribe_with_fallback(
     // 启动 SenseVoice 异步任务
     let sensevoice_handle = tokio::spawn(async move {
         tracing::info!("🚀 SenseVoice 任务启动");
-        let result = sensevoice_client.transcribe(&audio_path_sensevoice).await;
+        let result = sensevoice_client.transcribe_bytes(&audio_data_sensevoice).await;
         match &result {
             Ok(text) => tracing::info!("✅ SenseVoice 转录成功: {}", text),
             Err(e) => tracing::error!("❌ SenseVoice 转录失败: {}", e),
@@ -282,7 +304,7 @@ pub async fn transcribe_with_fallback(
 
         // 尝试千问单次请求
         tracing::info!("🔄 千问第 {} 次尝试 (共 {} 次)", attempt + 1, max_retries + 1);
-        match qwen_client.transcribe_once(&audio_path_qwen).await {
+        match qwen_client.transcribe_from_memory(&audio_data).await {
             Ok(text) => {
                 tracing::info!("✅ 千问转录成功: {}", text);
                 return Ok(text);

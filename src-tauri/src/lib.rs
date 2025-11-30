@@ -122,12 +122,12 @@ async fn start_app(
             tracing::info!("检测到快捷键释放");
             let _ = app.emit("recording_stopped", ());
 
-            // 停止录音并获取文件路径
-            let audio_path = {
+            // 停止录音并直接获取内存中的音频数据（跳过文件写入）
+            let audio_data = {
                 let mut recorder_guard = recorder.lock().unwrap();
                 if let Some(ref mut rec) = *recorder_guard {
-                    match rec.stop_recording() {
-                        Ok(path) => Some(path),
+                    match rec.stop_recording_to_memory() {
+                        Ok(data) => Some(data),
                         Err(e) => {
                             tracing::error!("停止录音失败: {}", e);
                             let _ = app.emit("error", format!("停止录音失败: {}", e));
@@ -139,20 +139,20 @@ async fn start_app(
                 }
             };
 
-            if let Some(audio_path) = audio_path {
+            if let Some(audio_data) = audio_data {
                 // 发送转录中事件
                 let _ = app.emit("transcribing", ());
 
-                // 使用主备并行转录逻辑
+                // 使用主备并行转录逻辑（直接从内存转录，无文件 I/O）
                 let result = if !fallback_key.is_empty() {
                     // 如果配置了备用 API，使用主备并行逻辑
-                    tracing::info!("使用主备并行转录模式");
-                    qwen_asr::transcribe_with_fallback(key, fallback_key, &audio_path).await
+                    tracing::info!("使用主备并行转录模式 (内存直传)");
+                    qwen_asr::transcribe_with_fallback_bytes(key, fallback_key, audio_data).await
                 } else {
                     // 否则只使用千问 API
-                    tracing::info!("仅使用千问 ASR");
+                    tracing::info!("仅使用千问 ASR (内存直传)");
                     let asr_client = QwenASRClient::new(key);
-                    asr_client.transcribe(&audio_path).await
+                    asr_client.transcribe_bytes(&audio_data).await
                 };
 
                 match result {
@@ -176,9 +176,7 @@ async fn start_app(
                         let _ = app.emit("error", format!("转录失败: {}", e));
                     }
                 }
-
-                // 删除临时音频文件
-                let _ = tokio::fs::remove_file(audio_path).await;
+                // 无需删除临时文件，因为音频数据直接在内存中处理
             }
         });
     };
