@@ -14,7 +14,8 @@ import {
   Cpu,
   Sparkles,
   Zap,
-  Globe
+  Globe,
+  XCircle
 } from "lucide-react";
 
 interface AppConfig {
@@ -126,6 +127,10 @@ function App() {
         setError(event.payload);
         setStatus("running");
       });
+      await listen("transcription_cancelled", () => {
+        setStatus("running");
+        setError(null);
+      });
     } catch (err) {
       throw err;
     }
@@ -169,6 +174,14 @@ function App() {
     }
   };
 
+  const handleCancelTranscription = async () => {
+    try {
+      await invoke<string>("cancel_transcription");
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
   // UI 辅助函数
   const isRecording = status === "recording";
   const isTranscribing = status === "transcribing";
@@ -194,29 +207,41 @@ function App() {
           </div>
 
           {/* 状态胶囊 */}
-          <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
-            isRecording ? "bg-red-50 border-red-100 text-red-600" :
-            isTranscribing ? "bg-amber-50 border-amber-100 text-amber-600" :
-            status === "running" ? "bg-emerald-50 border-emerald-100 text-emerald-600" :
-            "bg-slate-100 border-slate-200 text-slate-500"
-          }`}>
-            <span className="relative flex h-2.5 w-2.5">
-              {(isRecording || isTranscribing || status === 'running') && (
-                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  isRecording ? "bg-red-400" : isTranscribing ? "bg-amber-400" : "bg-emerald-400"
+          <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
+              isRecording ? "bg-red-50 border-red-100 text-red-600" :
+              isTranscribing ? "bg-amber-50 border-amber-100 text-amber-600" :
+              status === "running" ? "bg-emerald-50 border-emerald-100 text-emerald-600" :
+              "bg-slate-100 border-slate-200 text-slate-500"
+            }`}>
+              <span className="relative flex h-2.5 w-2.5">
+                {(isRecording || isTranscribing || status === 'running') && (
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                    isRecording ? "bg-red-400" : isTranscribing ? "bg-amber-400" : "bg-emerald-400"
+                  }`}></span>
+                )}
+                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
+                  isRecording ? "bg-red-500" :
+                  isTranscribing ? "bg-amber-500" :
+                  status === "running" ? "bg-emerald-500" : "bg-slate-400"
                 }`}></span>
-              )}
-              <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
-                isRecording ? "bg-red-500" : 
-                isTranscribing ? "bg-amber-500" : 
-                status === "running" ? "bg-emerald-500" : "bg-slate-400"
-              }`}></span>
-            </span>
-            <span>
-              {isRecording ? `正在录音 ${formatTime(recordingTime)}` :
-               isTranscribing ? "AI 转写中..." :
-               status === "running" ? "运行中 (Ctrl+Win)" : "已停止"}
-            </span>
+              </span>
+              <span>
+                {isRecording ? `正在录音 ${formatTime(recordingTime)}` :
+                 isTranscribing ? "AI 转写中..." :
+                 status === "running" ? "运行中 (Ctrl+Win)" : "已停止"}
+              </span>
+            </div>
+            {/* 取消按钮 - 仅在录音或转录中显示 */}
+            {(isRecording || isTranscribing) && (
+              <button
+                onClick={handleCancelTranscription}
+                className="p-1.5 rounded-full bg-slate-100 hover:bg-red-100 text-slate-500 hover:text-red-600 transition-all duration-200"
+                title="取消转录"
+              >
+                <XCircle size={18} />
+              </button>
+            )}
           </div>
         </div>
 

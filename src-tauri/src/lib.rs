@@ -569,6 +569,53 @@ async fn stop_app(app_handle: AppHandle) -> Result<String, String> {
     Ok("应用已停止".to_string())
 }
 
+#[tauri::command]
+async fn cancel_transcription(app_handle: AppHandle) -> Result<String, String> {
+    tracing::info!("取消转录...");
+
+    let state = app_handle.state::<AppState>();
+
+    // 1. 停止流式录音
+    {
+        let mut recorder_guard = state.streaming_recorder.lock().unwrap();
+        if let Some(ref mut rec) = *recorder_guard {
+            let _ = rec.stop_streaming();
+        }
+    }
+
+    // 2. 停止普通录音
+    {
+        let mut recorder_guard = state.audio_recorder.lock().unwrap();
+        if let Some(ref mut rec) = *recorder_guard {
+            let _ = rec.stop_recording_to_memory();
+        }
+    }
+
+    // 3. 取消音频发送任务
+    {
+        let handle = state.audio_sender_handle.lock().unwrap().take();
+        if let Some(h) = handle {
+            h.abort();
+            tracing::info!("已取消音频发送任务");
+        }
+    }
+
+    // 4. 关闭 WebSocket 会话
+    {
+        let mut session_guard = state.active_session.lock().await;
+        if let Some(ref session) = *session_guard {
+            let _ = session.close().await;
+            tracing::info!("已关闭 WebSocket 会话");
+        }
+        *session_guard = None;
+    }
+
+    // 5. 发送取消事件
+    let _ = app_handle.emit("transcription_cancelled", ());
+
+    Ok("已取消转录".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 初始化日志
@@ -595,6 +642,7 @@ pub fn run() {
             load_config,
             start_app,
             stop_app,
+            cancel_transcription,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

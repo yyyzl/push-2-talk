@@ -7,6 +7,7 @@ use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message, tungstenite::http, MaybeTlsStream, WebSocketStream};
 use tokio::net::TcpStream;
 
@@ -16,6 +17,7 @@ type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 const WEBSOCKET_URL: &str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
 const MODEL: &str = "qwen3-asr-flash-realtime";
 const IDLE_TIMEOUT_SECS: u64 = 180; // 3 分钟空闲超时
+const TRANSCRIPTION_TIMEOUT_SECS: u64 = 10; // 转录结果等待超时（秒）
 
 /// WebSocket 实时 ASR 会话
 pub struct RealtimeSession {
@@ -47,10 +49,16 @@ impl RealtimeSession {
             .map_err(|_| anyhow::anyhow!("提交音频失败：通道已关闭"))
     }
 
-    /// 等待最终转录结果
+    /// 等待最终转录结果（带超时）
     pub async fn wait_for_result(&mut self) -> Result<String> {
-        self.result_receiver.recv().await
-            .ok_or_else(|| anyhow::anyhow!("等待结果失败：通道已关闭"))?
+        match timeout(
+            Duration::from_secs(TRANSCRIPTION_TIMEOUT_SECS),
+            self.result_receiver.recv()
+        ).await {
+            Ok(Some(result)) => result,
+            Ok(None) => Err(anyhow::anyhow!("等待结果失败：通道已关闭")),
+            Err(_) => Err(anyhow::anyhow!("转录超时：{}秒内未收到结果", TRANSCRIPTION_TIMEOUT_SECS)),
+        }
     }
 
     /// 关闭会话
@@ -277,15 +285,15 @@ impl ConnectionPool {
 
                 // 如果已有结果，发送并退出
                 if has_result && !final_text.is_empty() {
-                    // 去除末尾标点
-                    let punctuation = ['。', '，', '！', '？', '、', '；', '：', '"', '"', '\'', '\'', '.', ',', '!', '?', ';', ':'];
-                    while let Some(last_char) = final_text.chars().last() {
-                        if punctuation.contains(&last_char) {
-                            final_text.pop();
-                        } else {
-                            break;
-                        }
-                    }
+                    // 实时模式下删除所有标点符号
+                    let punctuation = ['。', '，', '！', '？', '、', '；', '：', '"', '"',
+                                       '.', ',', '!', '?', ';', ':', '"', '\'',
+                                       '（', '）', '(', ')', '【', '】', '[', ']',
+                                       '《', '》', '<', '>', '—', '…', '·',
+                                       '\u{2018}', '\u{2019}'];  // 中文单引号 ' '
+                    final_text = final_text.chars()
+                        .filter(|c| !punctuation.contains(c))
+                        .collect();
 
                     let _ = result_tx.send(Ok(final_text.clone())).await;
                     break;
