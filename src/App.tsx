@@ -38,6 +38,7 @@ interface AppConfig {
 
 interface TranscriptionResult {
   text: string;
+  original_text: string | null; // 原始 ASR 文本（仅开启 LLM 润色时有值）
   asr_time_ms: number;
   llm_time_ms: number | null;
   total_time_ms: number;
@@ -60,6 +61,7 @@ function App() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [status, setStatus] = useState<"idle" | "running" | "recording" | "transcribing">("idle");
   const [transcript, setTranscript] = useState("");
+  const [originalTranscript, setOriginalTranscript] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [asrTime, setAsrTime] = useState<number | null>(null); // ASR 转录耗时
@@ -146,6 +148,7 @@ function App() {
       await listen<TranscriptionResult>("transcription_complete", (event) => {
         const result = event.payload;
         setTranscript(result.text);
+        setOriginalTranscript(result.original_text);
         setAsrTime(result.asr_time_ms);
         setLlmTime(result.llm_time_ms);
         setTotalTime(result.total_time_ms);
@@ -299,7 +302,7 @@ function App() {
             <div className="relative flex flex-col h-64 bg-white/60 backdrop-blur-sm border border-white/60 rounded-2xl p-6 shadow-inner transition-all">
               <div className="flex items-center justify-between mb-4">
                 <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                  <Activity size={14} /> 实时转写内容
+                  <Activity size={14} /> {originalTranscript ? '转写结果' : '实时转写内容'}
                 </label>
                 {transcript && (
                     <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -324,18 +327,45 @@ function App() {
                     </div>
                 )}
               </div>
-              
-              <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                {transcript ? (
-                  <p className="text-slate-700 text-lg leading-relaxed whitespace-pre-wrap">{transcript}</p>
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-3">
-                    <Mic size={48} strokeWidth={1} />
-                    <p className="text-sm font-medium">按下快捷键开始说话...</p>
+
+              {/* 内容区域 - 根据是否有原始文本决定布局 */}
+              {originalTranscript ? (
+                // 双栏布局：原始文本 + 润色文本
+                <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
+                  {/* 左侧：原始文本 */}
+                  <div className="flex flex-col min-h-0 border-r border-slate-200 pr-4">
+                    <div className="text-xs text-slate-400 mb-2 flex items-center gap-1">
+                      <Mic size={12} /> 原始转录
+                    </div>
+                    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                      <p className="text-slate-500 text-sm leading-relaxed whitespace-pre-wrap">{originalTranscript}</p>
+                    </div>
                   </div>
-                )}
-                <div ref={transcriptEndRef} />
-              </div>
+                  {/* 右侧：润色文本 */}
+                  <div className="flex flex-col min-h-0">
+                    <div className="text-xs text-violet-500 mb-2 flex items-center gap-1">
+                      <Wand2 size={12} /> LLM 润色
+                    </div>
+                    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                      <p className="text-slate-700 text-base leading-relaxed whitespace-pre-wrap">{transcript}</p>
+                      <div ref={transcriptEndRef} />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                // 单栏布局：仅显示转录文本
+                <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                  {transcript ? (
+                    <p className="text-slate-700 text-lg leading-relaxed whitespace-pre-wrap">{transcript}</p>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-3">
+                      <Mic size={48} strokeWidth={1} />
+                      <p className="text-sm font-medium">按下快捷键开始说话...</p>
+                    </div>
+                  )}
+                  <div ref={transcriptEndRef} />
+                </div>
+              )}
             </div>
           </div>
 

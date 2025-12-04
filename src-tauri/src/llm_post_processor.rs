@@ -39,7 +39,7 @@ impl LlmPostProcessor {
                 },
                 {
                     "role": "user",
-                    "content": raw_text
+                    "content": format!("<ASR转写的文本>\n{}\n</ASR转写的文本>", raw_text)
                 }
             ],
             "max_tokens": 800,

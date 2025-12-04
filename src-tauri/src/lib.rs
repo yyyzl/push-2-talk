@@ -643,6 +643,7 @@ fn extract_pcm_from_wav(wav_data: &[u8]) -> anyhow::Result<Vec<i16>> {
 #[derive(Clone, serde::Serialize)]
 struct TranscriptionResult {
     text: String,
+    original_text: Option<String>, // 原始 ASR 文本（仅开启 LLM 润色时有值）
     asr_time_ms: u64,
     llm_time_ms: Option<u64>,
     total_time_ms: u64,
@@ -661,7 +662,7 @@ async fn handle_transcription_result(
             tracing::info!("转录结果: {} (ASR 耗时: {}ms)", text, asr_time_ms);
 
             // 如果启用了 LLM 后处理，则进行润色
-            let (final_text, llm_time_ms) = {
+            let (final_text, original_text, llm_time_ms) = {
                 let processor = post_processor.lock().unwrap().clone();
                 if let Some(processor) = processor {
                     tracing::info!("开始 LLM 后处理...");
@@ -671,15 +672,15 @@ async fn handle_transcription_result(
                         Ok(polished) => {
                             let llm_elapsed = llm_start.elapsed().as_millis() as u64;
                             tracing::info!("LLM 后处理完成: {} (耗时: {}ms)", polished, llm_elapsed);
-                            (polished, Some(llm_elapsed))
+                            (polished, Some(text), Some(llm_elapsed))
                         }
                         Err(e) => {
                             tracing::warn!("LLM 后处理失败，使用原文: {}", e);
-                            (text, None)
+                            (text, None, None)
                         }
                     }
                 } else {
-                    (text, None)
+                    (text, None, None)
                 }
             };
 
@@ -696,6 +697,7 @@ async fn handle_transcription_result(
 
             let result = TranscriptionResult {
                 text: final_text,
+                original_text,
                 asr_time_ms,
                 llm_time_ms,
                 total_time_ms,
