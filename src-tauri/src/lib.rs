@@ -5,6 +5,7 @@ mod audio_recorder;
 mod beep_player;
 mod config;
 mod hotkey_service;
+mod llm_post_processor;
 mod qwen_asr;
 mod qwen_realtime;
 mod streaming_recorder;
@@ -13,6 +14,7 @@ mod text_inserter;
 use audio_recorder::AudioRecorder;
 use config::AppConfig;
 use hotkey_service::HotkeyService;
+use llm_post_processor::LlmPostProcessor;
 use qwen_asr::{QwenASRClient, SenseVoiceClient};
 use qwen_realtime::QwenRealtimeClient;
 use streaming_recorder::StreamingRecorder;
@@ -26,8 +28,10 @@ struct AppState {
     audio_recorder: Arc<Mutex<Option<AudioRecorder>>>,
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     text_inserter: Arc<Mutex<Option<TextInserter>>>,
+    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
     is_running: Arc<Mutex<bool>>,
     use_realtime_asr: Arc<Mutex<bool>>,
+    enable_post_process: Arc<Mutex<bool>>,
     qwen_client: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client: Arc<Mutex<Option<SenseVoiceClient>>>,
     // 活跃的实时转录会话（用于真正的流式传输）
@@ -39,12 +43,20 @@ struct AppState {
 // Tauri Commands
 
 #[tauri::command]
-async fn save_config(api_key: String, fallback_api_key: String, use_realtime: Option<bool>) -> Result<String, String> {
+async fn save_config(
+    api_key: String,
+    fallback_api_key: String,
+    use_realtime: Option<bool>,
+    enable_post_process: Option<bool>,
+    llm_config: Option<config::LlmConfig>,
+) -> Result<String, String> {
     tracing::info!("保存配置...");
     let config = AppConfig {
         dashscope_api_key: api_key,
         siliconflow_api_key: fallback_api_key,
         use_realtime_asr: use_realtime.unwrap_or(true),
+        enable_llm_post_process: enable_post_process.unwrap_or(false),
+        llm_config: llm_config.unwrap_or_default(),
     };
 
     config
@@ -66,6 +78,8 @@ async fn start_app(
     api_key: String,
     fallback_api_key: String,
     use_realtime: Option<bool>,
+    enable_post_process: Option<bool>,
+    llm_config: Option<config::LlmConfig>,
 ) -> Result<String, String> {
     tracing::info!("启动应用...");
 
@@ -81,7 +95,12 @@ async fn start_app(
     let use_realtime_mode = use_realtime.unwrap_or(true);
     *state.use_realtime_asr.lock().unwrap() = use_realtime_mode;
 
+    // 确定是否启用 LLM 后处理
+    let enable_post_process_mode = enable_post_process.unwrap_or(false);
+    *state.enable_post_process.lock().unwrap() = enable_post_process_mode;
+
     tracing::info!("ASR 模式: {}", if use_realtime_mode { "实时 WebSocket" } else { "HTTP" });
+    tracing::info!("LLM 后处理: {}", if enable_post_process_mode { "启用" } else { "禁用" });
 
     {
         let mut qwen_guard = state.qwen_client.lock().unwrap();
@@ -94,6 +113,22 @@ async fn start_app(
             *sensevoice_guard = None;
         } else {
             *sensevoice_guard = Some(SenseVoiceClient::new(fallback_api_key.clone()));
+        }
+    }
+
+    // 初始化 LLM 后处理器（复用连接）
+    {
+        let mut processor_guard = state.post_processor.lock().unwrap();
+        let llm_cfg = llm_config.unwrap_or_default();
+        if enable_post_process_mode && !llm_cfg.api_key.trim().is_empty() {
+            tracing::info!("LLM 后处理器配置: endpoint={}, model={}", llm_cfg.endpoint, llm_cfg.model);
+            *processor_guard = Some(LlmPostProcessor::new(llm_cfg));
+            tracing::info!("LLM 后处理器已初始化");
+        } else {
+            *processor_guard = None;
+            if enable_post_process_mode {
+                tracing::warn!("LLM 后处理已启用但未配置 API Key，将跳过后处理");
+            }
         }
     }
 
@@ -131,6 +166,7 @@ async fn start_app(
     let active_session_stop = Arc::clone(&state.active_session);
     let audio_sender_handle_stop = Arc::clone(&state.audio_sender_handle);
     let text_inserter_stop = Arc::clone(&state.text_inserter);
+    let post_processor_stop = Arc::clone(&state.post_processor);
     let qwen_client_stop = Arc::clone(&state.qwen_client);
     let sensevoice_client_stop = Arc::clone(&state.sensevoice_client);
     let use_realtime_stop = use_realtime_mode;
@@ -246,6 +282,7 @@ async fn start_app(
         let active_session = Arc::clone(&active_session_stop);
         let audio_sender_handle = Arc::clone(&audio_sender_handle_stop);
         let inserter = Arc::clone(&text_inserter_stop);
+        let post_processor = Arc::clone(&post_processor_stop);
         let qwen_client_state = Arc::clone(&qwen_client_stop);
         let sensevoice_client_state = Arc::clone(&sensevoice_client_stop);
         let use_realtime = use_realtime_stop;
@@ -265,6 +302,7 @@ async fn start_app(
                     active_session,
                     audio_sender_handle,
                     inserter,
+                    post_processor,
                     qwen_client_state,
                     sensevoice_client_state,
                 ).await;
@@ -274,6 +312,7 @@ async fn start_app(
                     app,
                     recorder,
                     inserter,
+                    post_processor,
                     qwen_client_state,
                     sensevoice_client_state,
                 ).await;
@@ -295,6 +334,7 @@ async fn handle_http_transcription(
     app: AppHandle,
     recorder: Arc<Mutex<Option<AudioRecorder>>>,
     inserter: Arc<Mutex<Option<TextInserter>>>,
+    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
     qwen_client_state: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
 ) {
@@ -321,6 +361,7 @@ async fn handle_http_transcription(
         let qwen_client = { qwen_client_state.lock().unwrap().clone() };
         let sensevoice_client = { sensevoice_client_state.lock().unwrap().clone() };
 
+        let asr_start = std::time::Instant::now();
         let result = match (qwen_client, sensevoice_client) {
             (Some(qwen), Some(sensevoice)) => {
                 tracing::info!("使用主备并行转录模式 (HTTP)");
@@ -339,8 +380,9 @@ async fn handle_http_transcription(
                 Err(anyhow::anyhow!("ASR 客户端未初始化"))
             }
         };
+        let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
-        handle_transcription_result(app, inserter, result).await;
+        handle_transcription_result(app, inserter, post_processor, result, asr_time_ms).await;
     }
 }
 
@@ -351,10 +393,12 @@ async fn handle_realtime_stop(
     active_session: Arc<tokio::sync::Mutex<Option<qwen_realtime::RealtimeSession>>>,
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     inserter: Arc<Mutex<Option<TextInserter>>>,
+    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
     qwen_client_state: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
 ) {
     let _ = app.emit("transcribing", ());
+    let asr_start = std::time::Instant::now();
 
     // 1. 停止流式录音，获取完整音频数据（用于备用方案）
     let audio_data = {
@@ -395,6 +439,7 @@ async fn handle_realtime_stop(
                 fallback_transcription(
                     app,
                     inserter,
+                    post_processor,
                     Arc::clone(&qwen_client_state),
                     Arc::clone(&sensevoice_client_state),
                     audio_data,
@@ -407,11 +452,12 @@ async fn handle_realtime_stop(
         // 等待转录结果
         match session.wait_for_result().await {
             Ok(text) => {
-                tracing::info!("实时转录成功: {}", text);
+                let asr_time_ms = asr_start.elapsed().as_millis() as u64;
+                tracing::info!("实时转录成功: {} (ASR 耗时: {}ms)", text, asr_time_ms);
                 let _ = session.close().await;
                 drop(session_guard);
                 *active_session.lock().await = None;
-                handle_transcription_result(app, inserter, Ok(text)).await;
+                handle_transcription_result(app, inserter, post_processor, Ok(text), asr_time_ms).await;
             }
             Err(e) => {
                 tracing::warn!("等待转录结果失败: {}，尝试备用方案", e);
@@ -424,6 +470,7 @@ async fn handle_realtime_stop(
                     fallback_transcription(
                         app,
                         inserter,
+                        post_processor,
                         Arc::clone(&qwen_client_state),
                         Arc::clone(&sensevoice_client_state),
                         audio_data,
@@ -443,6 +490,7 @@ async fn handle_realtime_stop(
             fallback_transcription(
                 app,
                 inserter,
+                post_processor,
                 Arc::clone(&qwen_client_state),
                 Arc::clone(&sensevoice_client_state),
                 audio_data,
@@ -458,6 +506,7 @@ async fn handle_realtime_stop(
 async fn fallback_transcription(
     app: AppHandle,
     inserter: Arc<Mutex<Option<TextInserter>>>,
+    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
     qwen_client_state: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
     audio_data: Vec<u8>,
@@ -465,6 +514,7 @@ async fn fallback_transcription(
     let qwen_client = { qwen_client_state.lock().unwrap().clone() };
     let sensevoice_client = { sensevoice_client_state.lock().unwrap().clone() };
 
+    let asr_start = std::time::Instant::now();
     let result = if let Some(sensevoice) = sensevoice_client {
         tracing::info!("使用 SenseVoice 备用方案");
         sensevoice.transcribe_bytes(&audio_data).await
@@ -475,8 +525,9 @@ async fn fallback_transcription(
         tracing::error!("未找到可用的 ASR 客户端以处理备用方案");
         Err(anyhow::anyhow!("ASR 客户端未初始化"))
     };
+    let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
-    handle_transcription_result(app, inserter, result).await;
+    handle_transcription_result(app, inserter, post_processor, result, asr_time_ms).await;
 }
 
 /// 实时模式转录处理（WebSocket）- 录完再传的回退模式
@@ -485,6 +536,7 @@ async fn handle_realtime_transcription(
     app: AppHandle,
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     inserter: Arc<Mutex<Option<TextInserter>>>,
+    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
     key: String,
     qwen_client_state: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
@@ -517,19 +569,22 @@ async fn handle_realtime_transcription(
     // 尝试使用 WebSocket 实时 API
     tracing::info!("尝试使用 WebSocket 实时 API 转录...");
 
+    let asr_start = std::time::Instant::now();
     let realtime_client = QwenRealtimeClient::new(key.clone());
     let ws_result = realtime_transcribe_audio(&realtime_client, &audio_data).await;
+    let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
     match ws_result {
         Ok(text) => {
-            tracing::info!("WebSocket 实时转录成功: {}", text);
-            handle_transcription_result(app, inserter, Ok(text)).await;
+            tracing::info!("WebSocket 实时转录成功: {} (ASR 耗时: {}ms)", text, asr_time_ms);
+            handle_transcription_result(app, inserter, post_processor, Ok(text), asr_time_ms).await;
         }
         Err(e) => {
             tracing::warn!("WebSocket 实时转录失败: {}，尝试备用方案", e);
             fallback_transcription(
                 app,
                 inserter,
+                post_processor,
                 qwen_client_state,
                 sensevoice_client_state,
                 audio_data,
@@ -584,26 +639,68 @@ fn extract_pcm_from_wav(wav_data: &[u8]) -> anyhow::Result<Vec<i16>> {
     Ok(samples)
 }
 
+/// 转录完成事件的 payload
+#[derive(Clone, serde::Serialize)]
+struct TranscriptionResult {
+    text: String,
+    asr_time_ms: u64,
+    llm_time_ms: Option<u64>,
+    total_time_ms: u64,
+}
+
 /// 处理转录结果
 async fn handle_transcription_result(
     app: AppHandle,
     inserter: Arc<Mutex<Option<TextInserter>>>,
+    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
     result: anyhow::Result<String>,
+    asr_time_ms: u64,
 ) {
     match result {
         Ok(text) => {
-            tracing::info!("转录结果: {}", text);
+            tracing::info!("转录结果: {} (ASR 耗时: {}ms)", text, asr_time_ms);
+
+            // 如果启用了 LLM 后处理，则进行润色
+            let (final_text, llm_time_ms) = {
+                let processor = post_processor.lock().unwrap().clone();
+                if let Some(processor) = processor {
+                    tracing::info!("开始 LLM 后处理...");
+                    let _ = app.emit("post_processing", ());
+                    let llm_start = std::time::Instant::now();
+                    match processor.polish_transcript(&text).await {
+                        Ok(polished) => {
+                            let llm_elapsed = llm_start.elapsed().as_millis() as u64;
+                            tracing::info!("LLM 后处理完成: {} (耗时: {}ms)", polished, llm_elapsed);
+                            (polished, Some(llm_elapsed))
+                        }
+                        Err(e) => {
+                            tracing::warn!("LLM 后处理失败，使用原文: {}", e);
+                            (text, None)
+                        }
+                    }
+                } else {
+                    (text, None)
+                }
+            };
+
+            let total_time_ms = asr_time_ms + llm_time_ms.unwrap_or(0);
 
             // 插入文本
             let mut inserter_guard = inserter.lock().unwrap();
             if let Some(ref mut ins) = *inserter_guard {
-                if let Err(e) = ins.insert_text(&text) {
+                if let Err(e) = ins.insert_text(&final_text) {
                     tracing::error!("插入文本失败: {}", e);
                     let _ = app.emit("error", format!("插入文本失败: {}", e));
                 }
             }
 
-            let _ = app.emit("transcription_complete", text);
+            let result = TranscriptionResult {
+                text: final_text,
+                asr_time_ms,
+                llm_time_ms,
+                total_time_ms,
+            };
+            let _ = app.emit("transcription_complete", result);
         }
         Err(e) => {
             tracing::error!("转录失败: {}", e);
@@ -626,6 +723,7 @@ async fn stop_app(app_handle: AppHandle) -> Result<String, String> {
     *state.audio_recorder.lock().unwrap() = None;
     *state.streaming_recorder.lock().unwrap() = None;
     *state.text_inserter.lock().unwrap() = None;
+    *state.post_processor.lock().unwrap() = None;
     *state.qwen_client.lock().unwrap() = None;
     *state.sensevoice_client.lock().unwrap() = None;
     *is_running = false;
@@ -692,8 +790,10 @@ pub fn run() {
                 audio_recorder: Arc::new(Mutex::new(None)),
                 streaming_recorder: Arc::new(Mutex::new(None)),
                 text_inserter: Arc::new(Mutex::new(None)),
+                post_processor: Arc::new(Mutex::new(None)),
                 is_running: Arc::new(Mutex::new(false)),
                 use_realtime_asr: Arc::new(Mutex::new(true)),
+                enable_post_process: Arc::new(Mutex::new(false)),
                 qwen_client: Arc::new(Mutex::new(None)),
                 sensevoice_client: Arc::new(Mutex::new(None)),
                 active_session: Arc::new(tokio::sync::Mutex::new(None)),
