@@ -18,8 +18,8 @@ impl QwenASRClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(6))  // 6秒总超时
             .connect_timeout(Duration::from_secs(5))  // 5秒连接超时
-            .pool_idle_timeout(Duration::from_secs(1800))  // 15分钟空闲超时，保持连接复用
-            .pool_max_idle_per_host(2)  // 每个 host 最多保持 2 个空闲连接
+            .pool_idle_timeout(Duration::from_secs(30))  // 30秒空闲超时，快速释放卡住的连接
+            .pool_max_idle_per_host(10)  // 增加连接池大小，避免连接耗尽
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -172,8 +172,8 @@ impl SenseVoiceClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(6))  // 6秒总超时
             .connect_timeout(Duration::from_secs(5))
-            .pool_idle_timeout(Duration::from_secs(900))  // 15分钟空闲超时
-            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(30))  // 30秒空闲超时
+            .pool_max_idle_per_host(10)  // 增加连接池大小
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 

@@ -12,18 +12,16 @@
 
 ---
 
-## 📖 简介
-
-PushToTalk 是一个桌面应用，通过全局快捷键实现快速语音输入。按住 **Ctrl+Win** 说话，松开后自动转录并插入文本到任何应用程序。
+PushToTalk 是一个高性能的桌面语音输入工具。它不仅仅是一个语音转文字工具，更集成了大语言模型（LLM）能力。你可以按住 **Ctrl+Win** 说话，松开后应用会自动将你的语音转为文字，并根据你的设定进行**润色、翻译或整理成邮件**，最后自动粘贴到当前光标位置。
 
 ### ✨ 核心特性
 
-- 🎤 **全局快捷键录音** - 在任何应用中按住 Ctrl+Win 即可录音
-- 🤖 **智能语音识别** - 集成阿里云 Qwen ASR，支持中英文混合识别
-- ⚡ **自动文本插入** - 转录完成后自动插入到光标位置
-- 💾 **配置持久化** - API Key 安全保存，无需重复输入
-- 🔄 **智能重试机制** - 请求超时自动重试，提高稳定性
-- 🎯 **轻量高效** - 内存占用 < 60MB，启动速度 < 2秒
+- ⚡ **实时流式转录** - 采用 WebSocket 边录边传，极低延迟，松手即出字。
+- 🧠 **LLM 智能后处理** - 内置 "文本润色"、"邮件整理"、"中译英" 等预设，支持自定义 Prompt。
+- 🎤 **全局快捷键** - 在任何应用中（包括全屏游戏或 IDE）按住 `Ctrl+Win` 即可录音。
+- 🔄 **双模引擎 & 自动备备** - 默认使用 Qwen Realtime 引擎，网络不佳时自动降级到 HTTP 模式，并支持 SiliconFlow (SenseVoice) 作为备用渠道。
+- 🔊 **音频反馈** - 录音开始/结束时的清脆提示音，盲操也放心。
+- 💾 **多配置管理** - 支持保存多套 LLM 预设，通过界面快速切换不同场景。
 
 ---
 
@@ -41,18 +39,17 @@ PushToTalk 是一个桌面应用，通过全局快捷键实现快速语音输入
 
 ### 配置
 
-1. 启动应用
-2. 输入你的 [DashScope API Key](https://dashscope.console.aliyun.com/)
-3. 点击"保存配置"
-4. 点击"启动应用"
+1. 启动应用，点击右上角设置图标。
+2. **ASR 配置**: 输入阿里云 DashScope API Key (必填)。
+3. **LLM 配置** (可选): 开启 "LLM 智能润色"，输入对应的 API Key (支持 DashScope 或其他 OpenAI 兼容接口)。
+4. 点击 "保存配置" 并 "启动助手"。
 
 ### 使用
 
-1. 打开任何文本编辑器（记事本、Word、浏览器等）
-2. 将光标放在要插入文本的位置
-3. **按住 Ctrl+Win** 并开始说话
-4. **松开按键** 停止录音
-5. 等待几秒，转录的文本会自动插入
+1. 将光标定位在任何输入框（微信、Word、VS Code）。
+2. 按住 **`Ctrl` + `Win`** 键，听到 "滴" 声后开始说话。
+3. 说完松开按键，听到结束提示音。
+4. 等待片刻，处理后的文本将自动打字上屏。
 
 ---
 
@@ -75,6 +72,22 @@ PushToTalk 是一个桌面应用，通过全局快捷键实现快速语音输入
 
 ### AI 服务
 - **Alibaba Qwen ASR** - 语音识别 API
+
+---
+
+## ⚙️ 高级配置
+
+### ASR (语音识别)
+- **实时流式模式**: 推荐开启。延迟最低，体验最好。
+- **SiliconFlow (备用)**: 可选配置。当阿里云服务不可用时，自动尝试使用 SiliconFlow 的 SenseVoice 模型进行转录。
+
+### LLM (文本润色)
+你可以定义不同的预设来处理识别后的文本：
+- **文本润色**: 去除口语词（嗯、啊），修正标点，使语句通顺。
+- **中译英**: 直接将中文语音翻译成地道的英文输出。
+- **邮件整理**: 将口语化的指令转换为正式的邮件格式。
+
+可以在设置界面添加、删除或修改这些预设的 System Prompt。
 
 ---
 
@@ -124,23 +137,48 @@ cargo run --bin test_api
 ## 📁 项目结构
 
 ```
-push-2-talk/
-├── src/                        # React 前端
-│   ├── App.tsx                 # 主界面组件
-│   └── main.tsx                # 入口文件
-├── src-tauri/                  # Rust 后端
-│   ├── src/
-│   │   ├── lib.rs              # Tauri 命令和状态管理
-│   │   ├── audio_recorder.rs   # 音频录制模块
-│   │   ├── hotkey_service.rs   # 快捷键监听模块
-│   │   ├── qwen_asr.rs         # Qwen ASR API 客户端
-│   │   ├── text_inserter.rs    # 文本插入模块
-│   │   └── config.rs           # 配置管理模块
-│   └── Cargo.toml              # Rust 依赖配置
-├── MVP需求文档.md               # 需求规格说明
-├── 测试工具使用说明.md          # API 测试工具文档
-├── 项目进展.md                  # 开发进展记录
-└── README.md                    # 本文件
+├── src
+│   ├── App.tsx
+│   ├── index.css
+│   └── main.tsx
+├── src-tauri
+│   ├── capabilities
+│   │   └── default.json
+│   ├── gen
+│   │   └── schemas
+│   │       ├── acl-manifests.json
+│   │       ├── capabilities.json
+│   │       ├── desktop-schema.json
+│   │       └── windows-schema.json
+│   ├── icons
+│   │   └── icon.ico
+│   ├── src
+│   │   ├── audio_recorder.rs
+│   │   ├── beep_player.rs
+│   │   ├── config.rs
+│   │   ├── hotkey_service.rs
+│   │   ├── lib.rs
+│   │   ├── llm_post_processor.rs
+│   │   ├── main.rs
+│   │   ├── qwen_asr.rs
+│   │   ├── qwen_realtime.rs
+│   │   ├── streaming_recorder.rs
+│   │   ├── test_api.rs
+│   │   └── text_inserter.rs
+│   ├── target
+│   ├── build.rs
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   └── test_bin.toml
+├── CLAUDE.md
+├── index.html
+├── package-lock.json
+├── package.json
+├── postcss.config.js
+├── README.md
+├── tailwind.config.js
+├── tsconfig.json
+└── vite.config.ts
 ```
 
 ---
@@ -165,6 +203,25 @@ push-2-talk/
 2. 注册/登录账号
 3. 创建 API Key
 4. 复制 Key 并粘贴到应用中
+
+---
+
+## 🛠️ 技术栈
+
+### 前端 (UI)
+- **React 18 + TypeScript**: 组件化开发。
+- **Tailwind CSS**: 现代化样式，毛玻璃效果。
+- **Lucide React**: 精美图标库。
+- **Zustand**: (计划中) 状态管理。
+
+### 后端 (Rust Core)
+- **Tauri 2.0**: 下一代应用框架，安全且体积小。
+- **cpal**: 跨平台底层音频流捕获。
+- **tokio-tungstenite**: 异步 WebSocket 客户端，处理实时音频流。
+- **reqwest**: 异步 HTTP 客户端，处理 API 请求。
+- **rdev**: 全局键盘钩子 (Global Hooks)。
+- **rodio**: 音频播放 (用于提示音)。
+- **arboard & enigo**: 剪贴板操作与键盘模拟。
 
 ---
 
@@ -194,54 +251,14 @@ push-2-talk/
 
 ## 📊 性能指标
 
-| 指标 | 数值 |
-|------|------|
-| 按键响应延迟 | ~50ms |
-| 音频录制延迟 | ~100ms |
-| API 响应时间 | 1-3秒 (取决于网络) |
-| 应用启动时间 | ~2秒 |
-| 内存占用 | ~60MB |
-
+| 指标 | 实时模式 (Realtime) | HTTP 模式 |
+|------|-------------------|-----------|
+| **首字延迟** | < 500ms | ~1.5s |
+| **转录精度** | 98%+ (Qwen3) | 98%+ (SenseVoice/Qwen) |
+| **内存占用** | ~65MB | ~60MB |
+| **网络消耗** | 持续小包传输 | 单次大包传输 |
 ---
 
-## 🗺️ 开发路线图
-
-### ✅ v0.1.0 - MVP (已完成)
-- [x] 全局快捷键录音 (Ctrl+Win)
-- [x] 阿里云 Qwen ASR 集成
-- [x] 自动文本插入
-- [x] 配置持久化
-- [x] 基础 GUI 界面
-- [x] 标点符号自动去除
-- [x] API 请求超时机制（10秒）
-- [x] 自动重试逻辑（最多2次）
-
-### 🔄 v0.2.0 - 功能增强 (计划中)
-- [ ] Toggle 录音模式
-- [ ] 自定义快捷键
-- [ ] 音频反馈（提示音）
-- [ ] 历史记录功能
-
-### 🔮 v0.3.0 - 音频优化 (计划中)
-- [ ] 静音检测和移除
-- [ ] 音频设备选择
-- [ ] 音频质量调整
-
-### 🎉 v1.0.0 - 完整版 (未来)
-- [ ] 支持多个 ASR 服务提供商
-- [ ] 流式实时转录
-- [ ] AI 文本优化
-- [ ] 跨平台支持 (macOS, Linux)
-
----
-
-## 📝 相关文档
-
-- [MVP需求文档.md](./MVP需求文档.md) - 完整的功能需求和技术设计
-- [项目进展.md](./项目进展.md) - 开发进展和已完成功能
-- [测试工具使用说明.md](./测试工具使用说明.md) - API 测试工具使用指南
-
----
 
 ## 🙏 致谢
 

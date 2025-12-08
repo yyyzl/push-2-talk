@@ -18,8 +18,8 @@ impl LlmPostProcessor {
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
             .connect_timeout(Duration::from_secs(5))
-            .pool_idle_timeout(Duration::from_secs(600))
-            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(30))  // 30秒空闲超时
+            .pool_max_idle_per_host(10)  // 增加连接池大小
             .build()
             .unwrap_or_else(|_| Client::new());
 
