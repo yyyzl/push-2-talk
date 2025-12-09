@@ -23,7 +23,10 @@ import {
   RotateCcw,
   Plus,
   Trash2,
-  MessageSquareQuote
+  MessageSquareQuote,
+  History,
+  Copy,
+  Clock
 } from "lucide-react";
 import { nanoid } from 'nanoid';
 
@@ -58,6 +61,39 @@ interface TranscriptionResult {
   llm_time_ms: number | null;
   total_time_ms: number;
 }
+
+// --- 历史记录 ---
+interface HistoryRecord {
+  id: string;
+  timestamp: number;
+  originalText: string;
+  polishedText: string | null;
+  presetName: string | null;
+  asrTimeMs: number;
+  llmTimeMs: number | null;
+  totalTimeMs: number;
+  success: boolean;
+  errorMessage: string | null;
+}
+
+const HISTORY_KEY = 'pushtotalk_history';
+const MAX_HISTORY = 50;
+
+const loadHistory = (): HistoryRecord[] => {
+  try {
+    const data = localStorage.getItem(HISTORY_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch { return []; }
+};
+
+const saveHistory = (records: HistoryRecord[]) => {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(records.slice(0, MAX_HISTORY)));
+};
+
+const formatTimestamp = (ts: number): string => {
+  const d = new Date(ts);
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+};
 
 // 默认配置
 const DEFAULT_PRESETS: LlmPreset[] = [
@@ -103,7 +139,10 @@ function App() {
   const [llmTime, setLlmTime] = useState<number | null>(null);
   const [totalTime, setTotalTime] = useState<number | null>(null);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
-  
+  const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [copyToast, setCopyToast] = useState<string | null>(null);
+
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // 获取当前选中的预设对象
@@ -118,6 +157,7 @@ function App() {
   useEffect(() => {
     const init = async () => {
       try {
+        setHistory(loadHistory());
         await new Promise(resolve => setTimeout(resolve, 100));
         await setupEventListeners();
         await loadConfig();
@@ -205,10 +245,47 @@ function App() {
         setLlmTime(result.llm_time_ms);
         setTotalTime(result.total_time_ms);
         setStatus("running");
+        // 添加成功记录到历史
+        const record: HistoryRecord = {
+          id: nanoid(8),
+          timestamp: Date.now(),
+          originalText: result.original_text || result.text,
+          polishedText: result.original_text ? result.text : null,
+          presetName: result.original_text ? (llmConfig.presets.find(p => p.id === llmConfig.active_preset_id)?.name || null) : null,
+          asrTimeMs: result.asr_time_ms,
+          llmTimeMs: result.llm_time_ms,
+          totalTimeMs: result.total_time_ms,
+          success: true,
+          errorMessage: null
+        };
+        setHistory(prev => {
+          const updated = [record, ...prev].slice(0, MAX_HISTORY);
+          saveHistory(updated);
+          return updated;
+        });
       });
       await listen<string>("error", (event) => {
-        setError(event.payload);
+        const errMsg = event.payload;
+        setError(errMsg);
         setStatus("running");
+        // 添加失败记录到历史
+        const record: HistoryRecord = {
+          id: nanoid(8),
+          timestamp: Date.now(),
+          originalText: '',
+          polishedText: null,
+          presetName: null,
+          asrTimeMs: 0,
+          llmTimeMs: null,
+          totalTimeMs: 0,
+          success: false,
+          errorMessage: errMsg
+        };
+        setHistory(prev => {
+          const updated = [record, ...prev].slice(0, MAX_HISTORY);
+          saveHistory(updated);
+          return updated;
+        });
       });
       await listen("transcription_cancelled", () => {
         setStatus("running");
@@ -297,10 +374,23 @@ function App() {
   const handleUpdateActivePreset = (key: keyof LlmPreset, value: string) => {
     setLlmConfig(prev => ({
       ...prev,
-      presets: prev.presets.map(p => 
+      presets: prev.presets.map(p =>
         p.id === prev.active_preset_id ? { ...p, [key]: value } : p
       )
     }));
+  };
+
+  // --- 历史记录操作 ---
+  const handleCopyRecord = (record: HistoryRecord) => {
+    const text = record.polishedText || record.originalText;
+    navigator.clipboard.writeText(text);
+    setCopyToast('已复制到剪贴板');
+    setTimeout(() => setCopyToast(null), 2000);
+  };
+
+  const handleClearHistory = () => {
+    setHistory([]);
+    saveHistory([]);
   };
 
   const isRecording = status === "recording";
@@ -325,6 +415,13 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowHistory(true)}
+              className="p-2 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-500 hover:text-blue-600 transition-all"
+              title="历史记录"
+            >
+              <History size={18} />
+            </button>
             <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
               isRecording ? "bg-red-50 border-red-100 text-red-600" :
               isTranscribing ? "bg-amber-50 border-amber-100 text-amber-600" :
@@ -817,6 +914,98 @@ function App() {
                 保存并应用
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* History Drawer */}
+      {showHistory && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setShowHistory(false)} />
+          <div className="relative w-full max-w-md bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-blue-50 to-indigo-50">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-100 rounded-xl text-blue-600">
+                  <History size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">历史记录</h3>
+                  <p className="text-xs text-slate-500">共 {history.length} 条</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {history.length > 0 && (
+                  <button
+                    onClick={handleClearHistory}
+                    className="px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"
+                  >
+                    清空全部
+                  </button>
+                )}
+                <button onClick={() => setShowHistory(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {history.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-slate-300 space-y-3">
+                  <Clock size={48} strokeWidth={1} />
+                  <p className="text-sm font-medium">暂无历史记录</p>
+                </div>
+              ) : (
+                history.map(record => (
+                  <div
+                    key={record.id}
+                    onClick={() => record.success && handleCopyRecord(record)}
+                    className={`p-4 rounded-xl border transition-all ${
+                      record.success
+                        ? 'bg-white border-slate-100 hover:border-blue-200 hover:shadow-md cursor-pointer'
+                        : 'bg-red-50/50 border-red-100'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-slate-400 flex items-center gap-1">
+                        <Clock size={12} />
+                        {formatTimestamp(record.timestamp)}
+                      </span>
+                      {record.success ? (
+                        <div className="flex items-center gap-2">
+                          {record.presetName && (
+                            <span className="text-[10px] bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded">
+                              {record.presetName}
+                            </span>
+                          )}
+                          <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">
+                            {(record.totalTimeMs / 1000).toFixed(1)}s
+                          </span>
+                          <Copy size={14} className="text-slate-400" />
+                        </div>
+                      ) : (
+                        <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded">失败</span>
+                      )}
+                    </div>
+                    {record.success ? (
+                      <p className="text-sm text-slate-700 line-clamp-3">
+                        {record.polishedText || record.originalText}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-red-600 line-clamp-2">{record.errorMessage}</p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Copy Toast */}
+            {copyToast && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-in fade-in zoom-in duration-200">
+                {copyToast}
+              </div>
+            )}
           </div>
         </div>
       )}
