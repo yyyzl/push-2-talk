@@ -32,10 +32,15 @@ impl TextInserter {
 
         // 4. 模拟 Ctrl+V 粘贴
         self.enigo.key(Key::Control, Direction::Press)?;
-        thread::sleep(Duration::from_millis(10));
-        self.enigo.key(Key::Unicode('v'), Direction::Click)?;
-        thread::sleep(Duration::from_millis(10));
-        self.enigo.key(Key::Control, Direction::Release)?;
+        let result = (|| -> Result<()> {
+            thread::sleep(Duration::from_millis(10));
+            self.enigo.key(Key::Unicode('v'), Direction::Click)?;
+            thread::sleep(Duration::from_millis(10));
+            Ok(())
+        })();
+        // 最大努力保证 Ctrl 不会遗留为按下状态
+        let _ = self.enigo.key(Key::Control, Direction::Release);
+        result?;
 
         // 5. 等待粘贴完成
         thread::sleep(Duration::from_millis(100));

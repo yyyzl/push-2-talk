@@ -1,4 +1,5 @@
 // 全局快捷键监听模块 - 单例模式重构 + 双模式支持
+#[cfg(not(target_os = "windows"))]
 use rdev::{listen, Event, EventType, Key};
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -98,6 +99,42 @@ fn are_keys_physically_down(keys: &[HotkeyKey]) -> bool {
     keys.iter().all(|k| is_key_physically_down(k))
 }
 
+// Windows 下使用轮询（避免低级 hook 导致的按键异常）
+#[cfg(target_os = "windows")]
+const HOTKEY_POLL_INTERVAL_MS: u64 = 10;
+
+/// 严格匹配：要求目标按键全部按下，且没有额外的修饰键被按下
+#[cfg(target_os = "windows")]
+fn is_hotkey_pressed_strict(target_keys: &[HotkeyKey]) -> bool {
+    if target_keys.is_empty() {
+        return false;
+    }
+
+    if !are_keys_physically_down(target_keys) {
+        return false;
+    }
+
+    // 检查是否有“额外修饰键”被按下（用于模拟 rdev 的严格匹配 len==keys.len() 行为）
+    const MODIFIERS: [HotkeyKey; 8] = [
+        HotkeyKey::ControlLeft,
+        HotkeyKey::ControlRight,
+        HotkeyKey::ShiftLeft,
+        HotkeyKey::ShiftRight,
+        HotkeyKey::AltLeft,
+        HotkeyKey::AltRight,
+        HotkeyKey::MetaLeft,
+        HotkeyKey::MetaRight,
+    ];
+
+    for modifier in MODIFIERS.iter() {
+        if is_key_physically_down(modifier) && !target_keys.contains(modifier) {
+            return false;
+        }
+    }
+
+    true
+}
+
 // 看门狗检查间隔（毫秒）
 const WATCHDOG_INTERVAL_MS: u64 = 100;
 // 按键释放后的稳定时间（毫秒）
@@ -156,6 +193,7 @@ impl HotkeyService {
     }
 
     /// 将 rdev::Key 转换为 HotkeyKey
+    #[cfg(not(target_os = "windows"))]
     fn rdev_to_hotkey_key(key: Key) -> Option<HotkeyKey> {
         match key {
             Key::ControlLeft => Some(HotkeyKey::ControlLeft),
@@ -254,7 +292,187 @@ impl HotkeyService {
         thread::spawn(move || {
             tracing::info!("快捷键监听线程已启动");
 
+            // ====================================================================
+            // Windows：使用 GetAsyncKeyState 轮询按键状态，避免低级 hook 的兼容性问题
+            // ====================================================================
+            #[cfg(target_os = "windows")]
+            {
+                tracing::info!(
+                    "Windows 热键监听：启用轮询模式 ({}ms)",
+                    HOTKEY_POLL_INTERVAL_MS
+                );
+
+                let mut prev_dictation_down = false;
+                let mut prev_assistant_down = false;
+                let mut prev_release_down = false;
+
+                loop {
+                    thread::sleep(Duration::from_millis(HOTKEY_POLL_INTERVAL_MS));
+
+                    let dictation_cfg = dictation_config.read().unwrap().clone();
+                    let assistant_cfg = assistant_config.read().unwrap().clone();
+
+                    let dictation_down = is_hotkey_pressed_strict(&dictation_cfg.keys);
+                    let assistant_down = is_hotkey_pressed_strict(&assistant_cfg.keys);
+                    let release_down = dictation_cfg
+                        .release_mode_keys
+                        .as_deref()
+                        .map(is_hotkey_pressed_strict)
+                        .unwrap_or(false);
+
+                    // 未激活时：同步边沿状态，避免激活瞬间误触发
+                    if !is_active.load(Ordering::Relaxed) {
+                        prev_dictation_down = dictation_down;
+                        prev_assistant_down = assistant_down;
+                        prev_release_down = release_down;
+                        continue;
+                    }
+
+                    let dictation_rise = dictation_down && !prev_dictation_down;
+                    let dictation_fall = !dictation_down && prev_dictation_down;
+                    let assistant_rise = assistant_down && !prev_assistant_down;
+                    let assistant_fall = !assistant_down && prev_assistant_down;
+                    let release_rise = release_down && !prev_release_down;
+
+                    // 更新 pressed_keys（仅用于调试信息）
+                    {
+                        let mut s = state.lock().unwrap();
+                        s.pressed_keys.clear();
+
+                        // 只追踪当前配置相关的按键，避免无意义的全键盘扫描
+                        let mut keys_to_check: HashSet<HotkeyKey> = HashSet::new();
+                        for key in dictation_cfg.keys.iter() {
+                            keys_to_check.insert(key.clone());
+                        }
+                        for key in assistant_cfg.keys.iter() {
+                            keys_to_check.insert(key.clone());
+                        }
+                        if let Some(ref keys) = dictation_cfg.release_mode_keys {
+                            for key in keys.iter() {
+                                keys_to_check.insert(key.clone());
+                            }
+                        }
+
+                        for key in keys_to_check.into_iter() {
+                            if is_key_physically_down(&key) {
+                                s.pressed_keys.insert(key);
+                            }
+                        }
+                    }
+
+                    let mut start_action: Option<(TriggerMode, bool)> = None;
+                    let mut stop_action: Option<(TriggerMode, bool)> = None;
+
+                    {
+                        let mut s = state.lock().unwrap();
+
+                        // === 松手模式：再次按下松手模式快捷键则取消录音 ===
+                        if s.is_recording && s.is_release_mode_triggered && release_rise {
+                            tracing::info!("松手模式下再次按下快捷键，取消录音");
+                            s.is_recording = false;
+                            s.watchdog_running = false;
+                            s.current_trigger_mode = None;
+                            s.is_release_mode_triggered = false;
+                            stop_action = Some((TriggerMode::Dictation, true));
+                        } else if !s.is_recording {
+                            // 确定触发模式（优先级：松手模式 > 普通听写 > AI助手）
+                            if release_rise {
+                                tracing::info!("检测到快捷键按下: 听写模式 (松手模式)");
+                                s.is_recording = true;
+                                s.current_trigger_mode = Some(TriggerMode::Dictation);
+                                s.is_release_mode_triggered = true;
+                                s.watchdog_running = false;
+                                start_action = Some((TriggerMode::Dictation, true));
+                            } else if dictation_rise {
+                                let mode_desc = match dictation_cfg.mode {
+                                    crate::config::HotkeyMode::Press => "普通模式",
+                                    crate::config::HotkeyMode::Toggle => "切换模式",
+                                };
+                                tracing::info!("检测到快捷键按下: 听写模式 ({})", mode_desc);
+                                s.is_recording = true;
+                                s.current_trigger_mode = Some(TriggerMode::Dictation);
+                                s.is_release_mode_triggered = false;
+                                s.watchdog_running = false;
+                                start_action = Some((TriggerMode::Dictation, false));
+                            } else if assistant_rise {
+                                let mode_desc = match assistant_cfg.mode {
+                                    crate::config::HotkeyMode::Press => "普通模式",
+                                    crate::config::HotkeyMode::Toggle => "切换模式",
+                                };
+                                tracing::info!("检测到快捷键按下: AI助手模式 ({})", mode_desc);
+                                s.is_recording = true;
+                                s.current_trigger_mode = Some(TriggerMode::AiAssistant);
+                                s.is_release_mode_triggered = false;
+                                s.watchdog_running = false;
+                                start_action = Some((TriggerMode::AiAssistant, false));
+                            }
+                        } else if !s.is_release_mode_triggered {
+                            // 录音中：根据当前触发模式处理停止逻辑（Press=松手停止；Toggle=再次按下停止）
+                            match s.current_trigger_mode {
+                                Some(TriggerMode::Dictation) => match dictation_cfg.mode {
+                                    crate::config::HotkeyMode::Press => {
+                                        if dictation_fall {
+                                            tracing::info!("检测到快捷键释放，停止录音");
+                                            s.is_recording = false;
+                                            s.watchdog_running = false;
+                                            s.current_trigger_mode = None;
+                                            stop_action = Some((TriggerMode::Dictation, false));
+                                        }
+                                    }
+                                    crate::config::HotkeyMode::Toggle => {
+                                        if dictation_rise {
+                                            tracing::info!("检测到快捷键再次按下，停止录音（切换模式）");
+                                            s.is_recording = false;
+                                            s.watchdog_running = false;
+                                            s.current_trigger_mode = None;
+                                            stop_action = Some((TriggerMode::Dictation, false));
+                                        }
+                                    }
+                                },
+                                Some(TriggerMode::AiAssistant) => match assistant_cfg.mode {
+                                    crate::config::HotkeyMode::Press => {
+                                        if assistant_fall {
+                                            tracing::info!("检测到快捷键释放，停止录音");
+                                            s.is_recording = false;
+                                            s.watchdog_running = false;
+                                            s.current_trigger_mode = None;
+                                            stop_action = Some((TriggerMode::AiAssistant, false));
+                                        }
+                                    }
+                                    crate::config::HotkeyMode::Toggle => {
+                                        if assistant_rise {
+                                            tracing::info!("检测到快捷键再次按下，停止录音（切换模式）");
+                                            s.is_recording = false;
+                                            s.watchdog_running = false;
+                                            s.current_trigger_mode = None;
+                                            stop_action = Some((TriggerMode::AiAssistant, false));
+                                        }
+                                    }
+                                },
+                                None => {}
+                            }
+                        }
+                    }
+
+                    if let Some((mode, is_release_mode)) = start_action {
+                        if let Some(cb) = on_start.read().unwrap().as_ref() {
+                            cb(mode, is_release_mode);
+                        }
+                    }
+                    if let Some((mode, is_release_mode)) = stop_action {
+                        if let Some(cb) = on_stop.read().unwrap().as_ref() {
+                            cb(mode, is_release_mode);
+                        }
+                    }
+
+                    prev_dictation_down = dictation_down;
+                    prev_assistant_down = assistant_down;
+                    prev_release_down = release_down;
+                }
+            }
+
             // 外层循环：如果 rdev 监听器崩溃则自动重启
+            #[cfg(not(target_os = "windows"))]
             loop {
                 let mut first_key_logged = false;
 

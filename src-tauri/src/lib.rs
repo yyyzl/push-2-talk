@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     AppHandle, Emitter, Manager,
-    tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
+    tray::{TrayIcon, TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
     menu::{Menu, MenuItem},
     WindowEvent,
 };
@@ -117,6 +117,8 @@ struct AppState {
     is_processing_stop: Arc<AtomicBool>,
     /// 录音时静音其他应用的管理器
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
+    /// 系统托盘图标（用于动态显示/隐藏）
+    tray_icon: Arc<Mutex<Option<TrayIcon>>>,
 }
 
 // Tauri Commands
@@ -130,6 +132,7 @@ async fn save_config(
     llm_config: Option<config::LlmConfig>,
     smart_command_config: Option<config::SmartCommandConfig>,
     close_action: Option<String>,
+    show_tray_icon: Option<bool>,
     asr_config: Option<config::AsrConfig>,
     hotkey_config: Option<config::HotkeyConfig>,
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
@@ -138,6 +141,10 @@ async fn save_config(
     dictionary: Option<Vec<String>>,
 ) -> Result<String, String> {
     tracing::info!("保存配置...");
+
+    // 某些前端调用只会提交部分字段（例如仅更新热键/词库），这里用旧配置兜底避免意外清空。
+    let existing = AppConfig::load().unwrap_or_else(|_| AppConfig::new());
+
     let has_fallback = !fallback_api_key.is_empty();
     let config = AppConfig {
         dashscope_api_key: api_key.clone(),
@@ -161,17 +168,18 @@ async fn save_config(
             },
             enable_fallback: has_fallback,
         }),
-        use_realtime_asr: use_realtime.unwrap_or(true),
-        enable_llm_post_process: enable_post_process.unwrap_or(false),
-        llm_config: llm_config.unwrap_or_default(),
-        smart_command_config: smart_command_config.unwrap_or_default(),
-        assistant_config: assistant_config.unwrap_or_default(),
-        close_action,
+        use_realtime_asr: use_realtime.unwrap_or(existing.use_realtime_asr),
+        enable_llm_post_process: enable_post_process.unwrap_or(existing.enable_llm_post_process),
+        llm_config: llm_config.unwrap_or(existing.llm_config),
+        smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
+        assistant_config: assistant_config.unwrap_or(existing.assistant_config),
+        close_action: close_action.or(existing.close_action),
+        show_tray_icon: show_tray_icon.unwrap_or(existing.show_tray_icon),
         hotkey_config,
-        dual_hotkey_config: dual_hotkey_config.unwrap_or_default(),
-        transcription_mode: config::TranscriptionMode::default(),
-        enable_mute_other_apps: enable_mute_other_apps.unwrap_or(false),
-        dictionary: dictionary.unwrap_or_default(),
+        dual_hotkey_config: dual_hotkey_config.unwrap_or(existing.dual_hotkey_config),
+        transcription_mode: existing.transcription_mode,
+        enable_mute_other_apps: enable_mute_other_apps.unwrap_or(existing.enable_mute_other_apps),
+        dictionary: dictionary.unwrap_or(existing.dictionary),
     };
 
     config
@@ -1629,6 +1637,20 @@ async fn hide_to_tray(app_handle: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn set_tray_icon_visible(app_handle: AppHandle, visible: bool) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    let tray = state
+        .tray_icon
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "托盘图标尚未初始化".to_string())?;
+
+    tray.set_visible(visible).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn quit_app(app_handle: AppHandle) -> Result<(), String> {
     // 先停止服务
     let state = app_handle.state::<AppState>();
@@ -1996,16 +2018,17 @@ pub fn run() {
                 recording_start_time: Arc::new(Mutex::new(None)),
                 is_processing_stop: Arc::new(AtomicBool::new(false)),
                 audio_mute_manager: Arc::new(Mutex::new(None)),
+                tray_icon: Arc::new(Mutex::new(None)),
             };
-            app.manage(app_state);
 
             // 创建托盘菜单
             let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-            // 创建系统托盘
-            let _tray = TrayIconBuilder::new()
+            // 始终创建系统托盘图标，但可按配置控制其是否在任务栏通知区域显示
+            let tray_icon_visible = AppConfig::load().map(|c| c.show_tray_icon).unwrap_or(true);
+            let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .tooltip("PushToTalk - AI 语音转写助手")
@@ -2032,6 +2055,10 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            let _ = tray.set_visible(tray_icon_visible);
+            *app_state.tray_icon.lock().unwrap() = Some(tray);
+
+            app.manage(app_state);
 
             Ok(())
         })
@@ -2051,6 +2078,7 @@ pub fn run() {
             cancel_locked_recording,
             hide_to_tray,
             quit_app,
+            set_tray_icon_visible,
             show_overlay,
             hide_overlay,
             set_autostart,

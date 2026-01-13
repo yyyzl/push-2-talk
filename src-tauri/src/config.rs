@@ -417,6 +417,9 @@ pub struct AppConfig {
     /// 关闭行为: "close" = 直接关闭, "minimize" = 最小化到托盘, None = 每次询问
     #[serde(default)]
     pub close_action: Option<String>,
+    /// 是否在任务栏通知区域显示系统托盘图标
+    #[serde(default = "default_show_tray_icon")]
+    pub show_tray_icon: bool,
     /// 热键配置（旧版，保留以便迁移）
     #[serde(default, skip_serializing)]
     pub hotkey_config: Option<HotkeyConfig>,
@@ -657,6 +660,10 @@ fn default_use_realtime_asr() -> bool {
     true
 }
 
+fn default_show_tray_icon() -> bool {
+    true
+}
+
 impl AppConfig {
     pub fn new() -> Self {
         Self {
@@ -669,6 +676,7 @@ impl AppConfig {
             smart_command_config: SmartCommandConfig::default(),
             assistant_config: AssistantConfig::default(),
             close_action: None,
+            show_tray_icon: default_show_tray_icon(),
             hotkey_config: None,
             dual_hotkey_config: DualHotkeyConfig::default(),
             transcription_mode: TranscriptionMode::default(),

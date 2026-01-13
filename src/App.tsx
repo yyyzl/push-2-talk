@@ -151,6 +151,7 @@ interface AppConfig {
   smart_command_config: SmartCommandConfig;
   assistant_config: AssistantConfig;      // 新增：AI 助手配置
   close_action: "close" | "minimize" | null;
+  show_tray_icon: boolean;               // 是否显示系统托盘图标
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;   // 新增：双热键配置
   enable_mute_other_apps: boolean;        // 录音时静音其他应用
@@ -369,6 +370,7 @@ function App() {
   const [enableAutostart, setEnableAutostart] = useState(false);
   const [enableMuteOtherApps, setEnableMuteOtherApps] = useState(false);
   const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
+  const [showTrayIcon, setShowTrayIcon] = useState(true);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready">("idle");
   const [updateInfo, setUpdateInfo] = useState<{ version: string; notes?: string } | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -531,6 +533,7 @@ function App() {
             assistantConfig,
             asrConfig,
             dualHotkeyConfig: newDualHotkeyConfig,
+            showTrayIcon,
             enableMuteOtherApps
           }).then(() => {
             const modeName = recordingMode === 'dictation' ? '听写' : recordingMode === 'release' ? '松手' : 'AI助手';
@@ -643,6 +646,9 @@ function App() {
       if (config.close_action) {
         setCloseAction(config.close_action);
       }
+
+      // 加载托盘图标显示配置（默认显示）
+      setShowTrayIcon(config.show_tray_icon ?? true);
 
       // 加载开机自启动状态
       try {
@@ -890,6 +896,7 @@ function App() {
         assistantConfig,
         asrConfig,
         dualHotkeyConfig,
+        showTrayIcon,
         enableMuteOtherApps,
         dictionary: validDictionary
       });
@@ -1057,6 +1064,7 @@ function App() {
           asrConfig,
           closeAction,
           dualHotkeyConfig,
+          showTrayIcon,
           enableMuteOtherApps,
           dictionary
         });
@@ -1107,6 +1115,7 @@ function App() {
           asrConfig,
           closeAction: action,
           dualHotkeyConfig,
+          showTrayIcon,
         });
       } catch (err) {
         console.error("保存关闭配置失败:", err);
@@ -2696,7 +2705,8 @@ function App() {
                               smartCommandConfig,
                               assistantConfig,
                               asrConfig,
-                              dualHotkeyConfig: newConfig
+                              dualHotkeyConfig: newConfig,
+                              showTrayIcon,
                             });
                           }}
                           disabled={status !== 'idle'}
@@ -2900,6 +2910,59 @@ function App() {
                       <span
                         className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-all duration-300"
                         style={{ left: enableAutostart ? 'calc(100% - 1.25rem - 2px)' : '2px' }}
+                      />
+                    </button>
+                  </div>
+
+                  {/* 系统托盘图标 */}
+                  <div className="flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-lg transition-colors ${
+                        showTrayIcon ? 'bg-blue-100 text-blue-600' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        <Minus size={16} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-slate-700">显示系统托盘图标</div>
+                        <div className="text-[11px] text-slate-400 leading-tight">
+                          {showTrayIcon ? '显示在任务栏通知区域' : '已隐藏（仍在后台运行）'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const next = !showTrayIcon;
+                        setShowTrayIcon(next);
+                        // 立即生效（Windows 任务栏通知区域）
+                        invoke("set_tray_icon_visible", { visible: next }).catch((err) => {
+                          console.error("设置托盘图标显示状态失败:", err);
+                        });
+                        // 同步保存到配置，避免重启后回退
+                        invoke("save_config", {
+                          apiKey,
+                          fallbackApiKey,
+                          useRealtime,
+                          enablePostProcess,
+                          llmConfig,
+                          smartCommandConfig,
+                          assistantConfig,
+                          asrConfig,
+                          closeAction,
+                          dualHotkeyConfig,
+                          showTrayIcon: next,
+                          enableMuteOtherApps,
+                          dictionary,
+                        }).catch((err) => {
+                          console.error("保存托盘图标配置失败:", err);
+                        });
+                      }}
+                      className={`relative w-12 h-6 rounded-full transition-all duration-300 ${
+                        showTrayIcon ? 'bg-blue-500' : 'bg-slate-300'
+                      } cursor-pointer hover:opacity-90`}
+                    >
+                      <span
+                        className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-all duration-300"
+                        style={{ left: showTrayIcon ? 'calc(100% - 1.25rem - 2px)' : '2px' }}
                       />
                     </button>
                   </div>

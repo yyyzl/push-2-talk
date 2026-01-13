@@ -88,10 +88,15 @@ pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
     thread::sleep(Duration::from_millis(10));
 
     enigo.key(Key::Control, Direction::Press)?;
-    thread::sleep(Duration::from_millis(10));
-    enigo.key(Key::Unicode('c'), Direction::Click)?;
-    thread::sleep(Duration::from_millis(10));
-    enigo.key(Key::Control, Direction::Release)?;
+    let result = (|| -> Result<()> {
+        thread::sleep(Duration::from_millis(10));
+        enigo.key(Key::Unicode('c'), Direction::Click)?;
+        thread::sleep(Duration::from_millis(10));
+        Ok(())
+    })();
+    // 最大努力保证 Ctrl 不会遗留为按下状态
+    let _ = enigo.key(Key::Control, Direction::Release);
+    result?;
 
     // 5. 等待剪贴板更新（带重试机制）
     //    某些应用（如 Electron 应用、IDE）响应较慢，100ms 可能不够
@@ -192,10 +197,14 @@ pub fn insert_text_with_context(
     // 2. 模拟 Ctrl+V 粘贴
     //    注意：如果有选中内容，粘贴会自动替换；如果没有，会在光标处插入
     enigo.key(Key::Control, Direction::Press)?;
-    thread::sleep(Duration::from_millis(10));
-    enigo.key(Key::Unicode('v'), Direction::Click)?;
-    thread::sleep(Duration::from_millis(10));
-    enigo.key(Key::Control, Direction::Release)?;
+    let result = (|| -> Result<()> {
+        thread::sleep(Duration::from_millis(10));
+        enigo.key(Key::Unicode('v'), Direction::Click)?;
+        thread::sleep(Duration::from_millis(10));
+        Ok(())
+    })();
+    let _ = enigo.key(Key::Control, Direction::Release);
+    result?;
 
     // 3. 等待粘贴完成
     thread::sleep(Duration::from_millis(100));
