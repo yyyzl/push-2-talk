@@ -7,7 +7,7 @@ use anyhow::Result;
 use cpal::Stream;
 use tauri::AppHandle;
 
-use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc};
+use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc, validate_audio};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -266,6 +266,9 @@ impl AudioRecorder {
 
         let wav_data = cursor.into_inner();
         tracing::info!("音频已转换为内存 WAV: {} bytes, 采样率: {}Hz", wav_data.len(), TARGET_SAMPLE_RATE);
+
+        // 5. 验证音频有效性（过滤误触和静音）
+        validate_audio(&wav_data)?;
 
         Ok(wav_data)
     }

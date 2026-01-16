@@ -219,6 +219,7 @@ impl ConnectionPool {
         });
 
         // 启动接收任务
+        let corpus_for_check = corpus_text.clone();
         tokio::spawn(async move {
             let mut final_text = String::new();
             let mut has_result = false;
@@ -297,6 +298,14 @@ impl ConnectionPool {
 
                 // 如果已有结果，发送并退出
                 if has_result && !final_text.is_empty() {
+                    // 检测词库回显（千问特有问题：录音为空时返回词库内容）
+                    // 必须在过滤标点之前比较，因为词库用顿号分隔
+                    if !corpus_for_check.is_empty() && final_text == corpus_for_check {
+                        tracing::warn!("检测到词库回显，过滤无效结果");
+                        let _ = result_tx.send(Err(anyhow::anyhow!("录音无效，已跳过"))).await;
+                        break;
+                    }
+
                     // 实时模式下删除所有标点符号
                     let punctuation = ['。', '，', '！', '？', '、', '；', '：', '"', '"',
                                        '.', ',', '!', '?', ';', ':', '"', '\'',

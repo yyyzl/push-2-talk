@@ -7,7 +7,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 
-use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc, is_voice_active};
+use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc, is_voice_active, validate_audio};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -450,6 +450,9 @@ impl StreamingRecorder {
 
         let wav_data = cursor.into_inner();
         tracing::info!("流式录音停止，完整音频: {} bytes", wav_data.len());
+
+        // 验证音频有效性（过滤误触和静音）
+        validate_audio(&wav_data)?;
 
         Ok(wav_data)
     }

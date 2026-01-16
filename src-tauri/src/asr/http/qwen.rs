@@ -116,6 +116,13 @@ impl QwenASRClient {
             .to_string();
 
         utils::strip_trailing_punctuation(&mut text);
+
+        // 检测词库回显（千问特有问题：录音为空时返回词库内容）
+        if !corpus_text.is_empty() && text == corpus_text {
+            tracing::warn!("检测到词库回显，过滤无效结果");
+            anyhow::bail!("录音无效，已跳过");
+        }
+
         tracing::info!("转录完成: {}", text);
         Ok(text)
     }

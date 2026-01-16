@@ -1,6 +1,6 @@
 [package]
 name = "push-to-talk"
-version = "1.0.6"
+version = "1.0.7"
 description = "A push-to-talk speech-to-text application"
 authors = ["you"]
 license = ""
@@ -34,9 +34,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
 cpal = "0.15"
 hound = "3.5"
-rdev = "0.5"
 arboard = "3.4"
-enigo = "0.2"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -65,11 +63,15 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 
 # Windows Audio Session API - 录音时静音其他应用
+# Win32 Input API - 键盘模拟（替代 enigo）
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Media_Audio",
     "Win32_System_Com",
     "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",  # 焦点管理: GetForegroundWindow, SetForegroundWindow, IsWindow
+    "Win32_System_Threading",         # 焦点管理: GetCurrentThreadId, AttachThreadInput, GetWindowThreadProcessId
 ] }
 
 [features]

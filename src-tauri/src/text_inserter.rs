@@ -1,20 +1,20 @@
 // 文本插入模块
+// 使用 Win32 SendInput API 替代 enigo 实现更低延迟的键盘模拟
 use arboard::Clipboard;
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use std::thread;
 use std::time::Duration;
 use anyhow::Result;
 
+use crate::win32_input;
+
 pub struct TextInserter {
     clipboard: Clipboard,
-    enigo: Enigo,
 }
 
 impl TextInserter {
     pub fn new() -> Result<Self> {
         Ok(Self {
             clipboard: Clipboard::new()?,
-            enigo: Enigo::new(&Settings::default())?,
         })
     }
 
@@ -27,23 +27,14 @@ impl TextInserter {
         // 2. 将文本复制到剪贴板
         self.clipboard.set_text(text)?;
 
-        // 3. 等待一小段时间确保剪贴板已更新
+        // 3. 等待剪贴板更新
         thread::sleep(Duration::from_millis(50));
 
-        // 4. 模拟 Ctrl+V 粘贴
-        self.enigo.key(Key::Control, Direction::Press)?;
-        let result = (|| -> Result<()> {
-            thread::sleep(Duration::from_millis(10));
-            self.enigo.key(Key::Unicode('v'), Direction::Click)?;
-            thread::sleep(Duration::from_millis(10));
-            Ok(())
-        })();
-        // 最大努力保证 Ctrl 不会遗留为按下状态
-        let _ = self.enigo.key(Key::Control, Direction::Release);
-        result?;
+        // 4. 使用 Win32 SendInput 模拟 Ctrl+V 粘贴
+        win32_input::send_ctrl_v()?;
 
         // 5. 等待粘贴完成
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(150));
 
         // 6. 恢复原剪贴板内容
         if let Some(original) = original_clipboard {

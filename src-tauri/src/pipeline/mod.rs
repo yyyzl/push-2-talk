@@ -8,6 +8,7 @@
 mod types;
 mod normal;
 mod assistant;
+pub mod focus;
 
 pub use types::*;
 pub use normal::NormalPipeline;

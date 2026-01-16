@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use crate::assistant_processor::AssistantProcessor;
 use crate::clipboard_manager::{ClipboardGuard, insert_text_with_context};
@@ -39,6 +39,7 @@ impl AssistantPipeline {
     /// * `asr_result` - ASR 转录结果（用户的语音指令）
     /// * `asr_time_ms` - ASR 耗时（毫秒）
     /// * `context` - 上下文信息（包含选中文本）
+    /// * `target_hwnd` - 目标窗口句柄（用于焦点恢复）
     ///
     /// # Returns
     /// * `Ok(PipelineResult)` - 处理成功
@@ -51,6 +52,7 @@ impl AssistantPipeline {
         asr_result: Result<String>,
         asr_time_ms: u64,
         context: TranscriptionContext,
+        target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果（用户指令）
         let user_instruction = asr_result?;
@@ -90,9 +92,9 @@ impl AssistantPipeline {
             llm_time_ms
         );
 
-        // 5. 插入前隐藏窗口，让焦点恢复到目标应用
-        // 这样用户能看到完整的处理动画，只在最后插入文本前才隐藏窗口
-        Self::hide_overlay_and_wait(app).await;
+        // 5. 插入前隐藏窗口并主动恢复焦点到目标应用
+        // 使用新的焦点恢复机制，确保文本插入到正确的窗口
+        super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
 
         // 6. 插入结果（替换选中或插入at 光标）
         let has_selection = context.selected_text.is_some();
@@ -123,20 +125,6 @@ impl AssistantPipeline {
         }
     }
 
-    /// 隐藏悬浮窗并等待焦点恢复
-    ///
-    /// 在插入文本前调用，确保焦点从悬浮窗切回目标应用
-    /// 只有当窗口可见时才执行隐藏操作
-    async fn hide_overlay_and_wait(app: &AppHandle) {
-        if let Some(overlay) = app.get_webview_window("overlay") {
-            if overlay.is_visible().unwrap_or(false) {
-                tracing::info!("AssistantPipeline: 隐藏悬浮窗并等待焦点恢复...");
-                let _ = overlay.hide();
-                // 给操作系统时间把焦点切回上一个活动窗口
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            }
-        }
-    }
 }
 
 impl Default for AssistantPipeline {

@@ -197,7 +197,7 @@ PushToTalk 是一个高性能的桌面语音输入工具，集成了大语言模
 - **tokio-tungstenite** - WebSocket 异步客户端
 - **reqwest** - HTTP 客户端
 - **arboard** - 剪贴板操作
-- **enigo** - 输入模拟
+- **Win32 SendInput** - 键盘模拟（Windows 原生 API）
 - **rodio** - 音频播放（提示音）
 - **tauri-plugin-updater** - 自动更新功能
 

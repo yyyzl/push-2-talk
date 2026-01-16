@@ -3,12 +3,14 @@
 // 剪贴板管理模块 - 用于 AI 助手模式
 //
 // 提供选中文本捕获和剪贴板恢复功能
+// 使用 Win32 SendInput API 替代 enigo 实现更低延迟
 
 use arboard::Clipboard;
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use anyhow::Result;
+
+use crate::win32_input;
 
 /// RAII守卫：自动恢复剪贴板内容
 ///
@@ -73,34 +75,18 @@ pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
     let mut clipboard = Clipboard::new()?;
     clipboard.set_text("")?;
 
-    // 3. 等待一小段时间，让热键的物理按键状态稳定
-    //    注意：调用方（lib.rs on_stop）已等待 100ms 确保物理按键释放
-    //    这里额外等待 80ms 是为了让系统稳定（清空剪贴板后需要时间同步）
-    thread::sleep(Duration::from_millis(80));
+    // 3. 等待剪贴板同步（比 enigo 版本更短）
+    thread::sleep(Duration::from_millis(50));
 
-    // 4. 模拟 Ctrl+C 复制选中内容
-    let mut enigo = Enigo::new(&Settings::default())?;
+    // 4. 防御性释放修饰键
+    win32_input::release_all_modifiers()?;
+    thread::sleep(Duration::from_millis(5));
 
-    // 防御性措施：尝试释放修饰键（正常情况下调用方已等待按键释放）
-    let _ = enigo.key(Key::Alt, Direction::Release);
-    let _ = enigo.key(Key::Meta, Direction::Release);
-    let _ = enigo.key(Key::Shift, Direction::Release);
-    thread::sleep(Duration::from_millis(10));
+    // 5. 使用 Win32 SendInput 模拟 Ctrl+C
+    win32_input::send_ctrl_c()?;
 
-    enigo.key(Key::Control, Direction::Press)?;
-    let result = (|| -> Result<()> {
-        thread::sleep(Duration::from_millis(10));
-        enigo.key(Key::Unicode('c'), Direction::Click)?;
-        thread::sleep(Duration::from_millis(10));
-        Ok(())
-    })();
-    // 最大努力保证 Ctrl 不会遗留为按下状态
-    let _ = enigo.key(Key::Control, Direction::Release);
-    result?;
-
-    // 5. 等待剪贴板更新（带重试机制）
-    //    某些应用（如 Electron 应用、IDE）响应较慢，100ms 可能不够
-    let selected_text = wait_for_clipboard_update(&mut clipboard, 3, 100)?;
+    // 6. 等待剪贴板更新（带重试机制）
+    let selected_text = wait_for_clipboard_update(&mut clipboard, 3, 80)?;
 
     if let Some(ref text) = selected_text {
         tracing::info!("clipboard_manager: 捕获到选中文本 (长度: {} 字符)", text.len());
@@ -111,58 +97,67 @@ pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
     Ok((guard, selected_text))
 }
 
-/// 等待剪贴板更新的辅助函数（带重试机制）
+/// 等待剪贴板更新的辅助函数（动态轮询检测）
 ///
 /// # 参数
 /// * `clipboard` - 剪贴板实例
-/// * `max_retries` - 最大重试次数
-/// * `initial_delay_ms` - 初始延迟（毫秒）
+/// * `max_retries` - 最大重试次数（用于兼容旧接口）
+/// * `initial_delay_ms` - 初始轮询间隔（毫秒）
 ///
 /// # 返回值
 /// * `Ok(Some(text))` - 成功获取到非空文本
 /// * `Ok(None)` - 剪贴板为空或未更新
+///
+/// # 优化说明
+/// 使用动态轮询替代固定等待，响应快的应用几乎无延迟
 fn wait_for_clipboard_update(
     clipboard: &mut Clipboard,
     max_retries: u32,
     initial_delay_ms: u64,
 ) -> Result<Option<String>> {
-    let mut delay_ms = initial_delay_ms;
+    let start = Instant::now();
+    // 最大等待时间：初始延迟 × (1 + 1.5 + 2.25 + ...) ≈ 初始延迟 × 4
+    let max_wait_ms = initial_delay_ms * 4;
+    let poll_interval_ms = 15; // 15ms 轮询间隔
 
-    for attempt in 0..=max_retries {
-        thread::sleep(Duration::from_millis(delay_ms));
+    let mut attempt = 0u32;
 
+    while start.elapsed().as_millis() < max_wait_ms as u128 {
         match clipboard.get_text() {
             Ok(text) if !text.is_empty() => {
-                if attempt > 0 {
+                let elapsed = start.elapsed().as_millis();
+                if elapsed > initial_delay_ms as u128 {
                     tracing::debug!(
-                        "clipboard_manager: 第 {} 次重试后成功获取剪贴板内容",
-                        attempt
+                        "clipboard_manager: {}ms 后成功获取剪贴板内容",
+                        elapsed
                     );
                 }
                 return Ok(Some(text));
             }
             Ok(_) => {
-                // 剪贴板为空，可能还没更新完成，继续重试
-                if attempt < max_retries {
-                    tracing::debug!(
-                        "clipboard_manager: 剪贴板为空，重试 {}/{}",
-                        attempt + 1,
-                        max_retries
-                    );
-                    // 逐渐增加等待时间
-                    delay_ms = (delay_ms as f64 * 1.5) as u64;
-                }
+                // 剪贴板为空，继续轮询
             }
             Err(e) => {
-                tracing::warn!("clipboard_manager: 读取剪贴板失败: {}", e);
-                if attempt < max_retries {
-                    delay_ms = (delay_ms as f64 * 1.5) as u64;
+                if attempt == 0 {
+                    tracing::warn!("clipboard_manager: 读取剪贴板失败: {}", e);
                 }
             }
         }
+
+        thread::sleep(Duration::from_millis(poll_interval_ms));
+        attempt += 1;
+
+        // 兼容旧的重试次数限制
+        if attempt > max_retries * 10 {
+            break;
+        }
     }
 
-    // 所有重试都失败，返回 None（表示没有选中内容）
+    // 超时，返回 None（表示没有选中内容）
+    tracing::debug!(
+        "clipboard_manager: 等待 {}ms 后仍未获取到剪贴板内容",
+        start.elapsed().as_millis()
+    );
     Ok(None)
 }
 
@@ -182,7 +177,6 @@ pub fn insert_text_with_context(
     clipboard_guard: Option<ClipboardGuard>,
 ) -> Result<()> {
     let mut clipboard = Clipboard::new()?;
-    let mut enigo = Enigo::new(&Settings::default())?;
 
     // 1. 将文本写入剪贴板
     clipboard.set_text(text)?;
@@ -194,20 +188,11 @@ pub fn insert_text_with_context(
         has_selection
     );
 
-    // 2. 模拟 Ctrl+V 粘贴
-    //    注意：如果有选中内容，粘贴会自动替换；如果没有，会在光标处插入
-    enigo.key(Key::Control, Direction::Press)?;
-    let result = (|| -> Result<()> {
-        thread::sleep(Duration::from_millis(10));
-        enigo.key(Key::Unicode('v'), Direction::Click)?;
-        thread::sleep(Duration::from_millis(10));
-        Ok(())
-    })();
-    let _ = enigo.key(Key::Control, Direction::Release);
-    result?;
+    // 2. 使用 Win32 SendInput 模拟 Ctrl+V 粘贴
+    win32_input::send_ctrl_v()?;
 
     // 3. 等待粘贴完成
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(150));
 
     // 4. 恢复原始剪贴板
     if let Some(guard) = clipboard_guard {

@@ -1,6 +1,4 @@
 // 全局快捷键监听模块 - 单例模式重构 + 双模式支持
-#[cfg(not(target_os = "windows"))]
-use rdev::{listen, Event, EventType, Key};
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -10,7 +8,7 @@ use anyhow::Result;
 use crate::config::{HotkeyConfig, HotkeyKey, TriggerMode, DualHotkeyConfig};
 
 // ================== Windows 物理按键状态检测 ==================
-// 用于解决 rdev 可能漏掉 KeyRelease 事件的问题（Ghost Key）
+// 使用 Win32 API 直接查询硬件按键状态，确保按键检测的可靠性
 
 #[cfg(target_os = "windows")]
 #[link(name = "user32")]
@@ -88,13 +86,8 @@ fn is_key_physically_down(key: &HotkeyKey) -> bool {
     }
 }
 
-/// 非 Windows 系统默认返回 true（不做额外检查）
-#[cfg(not(target_os = "windows"))]
-fn is_key_physically_down(_key: &HotkeyKey) -> bool {
-    true
-}
-
 /// 检查一组按键是否全部物理按下
+#[cfg(target_os = "windows")]
 fn are_keys_physically_down(keys: &[HotkeyKey]) -> bool {
     keys.iter().all(|k| is_key_physically_down(k))
 }
@@ -114,7 +107,7 @@ fn is_hotkey_pressed_strict(target_keys: &[HotkeyKey]) -> bool {
         return false;
     }
 
-    // 检查是否有“额外修饰键”被按下（用于模拟 rdev 的严格匹配 len==keys.len() 行为）
+    // 检查是否有"额外修饰键"被按下（严格匹配：只有目标按键被按下，没有其他修饰键）
     const MODIFIERS: [HotkeyKey; 8] = [
         HotkeyKey::ControlLeft,
         HotkeyKey::ControlRight,
@@ -474,317 +467,6 @@ impl HotkeyService {
                     prev_assistant_down = assistant_down;
                     prev_release_down = release_down;
                 }
-            }
-
-            // 外层循环：如果 rdev 监听器崩溃则自动重启
-            #[cfg(not(target_os = "windows"))]
-            loop {
-                let mut first_key_logged = false;
-
-                // 克隆变量供闭包使用
-                let is_active_inner = Arc::clone(&is_active);
-                let dictation_config_inner = Arc::clone(&dictation_config);
-                let assistant_config_inner = Arc::clone(&assistant_config);
-                let state_inner = Arc::clone(&state);
-                let on_start_inner = Arc::clone(&on_start);
-                let on_stop_inner = Arc::clone(&on_stop);
-
-                let callback = move |event: Event| {
-                    // 检查服务是否激活
-                    if !is_active_inner.load(Ordering::Relaxed) {
-                        return;
-                    }
-
-                    // 第一次检测到按键时记录
-                    if !first_key_logged && matches!(event.event_type, EventType::KeyPress(_)) {
-                        first_key_logged = true;
-                        tracing::info!("✓ rdev 正常工作 - 已检测到键盘事件");
-                    }
-
-                    match event.event_type {
-                        EventType::KeyPress(key) => {
-                            if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
-                                let dictation_cfg = dictation_config_inner.read().unwrap().clone();
-                                let assistant_cfg = assistant_config_inner.read().unwrap().clone();
-                                let mut s = state_inner.lock().unwrap();
-
-                                s.pressed_keys.insert(hotkey_key);
-
-                                // 调试日志：检测按键数量异常（可能有键卡死）
-                                let max_keys = dictation_cfg.keys.len().max(assistant_cfg.keys.len());
-                                if s.pressed_keys.len() > max_keys + 2 {
-                                    // 仅在确实异常时输出，使用 debug 级别避免日志刷屏
-                                    tracing::debug!(
-                                        "当前按下按键数 ({}) 异常偏多，可能有按键状态卡死: {:?}",
-                                        s.pressed_keys.len(),
-                                        s.pressed_keys
-                                    );
-                                }
-
-                                // 严格匹配：检查是否匹配三种快捷键配置
-                                let (matches_dictation, matches_assistant, matches_release_mode) = {
-                                    // 听写模式快捷键
-                                    let contains_dictation = dictation_cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
-                                    let count_dictation = s.pressed_keys.len() == dictation_cfg.keys.len();
-
-                                    // AI助手模式快捷键
-                                    let contains_assistant = assistant_cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
-                                    let count_assistant = s.pressed_keys.len() == assistant_cfg.keys.len();
-
-                                    // 松手模式快捷键（仅听写模式支持）
-                                    let matches_release = if let Some(ref release_keys) = dictation_cfg.release_mode_keys {
-                                        let contains_release = release_keys.iter().all(|k| s.pressed_keys.contains(k));
-                                        let count_release = s.pressed_keys.len() == release_keys.len();
-                                        contains_release && count_release
-                                    } else {
-                                        false
-                                    };
-
-                                    (contains_dictation && count_dictation, contains_assistant && count_assistant, matches_release)
-                                };
-
-                                // === 松手模式：检查是否需要取消录音（再次按下相同快捷键） ===
-                                if s.is_recording && s.is_release_mode_triggered && matches_release_mode {
-                                    tracing::info!("松手模式下再次按下快捷键，取消录音");
-                                    s.is_recording = false;
-                                    s.watchdog_running = false;
-                                    s.current_trigger_mode = None;
-                                    s.is_release_mode_triggered = false;
-                                    drop(s);
-                                    // 调用 on_stop 回调（传递 true 表示是松手模式取消）
-                                    if let Some(cb) = on_stop_inner.read().unwrap().as_ref() {
-                                        cb(TriggerMode::Dictation, true);  // 松手模式取消
-                                    }
-                                    return;
-                                }
-
-                                if !s.is_recording {
-                                    // 确定触发模式（优先级：松手模式 > 普通听写 > AI助手）
-                                    let (trigger_mode, is_release_mode) = if matches_release_mode {
-                                        (Some(TriggerMode::Dictation), true)
-                                    } else if matches_dictation {
-                                        (Some(TriggerMode::Dictation), false)
-                                    } else if matches_assistant {
-                                        (Some(TriggerMode::AiAssistant), false)
-                                    } else {
-                                        (None, false)
-                                    };
-
-                                    if let Some(mode) = trigger_mode {
-                                        s.is_recording = true;
-                                        s.current_trigger_mode = Some(mode);
-                                        s.is_release_mode_triggered = is_release_mode;
-                                        let mode_name = mode.display_name();
-                                        let mode_desc = if is_release_mode { "松手模式" } else { "普通模式" };
-                                        tracing::info!("检测到快捷键按下: {} ({})", mode_name, mode_desc);
-
-                                        // 启动看门狗
-                                        if s.watchdog_running {
-                                            drop(s);
-                                            if let Some(cb) = on_start_inner.read().unwrap().as_ref() {
-                                                cb(mode, is_release_mode);  // 传递松手模式标志
-                                            }
-                                            return;
-                                        }
-
-                                        s.watchdog_running = true;
-                                        drop(s);
-
-                                        // 启动看门狗线程
-                                        let state_wd = Arc::clone(&state_inner);
-                                        let dictation_cfg_wd = Arc::clone(&dictation_config_inner);
-                                        let assistant_cfg_wd = Arc::clone(&assistant_config_inner);
-                                        let is_active_wd = Arc::clone(&is_active_inner);
-                                        let on_stop_wd = Arc::clone(&on_stop_inner);
-
-                                        thread::spawn(move || {
-                                            tracing::debug!("看门狗线程已启动");
-                                            let mut release_detected_count: u64 = 0;
-                                            let required_count = (KEY_RELEASE_STABLE_MS / WATCHDOG_INTERVAL_MS).max(1);
-
-                                            loop {
-                                                thread::sleep(Duration::from_millis(WATCHDOG_INTERVAL_MS));
-
-                                                // 检查服务是否仍然激活
-                                                if !is_active_wd.load(Ordering::Relaxed) {
-                                                    let mut s = state_wd.lock().unwrap();
-                                                    s.watchdog_running = false;
-                                                    s.is_recording = false;
-                                                    s.current_trigger_mode = None;
-                                                    tracing::debug!("看门狗线程退出（服务已停止）");
-                                                    break;
-                                                }
-
-                                                let s = state_wd.lock().unwrap();
-                                                if !s.watchdog_running || !s.is_recording {
-                                                    tracing::debug!("看门狗线程正常退出");
-                                                    break;
-                                                }
-
-                                                // 根据当前触发模式检查对应的按键
-                                                // 双重检查：软件状态 + 硬件物理状态
-                                                // 这样即使 rdev 漏掉了 KeyRelease 事件，也能通过硬件状态检测到
-                                                let (all_pressed, target_keys) = match s.current_trigger_mode {
-                                                    Some(TriggerMode::Dictation) => {
-                                                        let cfg = dictation_cfg_wd.read().unwrap();
-                                                        let soft_pressed = cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
-                                                        (soft_pressed, cfg.keys.clone())
-                                                    }
-                                                    Some(TriggerMode::AiAssistant) => {
-                                                        let cfg = assistant_cfg_wd.read().unwrap();
-                                                        let soft_pressed = cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
-                                                        (soft_pressed, cfg.keys.clone())
-                                                    }
-                                                    None => (false, vec![]),
-                                                };
-                                                drop(s);
-
-                                                // 硬件状态检查：使用 GetAsyncKeyState 直接查询物理按键状态
-                                                // 只要有一个键物理上松开了，就认为用户已松手
-                                                let hardware_pressed = if !target_keys.is_empty() {
-                                                    are_keys_physically_down(&target_keys)
-                                                } else {
-                                                    false
-                                                };
-
-                                                // 最终判断：软件状态和硬件状态都要按下才算真正按着
-                                                let truly_pressed = all_pressed && hardware_pressed;
-
-                                                if !truly_pressed {
-                                                    release_detected_count += 1;
-                                                    if release_detected_count >= required_count {
-                                                        let mut s = state_wd.lock().unwrap();
-                                                        if s.is_recording {
-                                                            // 检查是否为松手模式
-                                                            if s.is_release_mode_triggered {
-                                                                // 松手模式下，检测到按键释放后清理软件状态，但录音继续
-                                                                s.pressed_keys.clear();
-                                                                tracing::info!("看门狗检测到松手模式快捷键释放（硬件状态同步），录音继续");
-                                                                drop(s);
-                                                                break;  // 退出看门狗，但不停止录音
-                                                            }
-
-                                                            let mode = s.current_trigger_mode.unwrap_or(TriggerMode::Dictation);
-                                                            s.is_recording = false;
-                                                            s.watchdog_running = false;
-                                                            s.current_trigger_mode = None;
-                                                            s.is_release_mode_triggered = false;
-                                                            // 清理可能卡住的按键状态
-                                                            s.pressed_keys.clear();
-                                                            drop(s);
-
-                                                            // 区分是软件检测还是硬件检测
-                                                            if !all_pressed {
-                                                                tracing::warn!("看门狗检测到按键释放（软件状态），强制停止录音");
-                                                            } else {
-                                                                tracing::warn!("看门狗检测到按键释放（硬件状态同步），强制停止录音");
-                                                            }
-                                                            if let Some(cb) = on_stop_wd.read().unwrap().as_ref() {
-                                                                cb(mode, false);  // 传递 false（非松手模式）
-                                                            }
-                                                        }
-                                                        break;
-                                                    }
-                                                } else {
-                                                    release_detected_count = 0;
-                                                }
-                                            }
-
-                                            let mut s = state_wd.lock().unwrap();
-                                            s.watchdog_running = false;
-                                        });
-
-                                        if let Some(cb) = on_start_inner.read().unwrap().as_ref() {
-                                            cb(mode, is_release_mode);  // 传递松手模式标志
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        EventType::KeyRelease(key) => {
-                            if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
-                                let dictation_cfg = dictation_config_inner.read().unwrap().clone();
-                                let assistant_cfg = assistant_config_inner.read().unwrap().clone();
-                                let mut s = state_inner.lock().unwrap();
-
-                                s.pressed_keys.remove(&hotkey_key);
-
-                                // 增强的防呆逻辑：如果释放的是修饰键且未录音，检查是否所有修饰键都已释放
-                                if hotkey_key.is_modifier() && !s.is_recording {
-                                    let has_any_modifier = s.pressed_keys.iter().any(|k| k.is_modifier());
-                                    if !has_any_modifier && !s.pressed_keys.is_empty() {
-                                        // 所有修饰键已释放，但还有其他键残留，可能是状态卡死
-                                        tracing::warn!(
-                                            "所有修饰键已释放但仍有残留按键: {:?}，强制清理",
-                                            s.pressed_keys
-                                        );
-                                        s.pressed_keys.clear();
-                                    } else if !has_any_modifier {
-                                        s.pressed_keys.clear();
-                                        tracing::debug!("所有修饰键已释放，强制清理按键状态");
-                                    }
-                                }
-
-                                if !s.is_recording {
-                                    return;
-                                }
-
-                                // 根据当前触发模式检查对应的按键是否全部按下
-                                let all_pressed = match s.current_trigger_mode {
-                                    Some(TriggerMode::Dictation) => {
-                                        dictation_cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
-                                    }
-                                    Some(TriggerMode::AiAssistant) => {
-                                        assistant_cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
-                                    }
-                                    None => false,
-                                };
-
-                                if !all_pressed {
-                                    // === 松手模式：检查是否为松手模式快捷键触发 ===
-                                    if s.is_release_mode_triggered {
-                                        tracing::info!("松手模式快捷键释放，录音继续（锁定状态）");
-                                        return;  // 不停止录音，等待用户点击悬浮窗按钮
-                                    }
-
-                                    let mode = s.current_trigger_mode.unwrap_or(TriggerMode::Dictation);
-                                    s.is_recording = false;
-                                    s.watchdog_running = false;
-                                    s.current_trigger_mode = None;
-                                    s.is_release_mode_triggered = false;  // 重置标志
-                                    drop(s);
-
-                                    tracing::info!("检测到快捷键释放，停止录音");
-                                    if let Some(cb) = on_stop_inner.read().unwrap().as_ref() {
-                                        cb(mode, false);  // 释放时不是松手模式
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                };
-
-                // 执行监听
-                tracing::info!("开始执行 rdev listen...");
-                if let Err(error) = listen(callback) {
-                    tracing::error!("rdev 监听器发生错误退出: {:?}。将在 2 秒后重启监听。", error);
-                } else {
-                    tracing::warn!("rdev 监听器意外正常返回（通常不应发生）。将在 2 秒后重启监听。");
-                }
-
-                // 重启前重置状态，防止按键卡死
-                {
-                    let mut s = state.lock().unwrap();
-                    s.pressed_keys.clear();
-                    s.is_recording = false;
-                    s.watchdog_running = false;
-                    s.current_trigger_mode = None;
-                }
-
-                // 等待一会再重启，避免死循环占用 CPU
-                thread::sleep(Duration::from_secs(2));
-                tracing::info!("正在重启 rdev 监听器...");
             }
         });
 

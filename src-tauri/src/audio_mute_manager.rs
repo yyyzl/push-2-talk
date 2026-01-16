@@ -451,28 +451,6 @@ impl AudioMuteManager {
             Ok(restored_count)
         }
     }
-
-    /// 非 Windows 平台的空实现
-    #[cfg(not(target_os = "windows"))]
-    pub fn mute_other_apps(&self) -> Result<usize, String> {
-        Ok(0)
-    }
-
-    /// 非 Windows 平台的空实现
-    #[cfg(not(target_os = "windows"))]
-    pub fn restore_volumes(&self) -> Result<usize, String> {
-        Ok(0)
-    }
-
-    /// 非 Windows 平台的空实现
-    #[cfg(not(target_os = "windows"))]
-    fn restore_volumes_internal(
-        _muted_pids: &Arc<Mutex<HashSet<u32>>>,
-        _active_sessions: &Arc<AtomicU32>,
-        _own_process_id: u32,
-    ) -> Result<usize, String> {
-        Ok(0)
-    }
 }
 
 /// 确保在 AudioMuteManager 销毁时恢复所有被静音的应用并停止看门狗

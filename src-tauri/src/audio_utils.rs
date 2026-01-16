@@ -1,6 +1,7 @@
 // 音频处理通用工具模块
 // 提供音频级别计算、事件发送等共享功能
 
+use anyhow::Result;
 use tauri::{AppHandle, Emitter};
 
 /// 音频级别事件 payload
@@ -73,4 +74,72 @@ pub fn apply_agc(samples: &mut [f32], current_gain: &mut f32) {
 pub fn is_voice_active(samples: &[f32]) -> bool {
     const THRESHOLD: f32 = 0.003; // 与 NOISE_FLOOR 对齐，平衡灵敏度和抗噪能力
     calculate_rms(samples) > THRESHOLD
+}
+
+// ============================================================================
+// 无效音频检测
+// ============================================================================
+
+/// 无效音频检测阈值
+const MIN_AUDIO_DURATION_SAMPLES: usize = 8000; // 0.5秒 @ 16kHz
+const MIN_AUDIO_RMS: f32 = 0.02; // 静音阈值（需高于麦克风底噪）
+
+/// 验证音频数据是否有效（WAV 格式）
+///
+/// 检测条件：
+/// - 时长 >= 0.5 秒：直接通过
+/// - 时长 < 0.5 秒 且 RMS < 0.02（静音）：跳过（用户误触）
+/// - 时长 < 0.5 秒 但 RMS >= 0.02（有声音）：继续转写
+///
+/// 返回 Ok(()) 表示有效，Err 表示无效（包含原因）
+pub fn validate_audio(audio_data: &[u8]) -> Result<()> {
+    // 检查1：非空
+    if audio_data.is_empty() {
+        return Err(anyhow::anyhow!("音频数据为空"));
+    }
+
+    // 检查2：WAV 文件最小大小（44字节头 + 音频数据）
+    if audio_data.len() < 44 {
+        return Err(anyhow::anyhow!("音频数据格式错误"));
+    }
+
+    // 解析 PCM 数据（跳过 44 字节 WAV 头）
+    let pcm_data = &audio_data[44..];
+    let samples: Vec<i16> = pcm_data
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect();
+
+    // 检查3：时长足够则直接通过
+    if samples.len() >= MIN_AUDIO_DURATION_SAMPLES {
+        return Ok(());
+    }
+
+    // 检查4：时长不足时检查音量（RMS）
+    if samples.is_empty() {
+        return Err(anyhow::anyhow!("音频数据为空"));
+    }
+
+    let sum_squares: f64 = samples
+        .iter()
+        .map(|&s| (s as f64 / 32768.0).powi(2))
+        .sum();
+    let rms = (sum_squares / samples.len() as f64).sqrt() as f32;
+
+    if rms < MIN_AUDIO_RMS {
+        tracing::info!(
+            "音频过短且静音 ({} 采样点, RMS={:.4})，跳过转写",
+            samples.len(),
+            rms
+        );
+        return Err(anyhow::anyhow!("录音过短或无声音，已跳过"));
+    }
+
+    // 虽然时长短，但有声音，继续转写
+    tracing::info!(
+        "音频较短但有声音 ({} 采样点, RMS={:.4})，继续转写",
+        samples.len(),
+        rms
+    );
+    Ok(())
 }

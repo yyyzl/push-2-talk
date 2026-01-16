@@ -15,6 +15,7 @@ mod openai_client;
 mod pipeline;
 mod streaming_recorder;
 mod text_inserter;
+mod win32_input;
 
 use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
@@ -60,11 +61,6 @@ fn get_cursor_position() -> Option<(i32, i32)> {
             None
         }
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn get_cursor_position() -> Option<(i32, i32)> {
-    None
 }
 
 fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
@@ -117,6 +113,8 @@ struct AppState {
     is_processing_stop: Arc<AtomicBool>,
     /// 录音时静音其他应用的管理器
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
+    /// 目标窗口句柄（热键按下时保存，用于焦点恢复）
+    target_window: Arc<Mutex<Option<isize>>>,
 }
 
 // Tauri Commands
@@ -735,9 +733,14 @@ async fn start_app(
     let audio_mute_manager_start = Arc::clone(&state.audio_mute_manager);
     let audio_mute_manager_stop = Arc::clone(&state.audio_mute_manager);
 
+    // 目标窗口句柄（用于焦点恢复）
+    let target_window_start = Arc::clone(&state.target_window);
+    let target_window_stop = Arc::clone(&state.target_window);
+
     // 按键按下回调（支持双模式 + 松手模式）
     let on_start = move |trigger_mode: config::TriggerMode, is_release_mode: bool| {
-        // === 防重入：如果已锁定（松手模式），忽略新的按键 ===
+        // === 防重入检查必须在保存窗口句柄之前 ===
+        // 避免松手模式下误触热键覆盖正确的目标窗口句柄
         if is_recording_locked_start.load(Ordering::SeqCst) {
             tracing::info!("当前处于松手锁定模式，忽略新的按键触发");
             return;
@@ -746,6 +749,16 @@ async fn start_app(
         if !*is_running_start.lock().unwrap() {
             tracing::debug!("服务已停止，忽略快捷键按下事件");
             return;
+        }
+
+        // === 保存目标窗口句柄（通过防重入检查后才保存） ===
+        // 这是用户触发热键时的前台窗口，用于后续焦点恢复
+        let target_hwnd = win32_input::get_foreground_window();
+        *target_window_start.lock().unwrap() = target_hwnd;
+        if let Some(hwnd) = target_hwnd {
+            tracing::info!("已保存目标窗口句柄: 0x{:X}", hwnd);
+        } else {
+            tracing::warn!("未能获取目标窗口句柄");
         }
 
         // 保存当前触发模式
@@ -869,6 +882,9 @@ async fn start_app(
         let assistant_processor = Arc::clone(&assistant_processor_stop);
         let text_inserter = Arc::clone(&text_inserter_stop);
 
+        // 获取目标窗口句柄（用于焦点恢复）
+        let target_hwnd = *target_window_stop.lock().unwrap();
+
         // 播放停止录音提示音
         beep_player::play_stop_beep();
 
@@ -893,6 +909,7 @@ async fn start_app(
                             sensevoice_client_state,
                             doubao_client_state,
                             enable_fallback_state,
+                            target_hwnd,
                         ).await;
                     } else {
                         handle_http_transcription(
@@ -904,6 +921,7 @@ async fn start_app(
                             sensevoice_client_state,
                             doubao_client_state,
                             enable_fallback_state,
+                            target_hwnd,
                         ).await;
                     }
                 }
@@ -948,6 +966,7 @@ async fn start_app(
                         doubao_client_state,
                         enable_fallback_state,
                         use_realtime,
+                        target_hwnd,
                     ).await;
                 }
             }
@@ -991,6 +1010,7 @@ async fn handle_assistant_mode(
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
     use_realtime: bool,
+    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
 ) {
     let _ = app.emit("transcribing", ());
     let asr_start = std::time::Instant::now();
@@ -1061,7 +1081,12 @@ async fn handle_assistant_mode(
                 match rec.stop_recording_to_memory() {
                     Ok(data) => Some(data),
                     Err(e) => {
-                        emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                        if is_audio_skip_error(&e) {
+                            tracing::info!("音频已跳过: {}", e);
+                            hide_overlay_silently(&app);
+                        } else {
+                            emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                        }
                         None
                     }
                 }
@@ -1111,7 +1136,7 @@ async fn handle_assistant_mode(
     };
 
     let pipeline_result = pipeline
-        .process(&app, processor, clipboard_guard, final_result, asr_time_ms, context)
+        .process(&app, processor, clipboard_guard, final_result, asr_time_ms, context, target_hwnd)
         .await;
 
     // 4. 处理结果
@@ -1205,6 +1230,7 @@ async fn handle_http_transcription(
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
+    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
 ) {
     // 停止录音并直接获取内存中的音频数据
     let audio_data = {
@@ -1213,7 +1239,12 @@ async fn handle_http_transcription(
             match rec.stop_recording_to_memory() {
                 Ok(data) => Some(data),
                 Err(e) => {
-                    emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                    if is_audio_skip_error(&e) {
+                        tracing::info!("音频已跳过: {}", e);
+                        hide_overlay_silently(&app);
+                    } else {
+                        emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                    }
                     None
                 }
             }
@@ -1236,7 +1267,7 @@ async fn handle_http_transcription(
         ).await;
         let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
-        handle_transcription_result(app, post_processor, text_inserter, result, asr_time_ms).await;
+        handle_transcription_result(app, post_processor, text_inserter, result, asr_time_ms, target_hwnd).await;
     }
 }
 
@@ -1254,6 +1285,7 @@ async fn handle_realtime_stop(
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
+    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
 ) {
     let _ = app.emit("transcribing", ());
     let asr_start = std::time::Instant::now();
@@ -1309,6 +1341,7 @@ async fn handle_realtime_stop(
                             Arc::clone(&doubao_client_state),
                             audio_data,
                             enable_fb,
+                            target_hwnd,
                         )
                         .await;
                     }
@@ -1322,7 +1355,7 @@ async fn handle_realtime_stop(
                         tracing::info!("豆包实时转录成功: {} (ASR 耗时: {}ms)", text, asr_time_ms);
                         drop(doubao_session_guard);
                         *doubao_session.lock().await = None;
-                        handle_transcription_result(app, post_processor, text_inserter, Ok(text), asr_time_ms).await;
+                        handle_transcription_result(app, post_processor, text_inserter, Ok(text), asr_time_ms, target_hwnd).await;
                     }
                     Err(e) => {
                         tracing::warn!("豆包等待转录结果失败: {}，尝试备用方案", e);
@@ -1340,6 +1373,7 @@ async fn handle_realtime_stop(
                                 Arc::clone(&doubao_client_state),
                                 audio_data,
                                 enable_fb,
+                                target_hwnd,
                             )
                             .await;
                         } else {
@@ -1362,6 +1396,7 @@ async fn handle_realtime_stop(
                         Arc::clone(&doubao_client_state),
                         audio_data,
                         enable_fb,
+                        target_hwnd,
                     )
                     .await;
                 } else {
@@ -1390,6 +1425,7 @@ async fn handle_realtime_stop(
                             Arc::clone(&doubao_client_state),
                             audio_data,
                             enable_fb,
+                            target_hwnd,
                         )
                         .await;
                     }
@@ -1404,7 +1440,7 @@ async fn handle_realtime_stop(
                         let _ = session.close().await;
                         drop(session_guard);
                         *active_session.lock().await = None;
-                        handle_transcription_result(app, post_processor, text_inserter, Ok(text), asr_time_ms).await;
+                        handle_transcription_result(app, post_processor, text_inserter, Ok(text), asr_time_ms, target_hwnd).await;
                     }
                     Err(e) => {
                         tracing::warn!("千问等待转录结果失败: {}，尝试备用方案", e);
@@ -1423,6 +1459,7 @@ async fn handle_realtime_stop(
                                 Arc::clone(&doubao_client_state),
                                 audio_data,
                                 enable_fb,
+                                target_hwnd,
                             )
                             .await;
                         } else {
@@ -1445,6 +1482,7 @@ async fn handle_realtime_stop(
                         Arc::clone(&doubao_client_state),
                         audio_data,
                         enable_fb,
+                        target_hwnd,
                     )
                     .await;
                 } else {
@@ -1465,6 +1503,7 @@ async fn fallback_transcription(
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     audio_data: Vec<u8>,
     enable_fallback: bool,
+    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
 ) {
     let qwen = { qwen_client_state.lock().unwrap().clone() };
     let sensevoice = { sensevoice_client_state.lock().unwrap().clone() };
@@ -1476,7 +1515,7 @@ async fn fallback_transcription(
     ).await;
     let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
-    handle_transcription_result(app, post_processor, text_inserter, result, asr_time_ms).await;
+    handle_transcription_result(app, post_processor, text_inserter, result, asr_time_ms, target_hwnd).await;
 }
 
 /// 统一的错误处理辅助函数 - 发送错误事件并隐藏悬浮窗
@@ -1485,6 +1524,11 @@ fn emit_error_and_hide_overlay(app: &AppHandle, error_msg: String) {
     let _ = app.emit("error", error_msg);
 
     // 隐藏悬浮窗，带重试机制
+    hide_overlay_silently(app);
+}
+
+/// 静默隐藏悬浮窗（不发送错误事件）
+fn hide_overlay_silently(app: &AppHandle) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         if let Err(e) = overlay.hide() {
             tracing::error!("隐藏悬浮窗失败: {}", e);
@@ -1495,6 +1539,12 @@ fn emit_error_and_hide_overlay(app: &AppHandle, error_msg: String) {
             }
         }
     }
+}
+
+/// 检查错误是否为"音频跳过"类型（用户误触等正常情况）
+fn is_audio_skip_error(error: &anyhow::Error) -> bool {
+    let msg = error.to_string();
+    msg.contains("录音过短或无声音") || msg.contains("音频数据为空")
 }
 
 /// 转录完成事件的 payload
@@ -1521,6 +1571,7 @@ async fn handle_transcription_result(
     text_inserter: Arc<Mutex<Option<TextInserter>>>,
     result: anyhow::Result<String>,
     asr_time_ms: u64,
+    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
 ) {
     // 从锁中提取处理器（clone 后立即释放锁）
     let post_proc = { post_processor.lock().unwrap().clone() };
@@ -1529,7 +1580,7 @@ async fn handle_transcription_result(
     let pipeline = NormalPipeline::new();
     let mut inserter = { text_inserter.lock().unwrap().take() };
     let pipeline_result = pipeline
-        .process(&app, post_proc, &mut inserter, result, asr_time_ms, TranscriptionContext::empty())
+        .process(&app, post_proc, &mut inserter, result, asr_time_ms, TranscriptionContext::empty(), target_hwnd)
         .await;
     // 归还 text_inserter
     *text_inserter.lock().unwrap() = inserter;
@@ -1778,6 +1829,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
     let sensevoice_client = Arc::clone(&state.sensevoice_client);
     let doubao_client = Arc::clone(&state.doubao_client);
     let enable_fallback = Arc::clone(&state.enable_fallback);
+    let target_hwnd = *state.target_window.lock().unwrap();  // 获取目标窗口句柄
 
     // 执行停止处理（仅听写模式）
     let app = app_handle.clone();
@@ -1797,6 +1849,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
                     sensevoice_client,
                     doubao_client,
                     enable_fallback,
+                    target_hwnd,
                 ).await;
             } else {
                 handle_http_transcription(
@@ -1808,6 +1861,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
                     sensevoice_client,
                     doubao_client,
                     enable_fallback,
+                    target_hwnd,
                 ).await;
             }
         }
@@ -1851,12 +1905,10 @@ async fn cancel_locked_recording(app_handle: AppHandle) -> Result<String, String
     // 重置热键服务状态（防止状态卡死）
     state.hotkey_service.reset_state();
 
-    // ===== 同样需要隐藏悬浮窗，让焦点恢复 =====
-    tracing::info!("隐藏悬浮窗，等待焦点恢复...");
-    if let Some(overlay) = app_handle.get_webview_window("overlay") {
-        let _ = overlay.hide();
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    }
+    // ===== 隐藏悬浮窗并主动恢复焦点 =====
+    let target_hwnd = *state.target_window.lock().unwrap();
+    tracing::info!("取消录音：隐藏悬浮窗并恢复焦点...");
+    pipeline::focus::hide_overlay_and_restore_focus(&app_handle, target_hwnd).await;
 
     // 结束会话并恢复其他应用的音量
     if let Some(ref manager) = *state.audio_mute_manager.lock().unwrap() {
@@ -2019,6 +2071,7 @@ pub fn run() {
                 recording_start_time: Arc::new(Mutex::new(None)),
                 is_processing_stop: Arc::new(AtomicBool::new(false)),
                 audio_mute_manager: Arc::new(Mutex::new(None)),
+                target_window: Arc::new(Mutex::new(None)),
             };
 
             // 创建托盘菜单
