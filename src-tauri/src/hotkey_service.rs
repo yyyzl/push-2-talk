@@ -188,6 +188,15 @@ impl HotkeyService {
         }
     }
 
+    pub fn is_service_active(&self) -> bool {
+        self.is_active.load(Ordering::Relaxed)
+    }
+
+    pub fn resume(&self) {
+        self.reset_state();
+        self.is_active.store(true, Ordering::SeqCst);
+    }
+
     /// 将 rdev::Key 转换为 HotkeyKey
     #[cfg(not(target_os = "windows"))]
     fn rdev_to_hotkey_key(key: Key) -> Option<HotkeyKey> {

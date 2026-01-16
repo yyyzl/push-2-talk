@@ -2,18 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Core palette (Anthropic-inspired) */
+  --ink: #141413;
+  --paper: #FAF9F5;
+  --sand: #E8E6DC;
+  --stone: var(--sand); /* legacy: borders/dividers */
+  --stone-dark: #B0AEA5; /* legacy: secondary text */
+
+  /* Accents */
+  --crail: #D97757;
+  --steel: #6A9BCC;
+  --sage: #788C5D;
+
+  /* Legacy (kept to avoid churn) */
+  --indigo: var(--crail);
+  --panel: #F3F1E8;
+
+  /* Typography */
+  --font-sans: 'Poppins', 'Noto Sans SC', Arial, ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  --font-serif: 'Lora', 'Noto Serif SC', Georgia, ui-serif, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: var(--font-serif);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+  /* Subtle paper grain (no images; low contrast) */
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(20, 20, 19, 0.035) 0.75px, transparent 0),
+    radial-gradient(circle at 0 0, rgba(20, 20, 19, 0.02) 0.75px, transparent 0);
+  background-size: 18px 18px, 29px 29px;
+}
+
+::selection {
+  background: rgba(217, 119, 87, 0.35);
+  color: var(--ink);
+}
+
+::-moz-selection {
+  background: rgba(217, 119, 87, 0.35);
+  color: var(--ink);
+}
+
+/* Main app should allow selecting text anywhere. */
+#root,
+#root * {
+  -webkit-app-region: no-drag;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* UI controls use the geometric sans (Poppins) */
+button,
+input,
+select,
+textarea,
+label {
+  font-family: var(--font-sans);
+}
+
+/* Ensure form controls remain selectable even inside non-select regions */
+input,
+textarea,
+select,
+[contenteditable="true"],
+[contenteditable="plaintext-only"] {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* 在 index.css 中添加 */
@@ -24,8 +96,20 @@ code {
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background-color: rgba(156, 163, 175, 0.5);
+  background-color: var(--stone);
   border-radius: 20px;
+}
+
+/* Anthropic-like thin scrollbar (used by new 3-column shell) */
+.custom-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: var(--stone);
+  border-radius: 10px;
 }
 
 /* ==================== 悬浮窗专用样式 ==================== */
@@ -46,6 +130,16 @@ code {
   -webkit-user-select: none;
 }
 
+/* But keep inputs selectable (future-proof for overlay UI) */
+#overlay-root input,
+#overlay-root textarea,
+#overlay-root select,
+#overlay-root [contenteditable="true"],
+#overlay-root [contenteditable="plaintext-only"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* 根容器 */
 .overlay-root {
   width: 100%;
@@ -62,11 +156,12 @@ code {
   align-items: center;
   justify-content: center;
   padding: 4px 16px;
-  background: rgba(0, 0, 0, 0.95);
+  background: rgba(20, 20, 19, 0.95);
   border-radius: 22px;
   width: 120px;
   height: 44px;
   box-sizing: border-box;
+  font-family: var(--font-sans);
   /* 精致的阴影效果 */
   box-shadow:
     0 4px 20px rgba(0, 0, 0, 0.5),
@@ -160,7 +255,10 @@ code {
 .overlay-pill-locked {
   width: 160px;
   padding: 4px 8px;
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(29, 78, 216, 0.95));
+  background: linear-gradient(135deg, rgba(20, 20, 19, 0.96), rgba(25, 37, 55, 0.92));
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(106, 155, 204, 0.32);
 }
 
 /* 锁定控制容器 */
@@ -175,21 +273,25 @@ code {
 
 /* 按钮基础样式 - 36px 饱满按钮 */
 .locked-btn {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s;
   flex-shrink: 0;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .locked-btn:not(:disabled):hover {
   transform: scale(1.08);
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .locked-btn:not(:disabled):active {
@@ -203,14 +305,12 @@ code {
 
 /* 取消按钮 - 红色 */
 .locked-btn-cancel {
-  background: rgba(239, 68, 68, 1);
-  color: white;
+  color: rgba(248, 113, 113, 1);
 }
 
 /* 完成按钮 - 绿色 */
 .locked-btn-finish {
-  background: rgba(34, 197, 94, 1);
-  color: white;
+  color: rgba(74, 222, 128, 1);
 }
 
 /* 迷你声波 - 5 条紧凑布局 */

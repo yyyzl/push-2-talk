@@ -1934,6 +1934,25 @@ async fn reset_hotkey_state(app_handle: AppHandle) -> Result<String, String> {
     Ok("热键状态已重置".to_string())
 }
 
+/// 获取热键服务是否激活
+#[tauri::command]
+async fn get_hotkey_service_active(app_handle: AppHandle) -> Result<bool, String> {
+    let state = app_handle.state::<AppState>();
+    Ok(state.hotkey_service.is_service_active())
+}
+
+/// 设置热键服务是否激活（用于录制快捷键时临时屏蔽）
+#[tauri::command]
+async fn set_hotkey_service_active(app_handle: AppHandle, active: bool) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    if active {
+        state.hotkey_service.resume();
+    } else {
+        state.hotkey_service.deactivate();
+    }
+    Ok(())
+}
+
 /// 获取热键调试信息
 #[tauri::command]
 async fn get_hotkey_debug_info(app_handle: AppHandle) -> Result<String, String> {
@@ -2061,6 +2080,8 @@ pub fn run() {
             set_autostart,
             get_autostart,
             reset_hotkey_state,
+            get_hotkey_service_active,
+            set_hotkey_service_active,
             get_hotkey_debug_info,
         ])
         .run(tauri::generate_context!())
