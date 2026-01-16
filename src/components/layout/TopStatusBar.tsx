@@ -57,7 +57,7 @@ export function TopStatusBar({
   void canStart;
 
   return (
-    <div className="px-6 py-4 border-b border-[var(--stone)] flex items-center justify-between bg-[var(--paper)] font-sans">
+    <div className="px-6 py-3 border-b border-[var(--stone)] flex items-center justify-between bg-[var(--paper)] font-sans">
       <div
         className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
           isRecording

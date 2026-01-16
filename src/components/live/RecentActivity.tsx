@@ -16,7 +16,7 @@ export function RecentActivity({ history, onCopyText, onOpenHistory }: RecentAct
     <section className="space-y-3">
       <div className="flex items-center justify-between">
         <div className="text-xs font-bold text-stone-400 uppercase tracking-widest">
-          Recent Activity
+          最近
         </div>
         <button
           onClick={onOpenHistory}
@@ -45,9 +45,9 @@ export function RecentActivity({ history, onCopyText, onOpenHistory }: RecentAct
             return (
               <div
                 key={r.id}
-                className="bg-white border border-[var(--stone)] rounded-2xl p-5 hover:border-[rgba(176,174,165,0.75)] transition-colors group"
+                className="bg-white border border-[var(--stone)] rounded-2xl p-4 hover:border-[rgba(176,174,165,0.75)] transition-colors group"
               >
-                <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-center justify-between gap-3 mb-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-[10px] font-bold text-stone-300 mono flex items-center gap-1 shrink-0">
                       <Clock size={12} />

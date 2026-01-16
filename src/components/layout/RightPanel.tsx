@@ -63,7 +63,7 @@ export function RightPanel({
       ? dualHotkeyConfig.dictation.release_mode_keys
       : (["f2"] as HotkeyKey[]);
   return (
-    <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-6 gap-8 overflow-y-auto custom-scroll font-sans">
+    <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">

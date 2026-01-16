@@ -88,7 +88,7 @@ export function Sidebar({
 
         <div
           className={[
-            "pt-6 pb-2 px-3 text-[10px] font-bold uppercase tracking-[0.15em]",
+            "pt-5 pb-2 px-3 text-[10px] font-bold uppercase tracking-[0.15em]",
             "text-stone-400",
             sectionTitleClass,
           ].join(" ")}
@@ -143,7 +143,7 @@ export function Sidebar({
 
         <div
           className={[
-            "pt-6 pb-2 px-3 text-[10px] font-bold uppercase tracking-[0.15em]",
+            "pt-5 pb-2 px-3 text-[10px] font-bold uppercase tracking-[0.15em]",
             "text-stone-400",
             sectionTitleClass,
           ].join(" ")}
@@ -162,7 +162,7 @@ export function Sidebar({
 
         <div
           className={[
-            "pt-6 pb-2 px-3 text-[10px] font-bold uppercase tracking-[0.15em]",
+            "pt-5 pb-2 px-3 text-[10px] font-bold uppercase tracking-[0.15em]",
             "text-stone-400",
             sectionTitleClass,
           ].join(" ")}
