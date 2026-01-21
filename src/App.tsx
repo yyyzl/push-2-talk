@@ -48,7 +48,7 @@ function App() {
   );
   const [apiKey, setApiKey] = useState("");
   const [fallbackApiKey, setFallbackApiKey] = useState("");
-  
+
   const [asrConfig, setAsrConfig] = useState<AsrConfig>({
     credentials: {
       qwen_api_key: '',
@@ -105,6 +105,7 @@ function App() {
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
   const [enableMuteOtherApps, setEnableMuteOtherApps] = useState(false);
+  const [theme, setTheme] = useState("light");
   const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const {
@@ -249,6 +250,8 @@ function App() {
     setEnableAutostart,
     enableMuteOtherApps,
     setEnableMuteOtherApps,
+    theme,
+    setTheme,
     closeAction,
     setCloseAction,
     rememberChoice,
@@ -326,7 +329,7 @@ function App() {
     getVersion().then(v => {
       setCurrentVersion(v);
       localStorage.setItem('app_version', v);
-    }).catch(() => {});
+    }).catch(() => { });
 
     // 从 Tauri 后端加载统计数据
     loadUsageStats().then(stats => {
@@ -513,6 +516,8 @@ function App() {
         return (
           <PreferencesPage
             status={status}
+            theme={theme}
+            setTheme={setTheme}
             enableAutostart={enableAutostart}
             onToggleAutostart={() => {
               void handleAutostartToggle();
@@ -546,94 +551,93 @@ function App() {
       }}
     >
       <div className="h-screen w-full bg-[var(--paper)] text-[var(--ink)] font-serif flex">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
-        activePage={activePage}
-        onNavigate={navigate}
-        updateStatus={updateStatus}
-      />
-
-      <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
-        <TopStatusBar
-          status={status}
-          recordingTime={recordingTime}
-          formatTime={formatTime}
-          usageStats={usageStats}
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
+          activePage={activePage}
+          onNavigate={navigate}
+          updateStatus={updateStatus}
         />
 
-        <div className="flex-1 min-h-0 flex overflow-hidden">
-          <main className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scroll p-6">
-            {error && (
-              <div className="mx-auto max-w-3xl mb-6 flex items-center gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 text-sm font-semibold">
-                <AlertCircle size={18} />
-                <span>{error}</span>
-              </div>
+        <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
+          <TopStatusBar
+            status={status}
+            recordingTime={recordingTime}
+            formatTime={formatTime}
+            usageStats={usageStats}
+          />
+
+          <div className="flex-1 min-h-0 flex overflow-hidden">
+            <main className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scroll p-6">
+              {error && (
+                <div className="mx-auto max-w-3xl mb-6 flex items-center gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 text-sm font-semibold">
+                  <AlertCircle size={18} />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              {content}
+            </main>
+
+            {activePage === "dashboard" && (
+              <RightPanel
+                asrConfig={asrConfig}
+                setAsrConfig={setAsrConfig}
+                useRealtime={useRealtime}
+                setUseRealtime={setUseRealtime}
+                enablePostProcess={enablePostProcess}
+                setEnablePostProcess={setEnablePostProcess}
+                llmConfig={llmConfig}
+                setLlmConfig={setLlmConfig}
+                dualHotkeyConfig={dualHotkeyConfig}
+                dictionary={dictionary}
+                newWord={newWord}
+                setNewWord={setNewWord}
+                onAddWord={handleAddWord}
+                onNavigate={navigate}
+                isRunning={isConfigLocked}
+              />
             )}
-
-            {content}
-          </main>
-
-          {activePage === "dashboard" && (
-            <RightPanel
-              asrConfig={asrConfig}
-              setAsrConfig={setAsrConfig}
-              useRealtime={useRealtime}
-              setUseRealtime={setUseRealtime}
-              enablePostProcess={enablePostProcess}
-              setEnablePostProcess={setEnablePostProcess}
-              llmConfig={llmConfig}
-              setLlmConfig={setLlmConfig}
-              dualHotkeyConfig={dualHotkeyConfig}
-              dictionary={dictionary}
-              newWord={newWord}
-              setNewWord={setNewWord}
-              onAddWord={handleAddWord}
-              onNavigate={navigate}
-              isRunning={isConfigLocked}
-            />
-          )}
+          </div>
         </div>
+
+        <div
+          className={`fixed top-6 left-1/2 -translate-x-1/2 pointer-events-none transition-all duration-500 z-50 ${showSuccessToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-4"
+            }`}
+        >
+          <div className="bg-white/90 backdrop-blur text-emerald-700 px-4 py-2 rounded-full shadow-xl border border-emerald-100 flex items-center gap-2 text-sm font-bold">
+            <CheckCircle2 size={16} className="fill-emerald-100" />
+            <span>配置已保存成功</span>
+          </div>
+        </div>
+        {/* Close Confirmation Dialog */}
+        <CloseConfirmDialog
+          open={showCloseDialog}
+          rememberChoice={rememberChoice}
+          onRememberChoiceChange={setRememberChoice}
+          onDismiss={() => setShowCloseDialog(false)}
+          onResetRememberChoice={() => setRememberChoice(false)}
+          onCloseApp={() => { void handleCloseAction("close"); }}
+          onMinimizeToTray={() => { void handleCloseAction("minimize"); }}
+        />
+
+        {/* Update Modal */}
+        <UpdateModal
+          open={showUpdateModal}
+          updateInfo={updateInfo}
+          updateStatus={updateStatus}
+          downloadProgress={downloadProgress}
+          onDismiss={dismissUpdateModal}
+          onDownloadAndInstall={() => { void downloadAndInstall(); }}
+        />
+
+        {/* Global Toast */}
+        {copyToast && (
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-in fade-in zoom-in duration-200">
+            {copyToast}
+          </div>
+        )}
       </div>
-
-      <div
-        className={`fixed top-6 left-1/2 -translate-x-1/2 pointer-events-none transition-all duration-500 z-50 ${
-          showSuccessToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-4"
-        }`}
-      >
-        <div className="bg-white/90 backdrop-blur text-emerald-700 px-4 py-2 rounded-full shadow-xl border border-emerald-100 flex items-center gap-2 text-sm font-bold">
-          <CheckCircle2 size={16} className="fill-emerald-100" />
-          <span>配置已保存成功</span>
-        </div>
-      </div>
-      {/* Close Confirmation Dialog */}
-            <CloseConfirmDialog
-        open={showCloseDialog}
-        rememberChoice={rememberChoice}
-        onRememberChoiceChange={setRememberChoice}
-        onDismiss={() => setShowCloseDialog(false)}
-        onResetRememberChoice={() => setRememberChoice(false)}
-        onCloseApp={() => { void handleCloseAction("close"); }}
-        onMinimizeToTray={() => { void handleCloseAction("minimize"); }}
-      />
-
-      {/* Update Modal */}
-      <UpdateModal
-        open={showUpdateModal}
-        updateInfo={updateInfo}
-        updateStatus={updateStatus}
-        downloadProgress={downloadProgress}
-        onDismiss={dismissUpdateModal}
-        onDownloadAndInstall={() => { void downloadAndInstall(); }}
-      />
-
-      {/* Global Toast */}
-      {copyToast && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-in fade-in zoom-in duration-200">
-          {copyToast}
-        </div>
-      )}
-    </div>
     </ConfigSaveContext.Provider>
   );
 }

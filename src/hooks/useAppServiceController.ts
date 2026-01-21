@@ -59,6 +59,9 @@ export type UseAppServiceControllerParams = {
   enableMuteOtherApps: boolean;
   setEnableMuteOtherApps: React.Dispatch<React.SetStateAction<boolean>>;
 
+  theme: string;
+  setTheme: React.Dispatch<React.SetStateAction<string>>;
+
   closeAction: "close" | "minimize" | null;
   setCloseAction: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
 
@@ -98,6 +101,8 @@ export function useAppServiceController({
   setEnableAutostart,
   enableMuteOtherApps,
   setEnableMuteOtherApps,
+  theme,
+  setTheme,
   closeAction,
   setCloseAction,
   rememberChoice,
@@ -124,6 +129,7 @@ export function useAppServiceController({
       dualHotkeyConfig: DualHotkeyConfig;
       enableMuteOtherApps: boolean;
       dictionary: string[];
+      theme: string;
     }) => {
       await invoke<string>("start_app", payload);
     },
@@ -167,9 +173,9 @@ export function useAppServiceController({
       const backendCreds = config.asr_config?.credentials;
       const backendHasAnyCredential = Boolean(
         backendCreds?.qwen_api_key?.trim() ||
-          backendCreds?.sensevoice_api_key?.trim() ||
-          backendCreds?.doubao_app_id?.trim() ||
-          backendCreds?.doubao_access_token?.trim()
+        backendCreds?.sensevoice_api_key?.trim() ||
+        backendCreds?.doubao_app_id?.trim() ||
+        backendCreds?.doubao_access_token?.trim()
       );
 
       if (!backendHasAnyCredential) {
@@ -181,8 +187,8 @@ export function useAppServiceController({
 
             const activeProvider =
               parsedCache.active_provider === 'qwen' ||
-              parsedCache.active_provider === 'doubao' ||
-              parsedCache.active_provider === 'siliconflow'
+                parsedCache.active_provider === 'doubao' ||
+                parsedCache.active_provider === 'siliconflow'
                 ? parsedCache.active_provider
                 : 'qwen';
 
@@ -299,6 +305,7 @@ export function useAppServiceController({
       }
 
       setEnableMuteOtherApps(config.enable_mute_other_apps ?? false);
+      setTheme(config.theme || "light");
 
       const configDictionary =
         config.dictionary && Array.isArray(config.dictionary) ? config.dictionary : [];
@@ -330,6 +337,7 @@ export function useAppServiceController({
           dualHotkeyConfig: loadedDualHotkeyConfig,
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
           dictionary: loadedDictionary,
+          theme: config.theme || "light",
         });
         setStatus("running");
         setError(null);
@@ -371,6 +379,7 @@ export function useAppServiceController({
         dualHotkeyConfig,
         enableMuteOtherApps,
         dictionary: validDictionary,
+        theme,
       });
 
       setDictionary(validDictionary);
@@ -389,6 +398,7 @@ export function useAppServiceController({
           dualHotkeyConfig,
           enableMuteOtherApps,
           dictionary: validDictionary,
+          theme,
         });
       }
 
@@ -431,6 +441,7 @@ export function useAppServiceController({
     dualHotkeyConfig?: DualHotkeyConfig;
     enableMuteOtherApps?: boolean;
     dictionary?: string[];
+    theme?: string;
   }) => {
     // 先取消 debounce timer
     onBeforeImmediateSave?.();
@@ -445,6 +456,7 @@ export function useAppServiceController({
       const finalDualHotkeyConfig = overrides?.dualHotkeyConfig ?? dualHotkeyConfig;
       const finalEnableMuteOtherApps = overrides?.enableMuteOtherApps ?? enableMuteOtherApps;
       const finalDictionary = overrides?.dictionary ?? dictionary;
+      const finalTheme = overrides?.theme ?? theme;
       const validDictionary = finalDictionary.filter((w) => w.trim());
 
       await invoke<string>("save_config", {
@@ -459,9 +471,11 @@ export function useAppServiceController({
         dualHotkeyConfig: finalDualHotkeyConfig,
         enableMuteOtherApps: finalEnableMuteOtherApps,
         dictionary: validDictionary,
+        theme: finalTheme,
       });
 
       setDictionary(validDictionary);
+      if (overrides?.theme) setTheme(overrides.theme);
 
       if (status === "running") {
         await stopApp();
@@ -477,6 +491,7 @@ export function useAppServiceController({
           dualHotkeyConfig: finalDualHotkeyConfig,
           enableMuteOtherApps: finalEnableMuteOtherApps,
           dictionary: validDictionary,
+          theme: finalTheme,
         });
       }
 
@@ -537,6 +552,7 @@ export function useAppServiceController({
           dualHotkeyConfig,
           enableMuteOtherApps,
           dictionary,
+          theme,
         });
 
         await startApp({
@@ -551,6 +567,7 @@ export function useAppServiceController({
           dualHotkeyConfig,
           enableMuteOtherApps,
           dictionary,
+          theme,
         });
 
         setStatus("running");
@@ -608,6 +625,7 @@ export function useAppServiceController({
             dualHotkeyConfig,
             enableMuteOtherApps,
             dictionary,
+            theme,
           });
         } catch (err) {
           console.error("保存关闭配置失败:", err);

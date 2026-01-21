@@ -12,6 +12,9 @@ export type PreferencesPageProps = {
   enableMuteOtherApps: boolean;
   setEnableMuteOtherApps: (next: boolean) => void;
 
+  theme: string;
+  setTheme: (theme: string) => void;
+
   updateStatus: UpdateStatus;
   updateInfo: { version: string; notes?: string } | null;
   currentVersion: string;
@@ -25,6 +28,8 @@ export function PreferencesPage({
   onToggleAutostart,
   enableMuteOtherApps,
   setEnableMuteOtherApps,
+  theme,
+  setTheme,
   updateStatus,
   updateInfo,
   currentVersion,
@@ -84,6 +89,33 @@ export function PreferencesPage({
             checked={enableMuteOtherApps}
             onCheckedChange={setEnableMuteOtherApps}
             disabled={status === "recording" || status === "transcribing"}
+            size="sm"
+            variant="orange"
+          />
+        </div>
+
+        <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
+          <div className="flex items-center gap-3">
+            <div
+              className={[
+                "p-2 rounded-xl",
+                theme === "light"
+                  ? "bg-[rgba(217,119,87,0.12)] text-[var(--crail)]"
+                  : "bg-stone-800 text-stone-200",
+              ].join(" ")}
+            >
+              <div className="w-4 h-4 rounded-full border-2 border-current" />
+            </div>
+            <div>
+              <div className="text-sm font-bold text-[var(--ink)]">悬浮窗风格</div>
+              <div className="text-[11px] text-stone-400 font-semibold">
+                {theme === "light" ? "红朱 (Light)" : "墨色 (Dark)"}
+              </div>
+            </div>
+          </div>
+          <Toggle
+            checked={theme === "light"}
+            onCheckedChange={(checked) => setTheme(checked ? "light" : "dark")}
             size="sm"
             variant="orange"
           />

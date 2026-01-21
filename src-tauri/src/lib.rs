@@ -10,6 +10,7 @@ mod beep_player;
 mod clipboard_manager;
 mod config;
 mod hotkey_service;
+mod learning;
 mod llm_post_processor;
 mod openai_client;
 mod pipeline;
@@ -130,6 +131,7 @@ struct AppState {
 
 #[tauri::command]
 async fn save_config(
+    app: AppHandle,
     api_key: String,
     fallback_api_key: String,
     use_realtime: Option<bool>,
@@ -143,6 +145,7 @@ async fn save_config(
     assistant_config: Option<config::AssistantConfig>,
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
+    theme: Option<String>,
 ) -> Result<String, String> {
     tracing::info!("保存配置...");
 
@@ -223,11 +226,14 @@ async fn save_config(
         transcription_mode: existing.transcription_mode,
         enable_mute_other_apps: enable_mute_other_apps.unwrap_or(existing.enable_mute_other_apps),
         dictionary: final_dictionary,
+        theme: theme.unwrap_or(existing.theme),
     };
 
     config
         .save()
         .map_err(|e| format!("保存配置失败: {}", e))?;
+
+    let _ = app.emit("config_updated", &config);
 
     Ok("配置已保存".to_string())
 }

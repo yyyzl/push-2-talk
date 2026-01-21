@@ -157,26 +157,25 @@ select,
 }
 
 /* 胶囊形状容器 - Solid Matte (实体哑光) 风格 */
-/* 胶囊形状容器 - Solid Matte (实体哑光) 风格 */
 .overlay-pill {
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 4px 16px;
-  /* 纯正的 Ink 色 (暖黑) */
-  background: var(--ink);
-  /* 边框使用 Sand 色 (纸浆色) 的微弱不透明度，而非冷白 */
-  border: 1px solid rgba(232, 230, 220, 0.15);
+  /* 颠覆性反转：使用温暖的纸张背景 */
+  background: var(--paper);
+  /* 边框使用 Sand 色，模拟纸张边缘 */
+  border: 1px solid rgba(232, 230, 220, 1);
   border-radius: 24px;
   width: 120px;
   height: 48px;
   box-sizing: border-box;
   font-family: var(--font-sans);
 
-  /* 物理投影 - 锐利且深沉 */
+  /* 柔和的漫射投影，像纸片浮在桌上 */
   box-shadow:
-    0 4px 12px rgba(0, 0, 0, 0.4),
-    0 1px 2px rgba(0, 0, 0, 0.2);
+    0 8px 20px rgba(20, 20, 19, 0.12),
+    0 2px 6px rgba(20, 20, 19, 0.04);
 
   /* 平滑过渡动画 */
   transition: all 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -196,9 +195,9 @@ select,
   width: 3px;
   min-height: 3px;
   border-radius: 2px;
-  background: var(--paper);
-  /* 移除发光效果，保持哑光质感 */
-  opacity: 0.95;
+  /* 视觉焦点：朱砂红色 (Vermilion/Crail) */
+  background: var(--crail);
+  opacity: 1;
   transition: none !important;
   will-change: height;
 }
@@ -219,12 +218,13 @@ select,
   gap: 3px;
 }
 
-/* 单个点 */
+/* 单个点 - 使用深色 Ink */
 .dot {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(250, 249, 245, 0.8);
+  background: rgba(20, 20, 19, 0.4);
+  /* Ink 40% */
   animation: dot-pulse 1s ease-in-out infinite;
 }
 
@@ -242,11 +242,11 @@ select,
   }
 }
 
-/* 旋转太阳图标 */
+/* 旋转太阳图标 - 使用 Sand Dark */
 .spinner-icon {
   width: 18px;
   height: 18px;
-  color: var(--paper);
+  color: var(--stone-dark);
   opacity: 1;
   animation: spin 1.5s linear infinite;
 }
@@ -273,12 +273,13 @@ select,
   width: 170px;
   padding: 4px 10px;
   /* 纯正 Ink 背景 */
-  background: var(--ink);
+  background: var(--paper);
   /* Sand 色边框 */
-  border: 1px solid rgba(232, 230, 220, 0.15);
+  border: 1px solid rgba(232, 230, 220, 1);
+  /* 稍重的投影 */
   box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.5),
-    0 2px 4px rgba(0, 0, 0, 0.2);
+    0 12px 32px rgba(20, 20, 19, 0.15),
+    0 2px 8px rgba(20, 20, 19, 0.05);
 }
 
 /* 锁定控制容器 */
@@ -296,10 +297,9 @@ select,
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  /* Sand 色微弱边框 */
-  border: 1px solid rgba(232, 230, 220, 0.12);
-  /* 极其微弱的 Sand 色背景 */
-  background: rgba(232, 230, 220, 0.04);
+  /* 边框稍微深一点，保证在浅色背景可见 */
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  background: rgba(20, 20, 19, 0.03);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -310,20 +310,19 @@ select,
 
 .locked-btn:not(:disabled):hover {
   transform: scale(1.05);
-  /* Hover 时增强 Sand 色感 */
-  background: rgba(232, 230, 220, 0.1);
-  border-color: rgba(232, 230, 220, 0.25);
+  background: rgba(20, 20, 19, 0.06);
+  border-color: rgba(20, 20, 19, 0.15);
 }
 
 .locked-btn:not(:disabled):active {
   transform: scale(0.96);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(20, 20, 19, 0.08);
 }
 
 .locked-btn:disabled {
   cursor: not-allowed;
   opacity: 0.4;
-  border-color: rgba(255, 255, 255, 0.05);
+  border-color: rgba(20, 20, 19, 0.05);
 }
 
 /* 取消按钮 */
@@ -332,7 +331,8 @@ select,
 }
 
 .locked-btn-cancel:not(:disabled):hover {
-  color: #EFA690;
+  color: #C05F3F;
+  /* 深一点的 Crail */
   background: rgba(217, 119, 87, 0.12);
   border-color: rgba(217, 119, 87, 0.3);
   /* 边框也跟随变色 */
@@ -344,8 +344,9 @@ select,
 }
 
 .locked-btn-finish:not(:disabled):hover {
-  color: #A9BD8C;
-  background: rgba(120, 140, 93, 0.12);
+  color: #5F7A4D;
+  /* 深一点的 Sage */
+  background: rgba(120, 140, 93, 0.15);
   border-color: rgba(120, 140, 93, 0.3);
   /* 边框也跟随变色 */
 }
@@ -365,9 +366,10 @@ select,
   min-height: 3px;
   max-height: 26px;
   border-radius: 2px;
-  background: var(--paper);
-  /* 统一使用 Paper 色 */
-  opacity: 0.95;
+  /* 同样使用朱砂红 */
+  background: var(--crail);
+  opacity: 0.8;
+  /* 稍微淡一点，不抢按钮 */
   box-shadow: none;
   /* 关键：禁用 CSS transition，完全由 JS 控制动画 */
   transition: none !important;
@@ -377,6 +379,48 @@ select,
 
 
 /* ========== 更新通知红点动画 ========== */
+
+/* Dark Theme Variables for Overlay */
+.theme-dark {
+  --ink: #F2F0E9;
+  --paper: #1F1F1E;
+  /* Dark matte charcoal */
+  --sand: #2C2C2A;
+  --stone: #555550;
+  --crail: #E68A6E;
+  /* Lighter vermilion for dark mode */
+  --sage: #9CAD85;
+}
+
+.theme-dark .overlay-pill {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.45),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.theme-dark .overlay-pill-locked {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--paper);
+  /* Ensure it uses dark paper */
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.6),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.theme-dark .locked-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.theme-dark .locked-btn:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.theme-dark .dot {
+  background: rgba(255, 255, 255, 0.6);
+}
 
 @layer utilities {
   @keyframes pulse-scale {

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::collections::HashSet;
 use anyhow::Result;
 
+use crate::learning::store::{DictionaryEntry, DictionarySource};
+
 // ============================================================================
 // 热键触发模式
 // ============================================================================
@@ -426,6 +428,9 @@ pub struct AppConfig {
     /// AI 助手配置（新增）
     #[serde(default)]
     pub assistant_config: AssistantConfig,
+    /// 自动词库学习配置
+    #[serde(default)]
+    pub learning_config: LearningConfig,
     /// 关闭行为: "close" = 直接关闭, "minimize" = 最小化到托盘, None = 每次询问
     #[serde(default)]
     pub close_action: Option<String>,
@@ -441,9 +446,86 @@ pub struct AppConfig {
     /// 录音时自动静音其他应用
     #[serde(default)]
     pub enable_mute_other_apps: bool,
-    /// 个人词典（热词列表）
+    /// 个人词典（热词列表）- 支持来源标记和词频统计
+    #[serde(default, deserialize_with = "deserialize_dictionary")]
+    pub dictionary: Vec<DictionaryEntry>,
+    /// 悬浮窗主题 ("light" | "dark")
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+fn default_theme() -> String {
+    "light".to_string()
+}
+
+// ============================================================================
+// 自动词库学习配置
+// ============================================================================
+
+/// 自动词库学习配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningConfig {
+    /// 是否启用自动学习
     #[serde(default)]
-    pub dictionary: Vec<String>,
+    pub enabled: bool,
+    /// 观察期时长（秒），默认 15 秒
+    #[serde(default = "default_observation_duration_secs")]
+    pub observation_duration_secs: u64,
+    /// 独立的 LLM 端点（如果为 None，则使用通用 LLM 配置）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_endpoint: Option<String>,
+}
+
+fn default_observation_duration_secs() -> u64 {
+    15
+}
+
+impl Default for LearningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            observation_duration_secs: default_observation_duration_secs(),
+            llm_endpoint: None,
+        }
+    }
+}
+
+/// 词典反序列化函数（支持 Vec<String> 和 Vec<DictionaryEntry> 两种格式）
+fn deserialize_dictionary<'de, D>(deserializer: D) -> std::result::Result<Vec<DictionaryEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
+
+    match value {
+        serde_json::Value::Array(arr) => {
+            if arr.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // 检查第一个元素的类型
+            if arr[0].is_string() {
+                // 旧格式：Vec<String> -> 迁移为 Vec<DictionaryEntry>
+                let words: Vec<String> = arr
+                    .into_iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .filter(|w| !w.trim().is_empty())
+                    .collect();
+
+                Ok(words
+                    .into_iter()
+                    .map(|word| DictionaryEntry::new(word, DictionarySource::Manual))
+                    .collect())
+            } else {
+                // 新格式：Vec<DictionaryEntry>
+                serde_json::from_value(serde_json::Value::Array(arr))
+                    .map_err(|e| D::Error::custom(format!("解析词典失败: {}", e)))
+            }
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -680,12 +762,14 @@ impl AppConfig {
             llm_config: LlmConfig::default(),
             smart_command_config: SmartCommandConfig::default(),
             assistant_config: AssistantConfig::default(),
+            learning_config: LearningConfig::default(),
             close_action: None,
             hotkey_config: None,
             dual_hotkey_config: DualHotkeyConfig::default(),
             transcription_mode: TranscriptionMode::default(),
             enable_mute_other_apps: false,
             dictionary: Vec::new(),
+            theme: default_theme(),
         }
     }
 

@@ -85,6 +85,7 @@ export interface AppConfig {
   dual_hotkey_config: DualHotkeyConfig;
   enable_mute_other_apps: boolean;
   dictionary: string[];
+  theme: string;
 }
 
 // 转录结果

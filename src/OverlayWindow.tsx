@@ -1,8 +1,4 @@
-// src/OverlayWindow.tsx
-// 录音状态悬浮窗组件 - iOS风格的精美设计
-// v5: 物理液体感声波 - 正态分布 + 扩散波 + 随机扰动 + 自然下落
-// 优化：合并 RAF 循环，统一时间驱动
-
+import { AppConfig } from "./types";
 import { useState, useEffect, useRef } from "react";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -16,18 +12,16 @@ interface AudioLevelPayload {
 type OverlayStatus = "recording" | "transcribing";
 
 // 静音阈值常量（与后端 NOISE_FLOOR 对齐）
-// 低于此值视为静音，防止浮点数抖动导致的微小波动
 const SILENCE_THRESHOLD = 0.005;
 
 // Hook 返回类型
 interface AudioVisualizationState {
-  level: number;  // 平滑后的音频级别
-  time: number;   // 动画时间（用于波浪效果）
+  level: number;
+  time: number;
 }
 
 // ==========================================
 // 核心：高性能音频可视化 Hook
-// 单一 RAF 循环同时驱动音量平滑和波浪动画
 // ==========================================
 const useSmoothAudioLevel = (isRecording: boolean): AudioVisualizationState => {
   const [state, setState] = useState<AudioVisualizationState>({ level: 0, time: 0 });
@@ -36,12 +30,10 @@ const useSmoothAudioLevel = (isRecording: boolean): AudioVisualizationState => {
   const timeRef = useRef(0);
   const animationRef = useRef<number>(0);
 
-  // 监听后端数据
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
     const setup = async () => {
       unlisten = await listen<AudioLevelPayload>("audio_level_update", (event) => {
-        // 非线性映射：Math.pow(x, 0.45) 提升小音量表现
         targetRef.current = Math.min(Math.pow(event.payload.level, 0.45), 1.0);
       });
     };
@@ -49,9 +41,7 @@ const useSmoothAudioLevel = (isRecording: boolean): AudioVisualizationState => {
     return () => { if (unlisten) unlisten(); };
   }, []);
 
-  // 单一 60FPS 渲染循环 - 同时驱动音量平滑和波浪动画
   useEffect(() => {
-    // 不录音时：重置状态，不启动动画循环
     if (!isRecording) {
       cancelAnimationFrame(animationRef.current);
       currentRef.current = 0;
@@ -61,25 +51,16 @@ const useSmoothAudioLevel = (isRecording: boolean): AudioVisualizationState => {
       return;
     }
 
-    // 录音时：启动动画循环
     const animate = () => {
       const target = targetRef.current;
       const current = currentRef.current;
-
-      // 物理平滑 (Lerp)
-      // Attack (上升): 极快 (~0.5)，捕捉说话瞬间
-      // Release (下降): 较慢 (~0.06)，实现"慢慢掉下去"的物理质感
       const speed = target > current ? 0.5 : 0.06;
       currentRef.current += (target - current) * speed;
 
-      // 阈值截断：低于静音阈值强制归零，防止浮点数抖动
       if (currentRef.current < SILENCE_THRESHOLD) {
         currentRef.current = 0;
       }
 
-      // 时间递增（用于波浪动画）
-      // 循环重置：防止长时间运行后浮点精度问题
-      // Math.PI * 100 ≈ 314，足够长的周期避免视觉跳跃
       timeRef.current = (timeRef.current + 0.08) % (Math.PI * 100);
 
       setState({
@@ -101,7 +82,6 @@ const useSmoothAudioLevel = (isRecording: boolean): AudioVisualizationState => {
 // 组件部分
 // ==========================================
 
-// 声波条组件
 function WaveBar({ height }: { height: number }) {
   return (
     <div
@@ -111,52 +91,28 @@ function WaveBar({ height }: { height: number }) {
   );
 }
 
-// 声波动画组件 - 物理液体感
-// 正态分布 + 扩散波 + 随机扰动 + 自然下落
-// 优化：time 由父级 Hook 统一驱动，避免多个 RAF 循环
 function WaveformBars({ level, time }: { level: number; time: number }) {
   const minHeight = 3;
   const maxHeight = 28;
-
-  // 基础结构：正态分布（中间高，两边低）
-  // 索引:     0     1     2     3     4     5     6     7     8
-  // 距离:     4     3     2     1     0     1     2     3     4
   const baseScales = [0.3, 0.45, 0.65, 0.85, 1.0, 0.85, 0.65, 0.45, 0.3];
 
   return (
     <div className="wave-container">
       {baseScales.map((baseScale, i) => {
-        // 静音检测：level 为 0 时直接返回最小高度，保证绝对静止
-        // （Hook 已将低于 SILENCE_THRESHOLD 的值归零）
         if (level === 0) {
           return <WaveBar key={i} height={minHeight} />;
         }
-
-        // 计算到中心的距离（用于扩散波）
         const distanceFromCenter = Math.abs(i - 4);
-
-        // 1. 扩散波 (Flow)：从中间向两边传播
-        // sin(time - distance * phase) 模拟波从中心向外扩散
         const flowWave = Math.sin(time * 1.2 - distanceFromCenter * 0.6) * 0.15;
-
-        // 2. 随机扰动 (Turbulence)：打破对称感
-        // 关键：扰动幅度必须乘以 level，这样下落时扰动也会减弱
         const turbulence = Math.cos(time * 2.5 + i * 1.7) * 0.12 * level;
-
-        // 3. 组合所有因子
-        // 基础高度 + 扩散波 + 随机扰动，都乘以 level
         const dynamicScale = baseScale + flowWave * level + turbulence;
-
-        // 计算最终高度
         const height = minHeight + level * dynamicScale * (maxHeight - minHeight);
-
         return <WaveBar key={i} height={Math.max(minHeight, Math.min(maxHeight, height))} />;
       })}
     </div>
   );
 }
 
-// 转写加载组件
 function LoadingIndicator() {
   return (
     <div className="loading-container">
@@ -182,8 +138,6 @@ function LoadingIndicator() {
   );
 }
 
-// 松手模式控制组件 - 同样的物理液体感
-// 优化：time 由父级 Hook 统一驱动
 function LockedControls({
   onFinish,
   onCancel,
@@ -199,8 +153,6 @@ function LockedControls({
 }) {
   const minHeight = 3;
   const maxHeight = 26;
-
-  // 7条的正态分布（中间高，两边低）
   const baseScales = [0.35, 0.55, 0.8, 1.0, 0.8, 0.55, 0.35];
 
   return (
@@ -219,15 +171,12 @@ function LockedControls({
 
       <div className="locked-wave-mini">
         {baseScales.map((baseScale, i) => {
-          // 静音检测：level 为 0 时直接返回最小高度
-          // （Hook 已将低于 SILENCE_THRESHOLD 的值归零）
           if (level === 0) {
             return (
               <div key={i} className="wave-bar-mini" style={{ height: `${minHeight}px` }} />
             );
           }
-
-          const distanceFromCenter = Math.abs(i - 3);  // 7条时中心是索引3
+          const distanceFromCenter = Math.abs(i - 3);
           const flowWave = Math.sin(time * 1.2 - distanceFromCenter * 0.6) * 0.15;
           const turbulence = Math.cos(time * 2.5 + i * 1.7) * 0.12 * level;
           const dynamicScale = baseScale + flowWave * level + turbulence;
@@ -262,19 +211,24 @@ export default function OverlayWindow() {
   const [status, setStatus] = useState<OverlayStatus>("recording");
   const [isLocked, setIsLocked] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [theme, setTheme] = useState("light");
 
-  // 使用 Hook 获取平滑的音频级别和动画时间
   const { level: audioLevel, time: animationTime } = useSmoothAudioLevel(status === "recording");
+
+  useEffect(() => {
+    invoke<AppConfig>("get_config").then(config => {
+      setTheme(config.theme || "light");
+    }).catch(console.error);
+  }, []);
 
   useEffect(() => {
     const unlistenFns: UnlistenFn[] = [];
     let cancelled = false;
 
     const setup = async () => {
-      // 辅助函数：注册监听器并检查取消状态，解决 StrictMode 竞态条件
       const registerListener = async (
         event: string,
-        handler: () => void,
+        handler: (event: any) => void,
       ): Promise<boolean> => {
         const unlisten = await listen(event, handler);
         if (cancelled) {
@@ -284,6 +238,11 @@ export default function OverlayWindow() {
         unlistenFns.push(unlisten);
         return true;
       };
+
+      if (!(await registerListener("config_updated", (event) => {
+        const config = event.payload as AppConfig;
+        setTheme(config.theme || "light");
+      }))) return;
 
       if (!(await registerListener("recording_started", () => {
         setStatus("recording");
@@ -332,7 +291,6 @@ export default function OverlayWindow() {
     };
   }, []);
 
-  // 超时保护机制
   useEffect(() => {
     if (status === "transcribing") {
       const timeout = setTimeout(async () => {
@@ -350,7 +308,6 @@ export default function OverlayWindow() {
     }
   }, [status]);
 
-  // 松手模式超时保护
   useEffect(() => {
     if (isLocked && !isSubmitting) {
       const timeout = setTimeout(async () => {
@@ -389,7 +346,7 @@ export default function OverlayWindow() {
   };
 
   return (
-    <div className="overlay-root">
+    <div className={`overlay-root ${theme === "dark" ? "theme-dark" : "theme-light"}`}>
       <div className={`overlay-pill ${isLocked ? 'overlay-pill-locked' : ''}`}>
         {status === "recording" ? (
           isLocked ? (
