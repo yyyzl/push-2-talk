@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { AlertCircle, MessageSquareQuote, Plus, Trash2 } from "lucide-react";
 import type { LlmConfig, LlmPreset } from "../types";
-import { ApiKeyInput } from "../components/common";
+import { LlmConnectionConfig } from "../components/common";
 
 export type LlmPageProps = {
   llmConfig: LlmConfig;
@@ -10,9 +10,7 @@ export type LlmPageProps = {
   handleAddPreset: () => void;
   handleDeletePreset: (id: string) => void;
   handleUpdateActivePreset: (key: keyof LlmPreset, value: string) => void;
-
-  showApiKey: boolean;
-  setShowApiKey: (next: boolean) => void;
+  onNavigateToModels?: () => void;
   isRunning: boolean;
 };
 
@@ -23,8 +21,7 @@ export function LlmPage({
   handleAddPreset,
   handleDeletePreset,
   handleUpdateActivePreset,
-  showApiKey,
-  setShowApiKey,
+  onNavigateToModels,
   isRunning,
 }: LlmPageProps) {
   return (
@@ -125,42 +122,12 @@ export function LlmPage({
               <div className="h-px bg-[var(--stone)]" />
 
               <div className="space-y-4">
-                <h4 className="text-xs font-bold text-stone-400 uppercase tracking-widest">模型设置</h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2 space-y-2">
-                    <label className="text-xs font-bold text-stone-500">API Key</label>
-                    <ApiKeyInput
-                      value={llmConfig.api_key}
-                      onChange={(value) => setLlmConfig({ ...llmConfig, api_key: value })}
-                      show={showApiKey}
-                      onToggleShow={() => setShowApiKey(!showApiKey)}
-                      placeholder="sk-..."
-                      inputClassName="bg-[var(--paper)] text-sm focus:ring-0 focus:border-[var(--steel)]"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-stone-500">模型名称</label>
-                    <input
-                      type="text"
-                      value={llmConfig.model}
-                      disabled={isRunning}
-                      onChange={(e) => setLlmConfig({ ...llmConfig, model: e.target.value })}
-                      className="w-full px-3 py-2.5 bg-[var(--paper)] border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] disabled:opacity-60"
-                      placeholder="glm-4-flash"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-stone-500">API 地址</label>
-                    <input
-                      type="text"
-                      value={llmConfig.endpoint}
-                      disabled={isRunning}
-                      onChange={(e) => setLlmConfig({ ...llmConfig, endpoint: e.target.value })}
-                      className="w-full px-3 py-2.5 bg-[var(--paper)] border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] disabled:opacity-60"
-                      placeholder="https://api..."
-                    />
-                  </div>
-                </div>
+                <h4 className="text-xs font-bold text-stone-400 uppercase tracking-widest">LLM 连接配置</h4>
+                <LlmConnectionConfig
+                  sharedConfig={llmConfig.shared}
+                  featureName="polishing"
+                  onNavigateToModels={onNavigateToModels}
+                />
               </div>
             </div>
           </section>

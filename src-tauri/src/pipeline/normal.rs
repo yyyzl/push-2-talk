@@ -10,6 +10,8 @@ use anyhow::Result;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
+use crate::config::AppConfig;
+use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::text_inserter::TextInserter;
 use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
@@ -67,7 +69,23 @@ impl NormalPipeline {
         // 4. 插入文本
         let inserted = Self::insert_text(text_inserter, &final_text);
 
-        // 5. 返回结果
+        // 5. 触发学习观察（如果启用且插入成功）
+        if inserted {
+            if let Some(hwnd) = target_hwnd {
+                if let Ok((config, _)) = AppConfig::load() {
+                    if config.learning_config.enabled {
+                        start_learning_observation(
+                            app.clone(),
+                            final_text.clone(),
+                            hwnd,
+                            config.learning_config,
+                        );
+                    }
+                }
+            }
+        }
+
+        // 6. 返回结果
         Ok(PipelineResult::success(
             final_text,
             original_text,

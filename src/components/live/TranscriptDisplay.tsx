@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type MouseEvent, type RefObject } from "react";
-import { Activity, Copy, Mic, Wand2, ChevronDown, ChevronUp } from "lucide-react";
+import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp } from "lucide-react";
 
 export type TranscriptDisplayProps = {
   transcript: string;
@@ -185,7 +185,7 @@ export function TranscriptDisplay({
             <div className="flex flex-col">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs text-[var(--crail)] flex items-center gap-1">
-                  <Wand2 size={12} />
+                  {currentMode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
                   {currentMode === "assistant"
                     ? "AI 助手"
                     : `${activePresetName || "智能"}润色`}

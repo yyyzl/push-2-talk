@@ -1,7 +1,10 @@
-import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX } from "lucide-react";
-import type { AppStatus, UpdateStatus } from "../types";
-import { Toggle } from "../components/common";
+import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
+import { Toggle, ThemeSelector, LlmConnectionConfig } from "../components/common";
 import { RedDot } from "../components/common/RedDot";
+import { SettingsModal } from "../components/modals/SettingsModal";
 
 export type PreferencesPageProps = {
   status: AppStatus;
@@ -13,13 +16,16 @@ export type PreferencesPageProps = {
   setEnableMuteOtherApps: (next: boolean) => void;
 
   theme: string;
-  setTheme: (theme: string) => void;
+  setTheme: (theme: string) => Promise<void>;
 
   updateStatus: UpdateStatus;
   updateInfo: { version: string; notes?: string } | null;
   currentVersion: string;
   onCheckUpdate: () => void;
   onDownloadAndInstall: () => void;
+
+  sharedConfig: SharedLlmConfig;
+  onNavigateToModels?: () => void;
 };
 
 export function PreferencesPage({
@@ -35,8 +41,58 @@ export function PreferencesPage({
   currentVersion,
   onCheckUpdate,
   onDownloadAndInstall,
+  sharedConfig,
+  onNavigateToModels,
 }: PreferencesPageProps) {
   const canInstallUpdate = updateStatus === "available" || updateStatus === "downloading";
+
+  // 自动学习配置状态
+  const [learningEnabled, setLearningEnabled] = useState(false);
+  const [_learningConfig, setLearningConfig] = useState<LearningConfig | null>(null);
+  const [isLoadingLearning, setIsLoadingLearning] = useState(true);
+  const [learningConfigModalOpen, setLearningConfigModalOpen] = useState(false);
+
+  // 加载自动学习配置
+  useEffect(() => {
+    const loadLearningConfig = async () => {
+      try {
+        const config = await invoke<{ learning_config: LearningConfig }>("load_config");
+        const lc = config.learning_config;
+        setLearningEnabled(lc?.enabled ?? false);
+        setLearningConfig(lc);
+      } catch (error) {
+        console.error("加载自动学习配置失败:", error);
+      } finally {
+        setIsLoadingLearning(false);
+      }
+    };
+    loadLearningConfig();
+  }, []);
+
+  // 切换自动学习开关
+  const handleToggleLearning = async () => {
+    const newValue = !learningEnabled;
+    setLearningEnabled(newValue);
+
+    try {
+      const config = await invoke<any>("load_config");
+      const updatedLearningConfig = {
+        ...config.learning_config,
+        enabled: newValue,
+      };
+
+      await invoke("save_config", {
+        apiKey: config.dashscope_api_key || config.asr_config?.credentials?.qwen_api_key || "",
+        fallbackApiKey: config.siliconflow_api_key || config.asr_config?.credentials?.sensevoice_api_key || "",
+        learningConfig: updatedLearningConfig,
+      });
+
+      setLearningConfig(updatedLearningConfig);
+    } catch (error) {
+      console.error("保存自动学习配置失败:", error);
+      setLearningEnabled(!newValue); // 回滚
+    }
+  };
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 font-sans">
@@ -99,6 +155,73 @@ export function PreferencesPage({
             <div
               className={[
                 "p-2 rounded-xl",
+                learningEnabled
+                  ? "bg-[rgba(120,140,93,0.12)] text-[var(--sage)]"
+                  : "bg-white border border-[var(--stone)] text-stone-500",
+              ].join(" ")}
+            >
+              <GraduationCap size={16} />
+            </div>
+            <div>
+              <div className="text-sm font-bold text-[var(--ink)]">自动词库学习</div>
+              <div className="text-[11px] text-stone-400 font-semibold">
+                {learningEnabled ? "AI 自动识别专业术语" : "手动管理词库"}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {learningEnabled && (
+              <button
+                onClick={() => setLearningConfigModalOpen(true)}
+                className="p-2 rounded-xl text-stone-400 hover:bg-white hover:text-[var(--ink)] hover:shadow-sm border border-transparent hover:border-[var(--stone)] transition-all"
+                title="配置自动学习"
+              >
+                <Settings2 size={18} />
+              </button>
+            )}
+            <div className="h-6 w-px bg-[var(--stone)] mx-1" />
+            <Toggle
+              checked={learningEnabled}
+              onCheckedChange={handleToggleLearning}
+              disabled={isLoadingLearning || status === "recording" || status === "transcribing"}
+              size="sm"
+              variant="green"
+            />
+          </div>
+        </div>
+
+        <SettingsModal
+          open={learningConfigModalOpen}
+          onDismiss={() => setLearningConfigModalOpen(false)}
+          title="自动词库学习配置"
+        >
+          <div className="space-y-4">
+            <div className="p-4 bg-[rgba(120,140,93,0.08)] border border-[rgba(120,140,93,0.15)] rounded-2xl">
+              <p className="text-sm text-[var(--ink)] leading-relaxed">
+                开启此功能后，AI 将自动分析您的语音输入，识别并提取专业术语、人名和地名，自动添加到您的个人词库中，提高后续识别的准确率。
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold text-stone-500 uppercase tracking-widest">LLM 连接配置</h4>
+              <LlmConnectionConfig
+                sharedConfig={sharedConfig}
+                featureName="learning"
+                onNavigateToModels={() => {
+                  setLearningConfigModalOpen(false);
+                  onNavigateToModels?.();
+                }}
+              />
+            </div>
+          </div>
+        </SettingsModal>
+
+        <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
+          <div className="flex items-center gap-3">
+            <div
+              className={[
+                "p-2 rounded-xl",
                 theme === "light"
                   ? "bg-[rgba(217,119,87,0.12)] text-[var(--crail)]"
                   : "bg-stone-800 text-stone-200",
@@ -109,15 +232,17 @@ export function PreferencesPage({
             <div>
               <div className="text-sm font-bold text-[var(--ink)]">悬浮窗风格</div>
               <div className="text-[11px] text-stone-400 font-semibold">
-                {theme === "light" ? "红朱 (Light)" : "墨色 (Dark)"}
+                选择录音指示器外观
               </div>
             </div>
           </div>
-          <Toggle
-            checked={theme === "light"}
-            onCheckedChange={(checked) => setTheme(checked ? "light" : "dark")}
-            size="sm"
-            variant="orange"
+          <ThemeSelector
+            value={theme}
+            onChange={(newTheme) => {
+              console.log("[PreferencesPage] 切换主题:", newTheme);
+              setTheme(newTheme);
+            }}
+            disabled={status === "recording" || status === "transcribing"}
           />
         </div>
 

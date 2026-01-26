@@ -34,6 +34,7 @@ import { useLlmPresets } from "./hooks/useLlmPresets";
 import { useUpdater } from "./hooks/useUpdater";
 import { DashboardPage } from "./pages/DashboardPage";
 import { AsrPage } from "./pages/AsrPage";
+import { ModelsPage } from "./pages/ModelsPage";
 import { LlmPage } from "./pages/LlmPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
@@ -90,6 +91,7 @@ function App() {
     handleStartEdit,
     handleSaveEdit,
     handleCancelEdit,
+    handleBatchDelete,
   } = useDictionary();
   const {
     history,
@@ -100,7 +102,8 @@ function App() {
     handleClearHistory,
   } = useHistoryController();
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
-  const [showApiKey, setShowApiKey] = useState(false);
+  const [showAsrApiKey, setShowAsrApiKey] = useState(false);
+  const [showModelsApiKey, setShowModelsApiKey] = useState(false);
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
@@ -376,12 +379,16 @@ function App() {
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
   useEffect(() => {
+    console.log("[App.tsx] 自动保存 useEffect 触发, theme=", theme, "hasLoaded=", hasLoadedConfigRef.current, "skip=", skipNextAutoSaveRef.current);
     if (!hasLoadedConfigRef.current) return;
     if (status === "recording" || status === "transcribing") return;
     if (skipNextAutoSaveRef.current) {
       skipNextAutoSaveRef.current = false;
+      console.log("[App.tsx] 跳过本次自动保存 (skipNextAutoSaveRef)");
       return;
     }
+
+    console.log("[App.tsx] 准备 debounce 保存配置, theme=", theme);
 
     if (autoSaveTimerRef.current) {
       window.clearTimeout(autoSaveTimerRef.current);
@@ -392,6 +399,7 @@ function App() {
       // Skip one follow-up auto-save to avoid save loops.
       skipNextAutoSaveRef.current = true;
       if (statusRef.current === "recording" || statusRef.current === "transcribing") return;
+      console.log("[App.tsx] debounce 到期，执行 handleSaveConfig");
       void handleSaveConfigRef.current();
     }, 900);
 
@@ -408,6 +416,7 @@ function App() {
     enableMuteOtherApps,
     closeAction,
     dualHotkeyConfig,
+    theme,
   ]);
 
   const formatTime = (seconds: number): string => {
@@ -446,8 +455,24 @@ function App() {
           <AsrPage
             asrConfig={asrConfig}
             setAsrConfig={setAsrConfig}
-            showApiKey={showApiKey}
-            setShowApiKey={setShowApiKey}
+            showApiKey={showAsrApiKey}
+            setShowApiKey={setShowAsrApiKey}
+            isRunning={isConfigLocked}
+          />
+        );
+      case "models":
+        return (
+          <ModelsPage
+            sharedConfig={llmConfig.shared}
+            setSharedConfig={(newShared) => {
+              if (typeof newShared === 'function') {
+                setLlmConfig((prev) => ({ ...prev, shared: newShared(prev.shared) }));
+              } else {
+                setLlmConfig((prev) => ({ ...prev, shared: newShared }));
+              }
+            }}
+            showApiKey={showModelsApiKey}
+            setShowApiKey={setShowModelsApiKey}
             isRunning={isConfigLocked}
           />
         );
@@ -460,8 +485,7 @@ function App() {
             handleAddPreset={handleAddPreset}
             handleDeletePreset={handleDeletePreset}
             handleUpdateActivePreset={handleUpdateActivePreset}
-            showApiKey={showApiKey}
-            setShowApiKey={setShowApiKey}
+            onNavigateToModels={() => setActivePage("models")}
             isRunning={isConfigLocked}
           />
         );
@@ -470,8 +494,8 @@ function App() {
           <AssistantPage
             assistantConfig={assistantConfig}
             setAssistantConfig={setAssistantConfig}
-            showApiKey={showApiKey}
-            setShowApiKey={setShowApiKey}
+            sharedConfig={llmConfig.shared}
+            onNavigateToModels={() => setActivePage("models")}
             isRunning={isConfigLocked}
           />
         );
@@ -491,6 +515,7 @@ function App() {
             handleStartEdit={handleStartEdit}
             handleSaveEdit={handleSaveEdit}
             handleCancelEdit={handleCancelEdit}
+            handleBatchDelete={handleBatchDelete}
             isRunning={isConfigLocked}
           />
         );
@@ -517,7 +542,11 @@ function App() {
           <PreferencesPage
             status={status}
             theme={theme}
-            setTheme={setTheme}
+            setTheme={async (newTheme) => {
+              console.log("[App.tsx] setTheme 被调用, newTheme=", newTheme);
+              setTheme(newTheme);
+              await wrappedSaveImmediately({ theme: newTheme });
+            }}
             enableAutostart={enableAutostart}
             onToggleAutostart={() => {
               void handleAutostartToggle();
@@ -533,6 +562,8 @@ function App() {
             onDownloadAndInstall={() => {
               void downloadAndInstall();
             }}
+            sharedConfig={llmConfig.shared}
+            onNavigateToModels={() => setActivePage("models")}
           />
         );
       case "help":

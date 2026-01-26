@@ -53,10 +53,47 @@ export interface LlmPreset {
   system_prompt: string;
 }
 
-export interface LlmConfig {
+// LLM 提供商配置
+export interface LlmProvider {
+  id: string;  // 唯一标识，如 "zhipu", "openai"
+  name: string;  // 显示名称，如 "智谱AI", "OpenAI"
   endpoint: string;
-  model: string;
   api_key: string;
+  default_model: string;
+}
+
+// 共享 LLM 配置（重构：支持多提供商）
+export interface SharedLlmConfig {
+  providers: LlmProvider[];  // 提供商列表
+  default_provider_id: string;  // 默认提供商 ID
+  // 功能默认绑定（可选，留空则使用 default_provider_id）
+  polishing_provider_id?: string;
+  polishing_model?: string;
+  assistant_provider_id?: string;
+  assistant_model?: string;
+  learning_provider_id?: string;
+  learning_model?: string;
+
+  // 向后兼容字段（用于迁移）
+  endpoint?: string;
+  api_key?: string;
+  default_model?: string;
+}
+
+// 功能特定 LLM 配置
+export interface LlmFeatureConfig {
+  use_shared: boolean;
+  // 如果 use_shared=true，可选覆盖
+  provider_id?: string;  // 覆盖提供商
+  model?: string;  // 覆盖模型
+  // 如果 use_shared=false，完全独立配置
+  endpoint?: string;
+  api_key?: string;
+}
+
+export interface LlmConfig {
+  shared: SharedLlmConfig;
+  feature_override: LlmFeatureConfig;
   presets: LlmPreset[];
   active_preset_id: string;
 }
@@ -64,9 +101,7 @@ export interface LlmConfig {
 // AI 助手配置（双系统提示词）
 export interface AssistantConfig {
   enabled: boolean;
-  endpoint: string;
-  model: string;
-  api_key: string;
+  llm: LlmFeatureConfig;
   qa_system_prompt: string;               // 问答模式提示词（无选中文本时）
   text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
 }
@@ -80,12 +115,23 @@ export interface AppConfig {
   enable_llm_post_process: boolean;
   llm_config: LlmConfig;
   assistant_config: AssistantConfig;
+  learning_config: LearningConfig;
   close_action: "close" | "minimize" | null;
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;
   enable_mute_other_apps: boolean;
-  dictionary: string[];
+  dictionary: string[];  // 简化格式："word" 或 "word|auto"
   theme: string;
+}
+
+// 词库条目
+export interface DictionaryEntry {
+  id: string;
+  word: string;
+  source: "manual" | "auto";
+  added_at: number;  // Unix timestamp (seconds)
+  frequency: number;
+  last_used_at: number | null;  // Unix timestamp (seconds)
 }
 
 // 转录结果
@@ -142,3 +188,26 @@ export interface UsageStats {
 
 // 热键录制模式
 export type HotkeyRecordingMode = 'dictation' | 'assistant' | 'release';
+
+// ============================================================================
+// 自动词库学习相关类型
+// ============================================================================
+
+/** 学习配置 */
+export interface LearningConfig {
+  enabled: boolean;
+  observation_duration_secs: number;
+  llm_endpoint: string | null;  // 保留用于向后兼容
+  feature_override: LlmFeatureConfig;
+}
+
+/** 词库学习建议 */
+export interface VocabularyLearningSuggestion {
+  id: string;
+  word: string;
+  original: string;
+  corrected: string;
+  context: string;
+  category: 'proper_noun' | 'term' | 'frequent';
+  reason: string;
+}

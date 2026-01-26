@@ -1,11 +1,11 @@
-import type { MouseEvent } from "react";
-import { Bot, Clock, Copy, History, Trash2, Wand2, Mic } from "lucide-react";
+import { MessageSquare, Clock, Copy, History, Trash2, Sparkles, Mic } from "lucide-react";
 import type { HistoryRecord } from "../types";
 import { formatTimestamp } from "../utils";
+import type { MouseEvent as ReactMouseEvent } from "react";
 
 export type HistoryPageProps = {
   history: HistoryRecord[];
-  onCopyText: (text: string, e?: MouseEvent) => void;
+  onCopyText: (text: string, e?: ReactMouseEvent) => void;
   onClear: () => void;
 };
 
@@ -92,16 +92,14 @@ export function HistoryPage({ history, onCopyText, onClear }: HistoryPageProps) 
                         <p className="text-xs text-stone-600 line-clamp-4 leading-relaxed">{record.originalText}</p>
                       </div>
 
-                      <div className={`flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] ${
-                        record.mode === "assistant"
+                      <div className={`flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] ${record.mode === "assistant"
                           ? "bg-[rgba(59,130,246,0.08)]"
                           : "bg-[rgba(217,119,87,0.08)]"
-                      }`}>
+                        }`}>
                         <div className="flex items-center justify-between mb-2">
-                          <div className={`text-xs font-semibold tracking-wide flex items-center gap-1.5 ${
-                            record.mode === "assistant" ? "text-blue-500" : "text-[var(--crail)]"
-                          }`}>
-                            {record.mode === "assistant" ? <Bot size={12} /> : <Wand2 size={12} />}
+                          <div className={`text-xs font-semibold tracking-wide flex items-center gap-1.5 ${record.mode === "assistant" ? "text-blue-500" : "text-[var(--crail)]"
+                            }`}>
+                            {record.mode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
                             {record.mode === "assistant" ? "AI 助手" : (record.presetName || "润色后")}
                           </div>
                           <button

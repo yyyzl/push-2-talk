@@ -380,46 +380,89 @@ select,
 
 /* ========== 更新通知红点动画 ========== */
 
-/* Dark Theme Variables for Overlay */
-.theme-dark {
-  --ink: #F2F0E9;
-  --paper: #1F1F1E;
-  /* Dark matte charcoal */
-  --sand: #2C2C2A;
-  --stone: #555550;
-  --crail: #E68A6E;
-  /* Lighter vermilion for dark mode */
-  --sage: #9CAD85;
-}
+/* ========================================
+   Dark Theme (墨色) - 回滚到 85f874a 版本设计
+   经典暗色风格：Ink 背景 + Paper 声波条
+   ======================================== */
 
+/* 暗色主题胶囊 - Solid Matte 哑光黑 */
 .theme-dark .overlay-pill {
-  border-color: rgba(255, 255, 255, 0.12);
+  /* 纯正的 Ink 色 (暖黑) */
+  background: #141413;
+  /* 边框使用 Sand 色 (纸浆色) 的微弱不透明度 */
+  border: 1px solid rgba(232, 230, 220, 0.15);
+  /* 物理投影 - 锐利且深沉 */
   box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.45),
-    0 2px 8px rgba(0, 0, 0, 0.2);
+    0 4px 12px rgba(0, 0, 0, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
+/* 暗色主题声波条 - 使用 Paper 色 (乳白) */
+.theme-dark .wave-bar {
+  background: #FAF9F5;
+  opacity: 0.95;
+}
+
+/* 暗色主题加载点 - 浅色 */
+.theme-dark .dot {
+  background: rgba(250, 249, 245, 0.8);
+}
+
+/* 暗色主题旋转图标 - Paper 色 */
+.theme-dark .spinner-icon {
+  color: #FAF9F5;
+}
+
+/* 暗色主题锁定模式 */
 .theme-dark .overlay-pill-locked {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: var(--paper);
-  /* Ensure it uses dark paper */
+  background: #141413;
+  border: 1px solid rgba(232, 230, 220, 0.15);
   box-shadow:
-    0 12px 40px rgba(0, 0, 0, 0.6),
-    0 4px 12px rgba(0, 0, 0, 0.3);
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
+/* 暗色主题按钮 */
 .theme-dark .locked-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(250, 249, 245, 0.06);
+  border: 1px solid rgba(232, 230, 220, 0.12);
 }
 
 .theme-dark .locked-btn:not(:disabled):hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(250, 249, 245, 0.1);
+  border-color: rgba(232, 230, 220, 0.2);
 }
 
-.theme-dark .dot {
-  background: rgba(255, 255, 255, 0.6);
+.theme-dark .locked-btn:not(:disabled):active {
+  background: rgba(250, 249, 245, 0.08);
+}
+
+/* 暗色主题取消按钮 - 使用亮化的 Crail */
+.theme-dark .locked-btn-cancel {
+  color: #E68A6E;
+}
+
+.theme-dark .locked-btn-cancel:not(:disabled):hover {
+  color: #F09A7E;
+  background: rgba(230, 138, 110, 0.15);
+  border-color: rgba(230, 138, 110, 0.3);
+}
+
+/* 暗色主题完成按钮 - 使用亮化的 Sage */
+.theme-dark .locked-btn-finish {
+  color: #9CAD85;
+}
+
+.theme-dark .locked-btn-finish:not(:disabled):hover {
+  color: #ACBD95;
+  background: rgba(156, 173, 133, 0.15);
+  border-color: rgba(156, 173, 133, 0.3);
+}
+
+/* 暗色主题迷你声波条 */
+.theme-dark .wave-bar-mini {
+  background: #FAF9F5;
+  opacity: 0.85;
 }
 
 @layer utilities {
@@ -438,4 +481,24 @@ select,
   .animate-pulse-scale {
     animation: pulse-scale 1.5s ease-in-out infinite;
   }
+}
+
+.kbd-shortcut {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 6px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--ink);
+    background: white;
+    border: 1px solid var(--stone-dark);
+    border-radius: 6px;
+    box-shadow: 0 2px 0 var(--stone-dark);
+    margin: 0 2px;
+    vertical-align: middle;
 }

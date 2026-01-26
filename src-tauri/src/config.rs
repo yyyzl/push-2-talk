@@ -3,9 +3,29 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::collections::HashSet;
+use std::sync::Mutex;
 use anyhow::Result;
 
-use crate::learning::store::{DictionaryEntry, DictionarySource};
+// 词典相关函数已移至 learning::store 模块
+
+// ============================================================================
+// 全局配置操作锁
+// ============================================================================
+
+lazy_static::lazy_static! {
+    /// 全局配置操作锁
+    ///
+    /// 保护所有 config 的读写操作，防止并发 load->modify->save 导致的数据丢失
+    ///
+    /// 使用方式：
+    /// ```
+    /// let _guard = CONFIG_LOCK.lock().unwrap();
+    /// let (mut config, _) = AppConfig::load()?;
+    /// // 修改 config...
+    /// config.save()?;
+    /// ```
+    pub static ref CONFIG_LOCK: Mutex<()> = Mutex::new(());
+}
 
 // ============================================================================
 // 热键触发模式
@@ -446,9 +466,9 @@ pub struct AppConfig {
     /// 录音时自动静音其他应用
     #[serde(default)]
     pub enable_mute_other_apps: bool,
-    /// 个人词典（热词列表）- 支持来源标记和词频统计
-    #[serde(default, deserialize_with = "deserialize_dictionary")]
-    pub dictionary: Vec<DictionaryEntry>,
+    /// 个人词典（热词列表）- 简化格式："word" 或 "word|auto"
+    #[serde(default)]
+    pub dictionary: Vec<String>,
     /// 悬浮窗主题 ("light" | "dark")
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -472,8 +492,12 @@ pub struct LearningConfig {
     #[serde(default = "default_observation_duration_secs")]
     pub observation_duration_secs: u64,
     /// 独立的 LLM 端点（如果为 None，则使用通用 LLM 配置）
+    /// 保留用于向后兼容
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_endpoint: Option<String>,
+    /// LLM 配置（使用共享或独立）
+    #[serde(default)]
+    pub feature_override: LlmFeatureConfig,
 }
 
 fn default_observation_duration_secs() -> u64 {
@@ -486,45 +510,20 @@ impl Default for LearningConfig {
             enabled: false,
             observation_duration_secs: default_observation_duration_secs(),
             llm_endpoint: None,
+            feature_override: LlmFeatureConfig::default(),
         }
     }
 }
 
-/// 词典反序列化函数（支持 Vec<String> 和 Vec<DictionaryEntry> 两种格式）
-fn deserialize_dictionary<'de, D>(deserializer: D) -> std::result::Result<Vec<DictionaryEntry>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-
-    let value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
-
-    match value {
-        serde_json::Value::Array(arr) => {
-            if arr.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            // 检查第一个元素的类型
-            if arr[0].is_string() {
-                // 旧格式：Vec<String> -> 迁移为 Vec<DictionaryEntry>
-                let words: Vec<String> = arr
-                    .into_iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .filter(|w| !w.trim().is_empty())
-                    .collect();
-
-                Ok(words
-                    .into_iter()
-                    .map(|word| DictionaryEntry::new(word, DictionarySource::Manual))
-                    .collect())
-            } else {
-                // 新格式：Vec<DictionaryEntry>
-                serde_json::from_value(serde_json::Value::Array(arr))
-                    .map_err(|e| D::Error::custom(format!("解析词典失败: {}", e)))
-            }
+impl LearningConfig {
+    /// 解析 LLM 配置（兼容旧的 llm_endpoint 字段）
+    pub fn resolve_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
+        // 向后兼容：如果 feature_override 没有设置 endpoint，但 llm_endpoint 有值，则使用 llm_endpoint
+        let mut cfg = self.feature_override.clone();
+        if cfg.endpoint.is_none() && self.llm_endpoint.is_some() {
+            cfg.endpoint = self.llm_endpoint.clone();
         }
-        _ => Ok(Vec::new()),
+        cfg.resolve_with_feature(shared, "learning")
     }
 }
 
@@ -535,20 +534,265 @@ pub struct LlmPreset {
     pub system_prompt: String,
 }
 
+// ============================================================================
+// 共享 LLM 配置（新增）
+// ============================================================================
+
+/// LLM 提供商
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProvider {
+    pub id: String,
+    pub name: String,
+    pub endpoint: String,
+    pub api_key: String,
+    pub default_model: String,
+}
+
+/// 共享 LLM 配置
+///
+/// 此配置将被语音润色、AI 助手、自学习词库共享使用
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharedLlmConfig {
+    /// Provider 列表
+    #[serde(default)]
+    pub providers: Vec<LlmProvider>,
+    /// 默认 Provider ID
+    #[serde(default)]
+    pub default_provider_id: String,
+
+    /// 功能默认绑定 (可选,留空则使用 default_provider_id)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polishing_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_provider_id: Option<String>,
+
+    /// 向后兼容字段 (迁移后可删除)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// 语句润色专用模型（可选，留空则使用 default_model）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polishing_model: Option<String>,
+    /// AI 助手专用模型（可选，留空则使用 default_model）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_model: Option<String>,
+    /// 自动词库学习专用模型（可选，留空则使用 default_model）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_model: Option<String>,
+}
+
+impl Default for SharedLlmConfig {
+    fn default() -> Self {
+        Self {
+            providers: Vec::new(),
+            default_provider_id: String::new(),
+            polishing_provider_id: None,
+            assistant_provider_id: None,
+            learning_provider_id: None,
+            endpoint: None,
+            api_key: None,
+            default_model: None,
+            polishing_model: None,
+            assistant_model: None,
+            learning_model: None,
+        }
+    }
+}
+
+impl SharedLlmConfig {
+    /// 获取指定 Provider
+    pub fn get_provider(&self, provider_id: &str) -> Option<&LlmProvider> {
+        self.providers.iter().find(|p| p.id == provider_id)
+    }
+
+    /// 获取指定功能的模型（如果功能模型未设置，则返回默认模型）
+    /// 注意：此方法用于向后兼容，新代码应使用 resolve_with_feature
+    pub fn get_feature_model(&self, feature: &str) -> String {
+        match feature {
+            "polishing" => self.polishing_model.clone().unwrap_or_else(|| {
+                self.default_model.clone().unwrap_or_else(default_llm_model)
+            }),
+            "assistant" => self.assistant_model.clone().unwrap_or_else(|| {
+                self.default_model.clone().unwrap_or_else(default_llm_model)
+            }),
+            "learning" => self.learning_model.clone().unwrap_or_else(|| {
+                self.default_model.clone().unwrap_or_else(default_llm_model)
+            }),
+            _ => self.default_model.clone().unwrap_or_else(default_llm_model),
+        }
+    }
+}
+
+fn default_use_shared_llm() -> bool {
+    true
+}
+
+/// 功能特定 LLM 配置
+///
+/// 每个功能可以选择使用共享配置或独立配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmFeatureConfig {
+    /// 是否使用共享配置
+    #[serde(default = "default_use_shared_llm")]
+    pub use_shared: bool,
+    /// 共享模式: 指定 Provider ID (可选,留空则使用功能默认或全局默认)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// 独立端点（如果 use_shared=false）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// 独立 API Key（如果 use_shared=false）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// 模型覆盖（共享模式或独立模式都可用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl Default for LlmFeatureConfig {
+    fn default() -> Self {
+        Self {
+            use_shared: true,
+            provider_id: None,
+            endpoint: None,
+            api_key: None,
+            model: None,
+        }
+    }
+}
+
+/// 解析后的 LLM 客户端配置
+///
+/// 用于实际调用 LLM API
+#[derive(Debug, Clone)]
+pub struct ResolvedLlmClientConfig {
+    pub endpoint: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl LlmFeatureConfig {
+    /// 解析配置：根据 use_shared 决定使用共享配置还是独立配置
+    pub fn resolve(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
+        self.resolve_with_feature(shared, "")
+    }
+
+    /// 解析配置（带功能名称）：根据 use_shared 决定使用共享配置还是独立配置
+    /// feature: "polishing" | "assistant" | "learning" | ""
+    ///
+    /// 共享模式优先级：
+    /// 1. Feature 的 provider_id > 功能默认绑定 > 全局 default_provider_id
+    /// 2. Feature 的 model > 功能默认 model > Provider 的 default_model
+    pub fn resolve_with_feature(&self, shared: &SharedLlmConfig, feature: &str) -> ResolvedLlmClientConfig {
+        if !self.use_shared {
+            // 独立模式：使用独立配置
+            return ResolvedLlmClientConfig {
+                endpoint: self.endpoint.clone().unwrap_or_default(),
+                api_key: self.api_key.clone().unwrap_or_default(),
+                model: self.model.clone().unwrap_or_default(),
+            };
+        }
+
+        // 共享模式：检查是否有 Provider 配置
+        if !shared.providers.is_empty() {
+            // 新模式：使用 Provider Registry
+
+            // 确定使用哪个 Provider
+            let provider_id = self.provider_id.as_deref()
+                .or_else(|| match feature {
+                    "polishing" => shared.polishing_provider_id.as_deref(),
+                    "assistant" => shared.assistant_provider_id.as_deref(),
+                    "learning" => shared.learning_provider_id.as_deref(),
+                    _ => None,
+                })
+                .unwrap_or(&shared.default_provider_id);
+
+            // 查找 Provider
+            if let Some(provider) = shared.get_provider(provider_id) {
+                // 确定使用哪个模型
+                let model = self.model.clone()
+                    .or_else(|| match feature {
+                        "polishing" => shared.polishing_model.clone(),
+                        "assistant" => shared.assistant_model.clone(),
+                        "learning" => shared.learning_model.clone(),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| provider.default_model.clone());
+
+                return ResolvedLlmClientConfig {
+                    endpoint: provider.endpoint.clone(),
+                    api_key: provider.api_key.clone(),
+                    model,
+                };
+            }
+
+            // Provider 不存在，尝试使用第一个 Provider (降级策略)
+            if let Some(first_provider) = shared.providers.first() {
+                let model = self.model.clone()
+                    .or_else(|| shared.get_feature_model(feature).into())
+                    .unwrap_or_else(|| first_provider.default_model.clone());
+
+                return ResolvedLlmClientConfig {
+                    endpoint: first_provider.endpoint.clone(),
+                    api_key: first_provider.api_key.clone(),
+                    model,
+                };
+            }
+        }
+
+        // 旧模式（向后兼容）：使用旧字段
+        let default_model = if !feature.is_empty() {
+            shared.get_feature_model(feature)
+        } else {
+            shared.default_model.clone().unwrap_or_else(default_llm_model)
+        };
+
+        ResolvedLlmClientConfig {
+            endpoint: self.endpoint.clone().unwrap_or_else(|| {
+                shared.endpoint.clone().unwrap_or_else(default_llm_endpoint)
+            }),
+            api_key: self.api_key.clone().unwrap_or_else(|| {
+                shared.api_key.clone().unwrap_or_default()
+            }),
+            model: self.model.clone().unwrap_or(default_model),
+        }
+    }
+
+    /// 检查配置是否有效（结合共享配置）
+    pub fn is_valid_with_shared(&self, shared: &SharedLlmConfig) -> bool {
+        let resolved = self.resolve(shared);
+        !resolved.endpoint.trim().is_empty()
+            && !resolved.model.trim().is_empty()
+            && !resolved.api_key.trim().is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    #[serde(default = "default_llm_endpoint")]
-    pub endpoint: String,
-    #[serde(default = "default_llm_model")]
-    pub model: String,
+    /// 共享 LLM 配置
     #[serde(default)]
-    pub api_key: String,
-    
-    // 新增：预设列表和当前选中的预设ID
+    pub shared: SharedLlmConfig,
+    /// 语音润色特定配置
+    #[serde(default)]
+    pub feature_override: LlmFeatureConfig,
+    /// 预设列表
     #[serde(default = "default_presets")]
     pub presets: Vec<LlmPreset>,
+    /// 当前选中的预设ID
     #[serde(default = "default_active_preset_id")]
     pub active_preset_id: String,
+}
+
+impl LlmConfig {
+    /// 解析语音润色配置
+    pub fn resolve_polishing(&self) -> ResolvedLlmClientConfig {
+        self.feature_override.resolve_with_feature(&self.shared, "polishing")
+    }
 }
 
 fn default_llm_endpoint() -> String {
@@ -650,15 +894,9 @@ pub struct AssistantConfig {
     /// 是否启用 AI 助手模式
     #[serde(default)]
     pub enabled: bool,
-    /// API 端点
-    #[serde(default = "default_assistant_endpoint")]
-    pub endpoint: String,
-    /// 模型名称
-    #[serde(default = "default_assistant_model")]
-    pub model: String,
-    /// API Key
+    /// LLM 配置（使用共享或独立）
     #[serde(default)]
-    pub api_key: String,
+    pub llm: LlmFeatureConfig,
     /// 问答模式系统提示词（无选中文本时使用）
     #[serde(default = "default_assistant_qa_prompt")]
     pub qa_system_prompt: String,
@@ -677,14 +915,6 @@ fn default_smart_command_model() -> String {
 
 fn default_smart_command_prompt() -> String {
     DEFAULT_SMART_COMMAND_PROMPT.to_string()
-}
-
-fn default_assistant_endpoint() -> String {
-    "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string()
-}
-
-fn default_assistant_model() -> String {
-    "glm-4-flash-250414".to_string()
 }
 
 fn default_assistant_qa_prompt() -> String {
@@ -711,9 +941,7 @@ impl Default for AssistantConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            endpoint: default_assistant_endpoint(),
-            model: default_assistant_model(),
-            api_key: String::new(),
+            llm: LlmFeatureConfig::default(),
             qa_system_prompt: default_assistant_qa_prompt(),
             text_processing_system_prompt: default_assistant_text_processing_prompt(),
         }
@@ -728,9 +956,14 @@ impl SmartCommandConfig {
 }
 
 impl AssistantConfig {
-    /// 检查配置是否有效（API Key 已填写）
-    pub fn is_valid(&self) -> bool {
-        !self.api_key.is_empty() && !self.endpoint.is_empty() && !self.model.is_empty()
+    /// 解析 LLM 配置
+    pub fn resolve_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
+        self.llm.resolve_with_feature(shared, "assistant")
+    }
+
+    /// 检查配置是否有效（结合共享配置）
+    pub fn is_valid_with_shared(&self, shared: &SharedLlmConfig) -> bool {
+        self.llm.is_valid_with_shared(shared)
     }
 }
 
@@ -738,9 +971,8 @@ impl AssistantConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            endpoint: default_llm_endpoint(),
-            model: default_llm_model(),
-            api_key: String::new(),
+            shared: SharedLlmConfig::default(),
+            feature_override: LlmFeatureConfig::default(),
             presets: default_presets(),
             active_preset_id: default_active_preset_id(),
         }
@@ -781,9 +1013,13 @@ impl AppConfig {
         Ok(app_dir.join("config.json"))
     }
 
-    pub fn load() -> Result<Self> {
+    pub fn load() -> Result<(Self, bool)> {
         let path = Self::config_path()?;
         tracing::info!("尝试从以下路径加载配置: {:?}", path);
+
+        // 跟踪是否发生了迁移（调用者可根据此决定是否保存）
+        let mut migrated = false;
+
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
             
@@ -827,13 +1063,120 @@ impl AppConfig {
             if config.asr_config.credentials.qwen_api_key.is_empty() && !config.dashscope_api_key.is_empty() {
                 tracing::info!("从根配置迁移 Qwen API Key");
                 config.asr_config.credentials.qwen_api_key = config.dashscope_api_key.clone();
+                migrated = true;
             }
             if config.asr_config.credentials.sensevoice_api_key.is_empty() && !config.siliconflow_api_key.is_empty() {
                 tracing::info!("从根配置迁移 SiliconFlow API Key");
                 config.asr_config.credentials.sensevoice_api_key = config.siliconflow_api_key.clone();
+                migrated = true;
             }
 
-            // 迁移 3: 旧单快捷键 → 新双快捷键 (保持原有逻辑)
+            // 迁移 2: LLM 配置统一化（旧的扁平结构 → 新的 shared + feature_override 结构）
+            if let Some(llm_cfg) = v.get("llm_config") {
+                let has_legacy_fields = llm_cfg.get("shared").is_none()
+                    && (llm_cfg.get("endpoint").is_some()
+                        || llm_cfg.get("api_key").is_some()
+                        || llm_cfg.get("model").is_some());
+
+                if has_legacy_fields {
+                    tracing::info!("检测到旧版 LLM 配置格式，开始迁移");
+                    migrated = true;
+
+                    // 迁移到 shared 配置
+                    if let Some(endpoint) = llm_cfg.get("endpoint").and_then(|v| v.as_str()) {
+                        if !endpoint.trim().is_empty() {
+                            tracing::info!("迁移 llm_config.endpoint -> llm_config.shared.endpoint");
+                            config.llm_config.shared.endpoint = Some(endpoint.to_string());
+                        }
+                    }
+                    if let Some(model) = llm_cfg.get("model").and_then(|v| v.as_str()) {
+                        if !model.trim().is_empty() {
+                            tracing::info!("迁移 llm_config.model -> llm_config.shared.default_model");
+                            config.llm_config.shared.default_model = Some(model.to_string());
+                        }
+                    }
+                    if let Some(api_key) = llm_cfg.get("api_key").and_then(|v| v.as_str()) {
+                        if !api_key.trim().is_empty() {
+                            tracing::info!("迁移 llm_config.api_key -> llm_config.shared.api_key");
+                            config.llm_config.shared.api_key = Some(api_key.to_string());
+                        }
+                    }
+                }
+            }
+
+            // 迁移 3: AssistantConfig 配置统一化
+            if let Some(assistant_cfg) = v.get("assistant_config") {
+                let has_legacy_fields = assistant_cfg.get("llm").is_none()
+                    && (assistant_cfg.get("endpoint").is_some()
+                        || assistant_cfg.get("api_key").is_some()
+                        || assistant_cfg.get("model").is_some());
+
+                if has_legacy_fields {
+                    tracing::info!("检测到旧版 AI 助手配置格式，开始迁移");
+                    migrated = true;
+
+                    let endpoint = assistant_cfg
+                        .get("endpoint")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let model = assistant_cfg
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let api_key = assistant_cfg
+                        .get("api_key")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    if !endpoint.trim().is_empty() || !model.trim().is_empty() || !api_key.trim().is_empty() {
+                        let shared = &config.llm_config.shared;
+                        let matches_shared = shared.endpoint.as_ref().map(|e| e == &endpoint).unwrap_or(false)
+                            && shared.api_key.as_ref().map(|k| k == &api_key).unwrap_or(false)
+                            && shared.default_model.as_ref().map(|m| m == &model).unwrap_or(false);
+
+                        if matches_shared {
+                            tracing::info!("AI 助手配置与共享配置相同，使用共享配置");
+                            config.assistant_config.llm.use_shared = true;
+                        } else {
+                            tracing::info!("AI 助手配置与共享配置不同，保留独立配置");
+                            config.assistant_config.llm.use_shared = false;
+                            if !endpoint.trim().is_empty() {
+                                config.assistant_config.llm.endpoint = Some(endpoint);
+                            }
+                            if !model.trim().is_empty() {
+                                config.assistant_config.llm.model = Some(model);
+                            }
+                            if !api_key.trim().is_empty() {
+                                config.assistant_config.llm.api_key = Some(api_key);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 迁移 4: LearningConfig 配置统一化
+            if let Some(learning_cfg) = v.get("learning_config") {
+                let has_legacy_endpoint = learning_cfg.get("feature_override").is_none()
+                    && learning_cfg.get("llm_endpoint").is_some();
+
+                if has_legacy_endpoint && config.learning_config.feature_override.endpoint.is_none() {
+                    if let Some(endpoint) = learning_cfg.get("llm_endpoint").and_then(|v| v.as_str()) {
+                        if !endpoint.trim().is_empty() {
+                            tracing::info!("迁移 learning_config.llm_endpoint -> learning_config.feature_override.endpoint");
+                            config.learning_config.feature_override.endpoint = Some(endpoint.to_string());
+                            // 重要：设置 use_shared=false 以保留原语义
+                            // 否则迁移后会优先使用 Provider Registry，导致 endpoint 被忽略
+                            config.learning_config.feature_override.use_shared = false;
+                            migrated = true;
+                        }
+                    }
+                }
+            }
+
+            // 迁移 5: 旧单快捷键 → 新双快捷键 (保持原有逻辑)
             if let Some(old_hotkey) = config.hotkey_config.take() {
                 let is_default = config.dual_hotkey_config.dictation.keys == vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
                     && config.dual_hotkey_config.assistant.keys == vec![HotkeyKey::AltLeft, HotkeyKey::Space];
@@ -841,18 +1184,24 @@ impl AppConfig {
                 if is_default {
                     tracing::info!("迁移旧快捷键配置 {} 到听写模式", old_hotkey.format_display());
                     config.dual_hotkey_config.dictation = old_hotkey;
+                    migrated = true;
                 }
             }
 
-            // 迁移 4: SmartCommandConfig → AssistantConfig (保持原有逻辑)
+            // 迁移 6: SmartCommandConfig → AssistantConfig (保持原有逻辑)
             if config.smart_command_config.enabled && config.smart_command_config.is_valid() {
-                if !config.assistant_config.is_valid() {
+                if !config.assistant_config.is_valid_with_shared(&config.llm_config.shared) {
                     tracing::info!("迁移 Smart Command 配置到 AI 助手配置");
+                    migrated = true;
                     config.assistant_config = AssistantConfig {
                         enabled: config.smart_command_config.enabled,
-                        endpoint: config.smart_command_config.endpoint.clone(),
-                        model: config.smart_command_config.model.clone(),
-                        api_key: config.smart_command_config.api_key.clone(),
+                        llm: LlmFeatureConfig {
+                            use_shared: false,
+                            provider_id: None,
+                            endpoint: Some(config.smart_command_config.endpoint.clone()),
+                            model: Some(config.smart_command_config.model.clone()),
+                            api_key: Some(config.smart_command_config.api_key.clone()),
+                        },
                         qa_system_prompt: config.smart_command_config.system_prompt.clone(),
                         text_processing_system_prompt: default_assistant_text_processing_prompt(),
                     };
@@ -860,15 +1209,151 @@ impl AppConfig {
                 }
             }
 
+            // 迁移 7: 旧配置 → Provider Registry (自动迁移)
+            if config.llm_config.shared.providers.is_empty() {
+                // 检查是否有旧配置需要迁移
+                let has_old_shared_config = config.llm_config.shared.endpoint.is_some()
+                    && config.llm_config.shared.api_key.is_some()
+                    && config.llm_config.shared.default_model.is_some();
+
+                if has_old_shared_config {
+                    tracing::info!("检测到旧版共享配置，开始迁移到 Provider Registry");
+
+                    use sha2::{Sha256, Digest};
+
+                    // 计算 Voice Polishing 的 effective 配置
+                    let polishing_endpoint = config.llm_config.shared.endpoint.clone().unwrap_or_default();
+                    let polishing_api_key = config.llm_config.shared.api_key.clone().unwrap_or_default();
+                    let polishing_model = config.llm_config.shared.polishing_model.clone()
+                        .or_else(|| config.llm_config.shared.default_model.clone())
+                        .unwrap_or_else(default_llm_model);
+
+                    // 计算 AI Assistant 的 effective 配置
+                    let assistant_endpoint = if config.assistant_config.llm.use_shared {
+                        config.assistant_config.llm.endpoint.clone()
+                            .unwrap_or_else(|| polishing_endpoint.clone())
+                    } else {
+                        config.assistant_config.llm.endpoint.clone().unwrap_or_default()
+                    };
+                    let assistant_api_key = if config.assistant_config.llm.use_shared {
+                        config.assistant_config.llm.api_key.clone()
+                            .unwrap_or_else(|| polishing_api_key.clone())
+                    } else {
+                        config.assistant_config.llm.api_key.clone().unwrap_or_default()
+                    };
+                    let assistant_model = if config.assistant_config.llm.use_shared {
+                        config.assistant_config.llm.model.clone()
+                            .or_else(|| config.llm_config.shared.assistant_model.clone())
+                            .or_else(|| config.llm_config.shared.default_model.clone())
+                            .unwrap_or_else(default_llm_model)
+                    } else {
+                        config.assistant_config.llm.model.clone().unwrap_or_default()
+                    };
+
+                    // 生成确定性 Provider ID
+                    fn generate_provider_id(endpoint: &str, api_key: &str) -> String {
+                        let mut hasher = Sha256::new();
+                        hasher.update(endpoint.as_bytes());
+                        hasher.update(b"|");
+                        hasher.update(api_key.as_bytes());
+                        let result = hasher.finalize();
+                        format!("{:x}", result)[..12].to_string()
+                    }
+
+                    let polishing_id = generate_provider_id(&polishing_endpoint, &polishing_api_key);
+                    let assistant_id = generate_provider_id(&assistant_endpoint, &assistant_api_key);
+
+                    // 判断是否需要创建 1 个或 2 个 Provider
+                    if polishing_id == assistant_id {
+                        // 配置相同，创建 1 个 Provider
+                        tracing::info!("语音润色和 AI 助手使用相同配置，创建单个 Provider");
+
+                        let provider = LlmProvider {
+                            id: polishing_id.clone(),
+                            name: "默认提供商 (迁移)".to_string(),
+                            endpoint: polishing_endpoint,
+                            api_key: polishing_api_key,
+                            default_model: config.llm_config.shared.default_model.clone().unwrap_or_else(default_llm_model),
+                        };
+
+                        config.llm_config.shared.providers.push(provider);
+                        config.llm_config.shared.default_provider_id = polishing_id.clone();
+
+                        // 设置功能绑定
+                        config.llm_config.shared.polishing_provider_id = Some(polishing_id.clone());
+                        config.llm_config.shared.assistant_provider_id = Some(polishing_id.clone());
+
+                        // 设置模型覆盖
+                        if polishing_model != config.llm_config.shared.default_model.clone().unwrap_or_else(default_llm_model) {
+                            config.llm_config.shared.polishing_model = Some(polishing_model);
+                        }
+                        if assistant_model != config.llm_config.shared.default_model.clone().unwrap_or_else(default_llm_model) {
+                            config.llm_config.shared.assistant_model = Some(assistant_model);
+                        }
+
+                        // 清空 Feature 的独立配置
+                        config.llm_config.feature_override.use_shared = true;
+                        config.llm_config.feature_override.endpoint = None;
+                        config.llm_config.feature_override.api_key = None;
+                        config.assistant_config.llm.use_shared = true;
+                        config.assistant_config.llm.endpoint = None;
+                        config.assistant_config.llm.api_key = None;
+                    } else {
+                        // 配置不同，创建 2 个 Provider
+                        tracing::info!("语音润色和 AI 助手使用不同配置，创建两个 Provider");
+
+                        let polishing_provider = LlmProvider {
+                            id: polishing_id.clone(),
+                            name: "语音润色提供商 (迁移)".to_string(),
+                            endpoint: polishing_endpoint,
+                            api_key: polishing_api_key,
+                            default_model: polishing_model.clone(),
+                        };
+
+                        let assistant_provider = LlmProvider {
+                            id: assistant_id.clone(),
+                            name: "AI 助手提供商 (迁移)".to_string(),
+                            endpoint: assistant_endpoint,
+                            api_key: assistant_api_key,
+                            default_model: assistant_model.clone(),
+                        };
+
+                        config.llm_config.shared.providers.push(polishing_provider);
+                        config.llm_config.shared.providers.push(assistant_provider);
+                        config.llm_config.shared.default_provider_id = polishing_id.clone();
+
+                        // 设置功能绑定
+                        config.llm_config.shared.polishing_provider_id = Some(polishing_id.clone());
+                        config.llm_config.shared.assistant_provider_id = Some(assistant_id.clone());
+
+                        // 清空 Feature 的独立配置
+                        config.llm_config.feature_override.use_shared = true;
+                        config.llm_config.feature_override.endpoint = None;
+                        config.llm_config.feature_override.api_key = None;
+                        config.assistant_config.llm.use_shared = true;
+                        config.assistant_config.llm.endpoint = None;
+                        config.assistant_config.llm.api_key = None;
+                    }
+
+                    // 标记迁移完成（不在此处保存，由调用者决定）
+                    tracing::info!("Provider 迁移完成");
+                    migrated = true;
+                }
+            }
+
             if config.llm_config.presets.is_empty() {
                  tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
             }
 
-            tracing::info!("配置加载成功");
-            Ok(config)
+            if migrated {
+                tracing::info!("配置加载成功（发生迁移，建议保存）");
+            } else {
+                tracing::info!("配置加载成功");
+            }
+            Ok((config, migrated))
         } else {
             tracing::warn!("配置文件不存在，创建并返回默认配置");
-            Ok(Self::new())
+            Ok((Self::new(), false))
         }
     }
 
@@ -877,8 +1362,9 @@ impl AppConfig {
         let content = serde_json::to_string_pretty(self)?;
         tracing::info!("保存配置到: {:?}", path);
 
-        // 使用原子写入：先写临时文件，再重命名（避免文件锁定和损坏）
+        // 使用原子写入：先写临时文件，再原子替换
         let temp_path = path.with_extension("json.tmp");
+        let backup_path = path.with_extension("json.bak");
 
         tracing::info!("写入临时文件: {:?}", temp_path);
         std::fs::write(&temp_path, &content).map_err(|e| {
@@ -886,21 +1372,46 @@ impl AppConfig {
             e
         })?;
 
-        tracing::info!("重命名临时文件到目标文件");
-        // Windows 上如果目标文件存在，先删除
+        // Windows 原子替换策略：
+        // 1. 如果目标文件存在，先备份到 .bak
+        // 2. 重命名临时文件到目标文件
+        // 3. 删除备份文件
+        // 这样即使在任何步骤崩溃，都能恢复：
+        // - 步骤 1 崩溃：原文件完好
+        // - 步骤 2 崩溃：.bak 文件可用于恢复
+        // - 步骤 3 崩溃：配置已保存成功，.bak 只是残留
+        tracing::info!("执行原子替换");
         if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| {
-                tracing::error!("删除旧配置文件失败: {}", e);
+            // 先备份旧文件
+            if backup_path.exists() {
+                let _ = std::fs::remove_file(&backup_path);
+            }
+            std::fs::rename(&path, &backup_path).map_err(|e| {
+                tracing::error!("备份旧配置文件失败: {}", e);
                 e
             })?;
         }
 
-        std::fs::rename(&temp_path, &path).map_err(|e| {
-            tracing::error!("重命名临时文件失败: {}", e);
-            e
-        })?;
-
-        tracing::info!("配置保存成功");
-        Ok(())
+        // 重命名临时文件到目标文件
+        match std::fs::rename(&temp_path, &path) {
+            Ok(_) => {
+                // 成功后删除备份文件
+                let _ = std::fs::remove_file(&backup_path);
+                tracing::info!("配置保存成功");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("重命名临时文件失败: {}", e);
+                // 尝试恢复备份
+                if backup_path.exists() {
+                    if let Err(restore_err) = std::fs::rename(&backup_path, &path) {
+                        tracing::error!("恢复备份失败: {}", restore_err);
+                    } else {
+                        tracing::info!("已从备份恢复配置");
+                    }
+                }
+                Err(e.into())
+            }
+        }
     }
 }

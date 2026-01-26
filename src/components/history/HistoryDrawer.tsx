@@ -1,5 +1,5 @@
 import type { MouseEvent } from "react";
-import { Bot, Clock, Copy, History, Mic, Wand2, X } from "lucide-react";
+import { MessageSquare, Clock, Copy, History, Mic, Sparkles, X } from "lucide-react";
 import type { HistoryRecord } from "../../types";
 import { formatTimestamp } from "../../utils";
 
@@ -64,11 +64,10 @@ export function HistoryDrawer({
             history.map((record) => (
               <div
                 key={record.id}
-                className={`p-4 rounded-2xl border transition-colors ${
-                  record.success
+                className={`p-4 rounded-2xl border transition-colors ${record.success
                     ? "bg-white border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)]"
                     : "bg-red-50/60 border-red-100"
-                }`}
+                  }`}
               >
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs text-stone-400 flex items-center gap-1">
@@ -114,16 +113,14 @@ export function HistoryDrawer({
                         <p className="text-xs text-stone-600 line-clamp-3 leading-relaxed">{record.originalText}</p>
                       </div>
 
-                      <div className={`flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] ${
-                        record.mode === "assistant"
+                      <div className={`flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] ${record.mode === "assistant"
                           ? "bg-[rgba(59,130,246,0.08)]"
                           : "bg-[rgba(217,119,87,0.08)]"
-                      }`}>
+                        }`}>
                         <div className="flex items-center justify-between mb-2">
-                          <div className={`text-xs font-semibold tracking-wide flex items-center gap-1.5 ${
-                            record.mode === "assistant" ? "text-blue-500" : "text-[var(--crail)]"
-                          }`}>
-                            {record.mode === "assistant" ? <Bot size={12} /> : <Wand2 size={12} />}
+                          <div className={`text-xs font-semibold tracking-wide flex items-center gap-1.5 ${record.mode === "assistant" ? "text-blue-500" : "text-[var(--crail)]"
+                            }`}>
+                            {record.mode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
                             {record.mode === "assistant" ? "AI 回复" : (record.presetName || "润色后")}
                           </div>
                           <button

@@ -12,6 +12,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::assistant_processor::AssistantProcessor;
 use crate::clipboard_manager::{ClipboardGuard, insert_text_with_context};
+use crate::config::AppConfig;
+use crate::learning::coordinator::start_learning_observation;
 use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 
 /// AI 助手模式处理管道
@@ -100,7 +102,23 @@ impl AssistantPipeline {
         let has_selection = context.selected_text.is_some();
         let inserted = Self::insert_result(&result, has_selection, clipboard_guard);
 
-        // 7. 返回结果
+        // 7. 触发学习观察（如果启用且插入成功）
+        if inserted {
+            if let Some(hwnd) = target_hwnd {
+                if let Ok((config, _)) = AppConfig::load() {
+                    if config.learning_config.enabled {
+                        start_learning_observation(
+                            app.clone(),
+                            result.clone(),
+                            hwnd,
+                            config.learning_config,
+                        );
+                    }
+                }
+            }
+        }
+
+        // 8. 返回结果
         Ok(PipelineResult::success(
             result,
             Some(user_instruction),

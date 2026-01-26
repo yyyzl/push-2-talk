@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use crate::config::AssistantConfig;
+use crate::config::{AssistantConfig, SharedLlmConfig};
 use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
 
 /// AI 助手处理器
@@ -23,11 +23,12 @@ pub struct AssistantProcessor {
 
 impl AssistantProcessor {
     /// 创建新的 AI 助手处理器实例
-    pub fn new(config: AssistantConfig) -> Self {
+    pub fn new(config: AssistantConfig, shared: &SharedLlmConfig) -> Self {
+        let resolved = config.resolve_llm(shared);
         let client_config = OpenAiClientConfig::new(
-            &config.endpoint,
-            &config.api_key,
-            &config.model,
+            &resolved.endpoint,
+            &resolved.api_key,
+            &resolved.model,
         );
         let client = OpenAiClient::new(client_config);
 
@@ -103,14 +104,17 @@ impl AssistantProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DEFAULT_ASSISTANT_QA_PROMPT, DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT};
+    use crate::config::{DEFAULT_ASSISTANT_QA_PROMPT, DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT, LlmFeatureConfig, SharedLlmConfig};
 
     fn create_test_config() -> AssistantConfig {
         AssistantConfig {
             enabled: true,
-            endpoint: "https://api.example.com/v1/chat/completions".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
+            llm: LlmFeatureConfig {
+                use_shared: false,
+                endpoint: Some("https://api.example.com/v1/chat/completions".to_string()),
+                model: Some("test-model".to_string()),
+                api_key: Some("test-key".to_string()),
+            },
             qa_system_prompt: DEFAULT_ASSISTANT_QA_PROMPT.to_string(),
             text_processing_system_prompt: DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string(),
         }
@@ -119,7 +123,8 @@ mod tests {
     #[test]
     fn test_processor_creation() {
         let config = create_test_config();
-        let processor = AssistantProcessor::new(config);
+        let shared = SharedLlmConfig::default();
+        let processor = AssistantProcessor::new(config, &shared);
         assert!(!processor.qa_system_prompt.is_empty());
         assert!(!processor.text_processing_system_prompt.is_empty());
     }

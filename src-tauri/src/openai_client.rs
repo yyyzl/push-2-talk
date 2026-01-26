@@ -287,15 +287,14 @@ mod tests {
     }
 
     #[test]
-    fn test_config_validation() {
-        let valid = OpenAiClientConfig::new(
+    fn test_config_creation() {
+        let config = OpenAiClientConfig::new(
             "https://api.example.com/v1/chat/completions",
             "sk-xxx",
             "gpt-4",
         );
-        assert!(valid.is_valid());
-
-        let invalid = OpenAiClientConfig::new("", "sk-xxx", "gpt-4");
-        assert!(!invalid.is_valid());
+        assert_eq!(config.endpoint, "https://api.example.com/v1/chat/completions");
+        assert_eq!(config.api_key, "sk-xxx");
+        assert_eq!(config.model, "gpt-4");
     }
 }

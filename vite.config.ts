@@ -11,12 +11,13 @@ export default defineConfig({
   // Vite options tailored for Tauri development
   clearScreen: false,
 
-  // Multi-page build configuration for overlay window
+  // Multi-page build configuration for overlay and notification windows
   build: {
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "overlay.html"),
+        notification: resolve(__dirname, "notification.html"),
       },
     },
   },

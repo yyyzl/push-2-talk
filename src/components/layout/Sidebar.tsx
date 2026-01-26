@@ -1,7 +1,7 @@
 import type { AppPage } from "../../pages/types";
 import type { UpdateStatus } from "../../types";
 import {
-  BookText,
+  GraduationCap,
   History,
   Keyboard,
   LayoutDashboard,
@@ -10,8 +10,9 @@ import {
   PanelLeftOpen,
   SlidersHorizontal,
   Sparkles,
-  Wand2,
+  MessageSquare,
   HelpCircle,
+  Zap,
 } from "lucide-react";
 import { RedDot } from "../common/RedDot";
 
@@ -64,9 +65,9 @@ export function Sidebar({
     >
       <div className={headerClass}>
         <div className={navTextClass}>
-        <p className="text-[10px] text-stone-300 mono uppercase tracking-widest">
-          PushToTalk
-        </p>
+          <p className="text-[10px] text-stone-300 mono uppercase tracking-widest">
+            PushToTalk
+          </p>
           {/* <div className="text-sm font-bold tracking-tight lowercase">pushtotalk</div> */}
           <div className="text-[11px] text-[var(--stone-dark)] font-semibold">
             AI 语音助手
@@ -103,11 +104,20 @@ export function Sidebar({
         </button>
 
         <button
+          onClick={() => onNavigate("models")}
+          className={navItem("models")}
+          title="LLM 模型配置"
+        >
+          <Zap className="shrink-0 w-5 h-5" />
+          <span className={navTextClass}>LLM 模型</span>
+        </button>
+
+        <button
           onClick={() => onNavigate("llm")}
           className={navItem("llm")}
-          title="LLM 语句润色"
+          title="语句润色预设"
         >
-          <Wand2 className="shrink-0 w-5 h-5" />
+          <Sparkles className="shrink-0 w-5 h-5" />
           <span className={navTextClass}>语句润色</span>
         </button>
 
@@ -116,8 +126,8 @@ export function Sidebar({
           className={navItem("assistant")}
           title="快捷助手"
         >
-          <Sparkles className="shrink-0 w-5 h-5" />
-          <span className={navTextClass}>快捷助手</span>
+          <MessageSquare className="shrink-0 w-5 h-5" />
+          <span className={navTextClass}>AI 助手</span>
         </button>
 
         <button
@@ -134,7 +144,7 @@ export function Sidebar({
           className={navItem("dictionary")}
           title="个人词库"
         >
-          <BookText className="shrink-0 w-5 h-5" />
+          <GraduationCap className="shrink-0 w-5 h-5" />
           <span className={navTextClass}>个人词库</span>
         </button>
 

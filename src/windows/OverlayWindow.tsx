@@ -1,4 +1,4 @@
-import { AppConfig } from "./types";
+import { AppConfig } from "../types";
 import { useState, useEffect, useRef } from "react";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -241,6 +241,7 @@ export default function OverlayWindow() {
 
       if (!(await registerListener("config_updated", (event) => {
         const config = event.payload as AppConfig;
+        console.log("[OverlayWindow] 收到 config_updated 事件, theme=", config.theme);
         setTheme(config.theme || "light");
       }))) return;
 

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AsrConfig,
   AssistantConfig,
+  DictionaryEntry,
   DualHotkeyConfig,
   HotkeyKey,
   HotkeyRecordingMode,
@@ -21,7 +22,7 @@ export type UseHotkeyRecordingParams = {
   asrConfig: AsrConfig;
   enableMuteOtherApps: boolean;
   closeAction: "close" | "minimize" | null;
-  dictionary: string[];
+  dictionary: DictionaryEntry[];
 
   dualHotkeyConfig: DualHotkeyConfig;
   setDualHotkeyConfig: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;

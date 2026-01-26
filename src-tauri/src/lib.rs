@@ -16,6 +16,7 @@ mod openai_client;
 mod pipeline;
 mod streaming_recorder;
 mod text_inserter;
+mod uia_text_reader;
 mod usage_stats;
 mod win32_input;
 
@@ -143,6 +144,7 @@ async fn save_config(
     hotkey_config: Option<config::HotkeyConfig>,
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
+    learning_config: Option<config::LearningConfig>,
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
     theme: Option<String>,
@@ -150,7 +152,7 @@ async fn save_config(
     tracing::info!("保存配置...");
 
     // 某些前端调用只会提交部分字段（例如仅更新热键/词库），这里用旧配置兜底避免意外清空。
-    let existing = AppConfig::load().unwrap_or_else(|_| AppConfig::new());
+    let existing = AppConfig::load().map(|(c, _)| c).unwrap_or_else(|_| AppConfig::new());
 
     // 智能合并 llm_config：如果传入的 presets 为空，保留旧值
     let final_llm_config = match llm_config {
@@ -166,7 +168,7 @@ async fn save_config(
 
     // 智能合并 assistant_config：如果传入的配置无效，保留旧值
     let final_assistant_config = match assistant_config {
-        Some(cfg) if !cfg.is_valid() && existing.assistant_config.is_valid() => {
+        Some(cfg) if !cfg.is_valid_with_shared(&final_llm_config.shared) && existing.assistant_config.is_valid_with_shared(&final_llm_config.shared) => {
             tracing::warn!("检测到无效 assistant_config，保留旧配置");
             existing.assistant_config
         }
@@ -180,7 +182,11 @@ async fn save_config(
             tracing::warn!("检测到空 dictionary，保留旧配置");
             existing.dictionary
         }
-        Some(dict) => dict,
+        Some(dict) => {
+            // 前端传入的格式：纯词汇 "word" 或带来源 "word|auto"
+            // 直接使用传入的数组，不再合并（前端已经是完整的词典状态）
+            dict
+        }
         None => existing.dictionary,
     };
 
@@ -220,6 +226,7 @@ async fn save_config(
         llm_config: final_llm_config,
         smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
         assistant_config: final_assistant_config,
+        learning_config: learning_config.unwrap_or(existing.learning_config),
         close_action: close_action.or(existing.close_action),
         hotkey_config,
         dual_hotkey_config: final_dual_hotkey_config,
@@ -233,6 +240,7 @@ async fn save_config(
         .save()
         .map_err(|e| format!("保存配置失败: {}", e))?;
 
+    tracing::info!("[save_config] 发送 config_updated 事件, theme={}", config.theme);
     let _ = app.emit("config_updated", &config);
 
     Ok("配置已保存".to_string())
@@ -241,7 +249,20 @@ async fn save_config(
 #[tauri::command]
 async fn load_config() -> Result<AppConfig, String> {
     tracing::info!("加载配置...");
-    AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))
+
+    // 加载配置，如果发生迁移则自动保存
+    match AppConfig::load() {
+        Ok((config, migrated)) => {
+            if migrated {
+                tracing::info!("配置发生迁移，自动保存");
+                if let Err(e) = config.save() {
+                    tracing::error!("保存迁移后的配置失败: {}", e);
+                }
+            }
+            Ok(config)
+        }
+        Err(e) => Err(format!("加载配置失败: {}", e)),
+    }
 }
 
 #[tauri::command]
@@ -631,10 +652,11 @@ async fn start_app(
     // 初始化 LLM 后处理器（复用连接）
     {
         let mut processor_guard = state.post_processor.lock().unwrap();
-        let llm_cfg = llm_config.unwrap_or_default();
-        tracing::info!("[DEBUG] LLM 后处理配置: enabled={}, api_key_len={}", enable_post_process_mode, llm_cfg.api_key.len());
-        if enable_post_process_mode && !llm_cfg.api_key.trim().is_empty() {
-            tracing::info!("LLM 后处理器配置: endpoint={}, model={}", llm_cfg.endpoint, llm_cfg.model);
+        let llm_cfg = llm_config.clone().unwrap_or_default();
+        let resolved = llm_cfg.resolve_polishing();
+        tracing::info!("[DEBUG] LLM 后处理配置: enabled={}, api_key_len={}", enable_post_process_mode, resolved.api_key.len());
+        if enable_post_process_mode && !resolved.api_key.trim().is_empty() {
+            tracing::info!("LLM 后处理器配置: endpoint={}, model={}", resolved.endpoint, resolved.model);
             *processor_guard = Some(LlmPostProcessor::new(llm_cfg));
             tracing::info!("LLM 后处理器已初始化");
         } else {
@@ -650,10 +672,11 @@ async fn start_app(
     {
         let mut processor_guard = state.assistant_processor.lock().unwrap();
         let assistant_cfg = assistant_config.unwrap_or_default();
-        tracing::info!("[DEBUG] AI 助手配置: api_key_len={}", assistant_cfg.api_key.len());
-        if assistant_cfg.is_valid() {
-            tracing::info!("AI 助手处理器配置: endpoint={}, model={}", assistant_cfg.endpoint, assistant_cfg.model);
-            *processor_guard = Some(AssistantProcessor::new(assistant_cfg));
+        let llm_cfg = llm_config.unwrap_or_default();
+
+        if assistant_cfg.is_valid_with_shared(&llm_cfg.shared) {
+            tracing::info!("AI 助手处理器配置有效，正在初始化");
+            *processor_guard = Some(AssistantProcessor::new(assistant_cfg, &llm_cfg.shared));
             tracing::info!("AI 助手处理器已初始化");
         } else {
             *processor_guard = None;
@@ -2229,11 +2252,12 @@ async fn update_runtime_config(
     }
 
     // 2. 更新 LLM 配置（重新初始化处理器）
-    if let Some(cfg) = llm_config {
+    if let Some(ref cfg) = llm_config {
         let enable_pp = *state.enable_post_process.lock().unwrap();
         let mut processor_guard = state.post_processor.lock().unwrap();
-        if enable_pp && !cfg.api_key.trim().is_empty() {
-            *processor_guard = Some(LlmPostProcessor::new(cfg));
+        let resolved = cfg.resolve_polishing();
+        if enable_pp && !resolved.api_key.trim().is_empty() {
+            *processor_guard = Some(LlmPostProcessor::new(cfg.clone()));
             tracing::info!("热更新: LLM 处理器已重新初始化");
         } else {
             *processor_guard = None;
@@ -2244,8 +2268,23 @@ async fn update_runtime_config(
     // 3. 更新 AI 助手配置
     if let Some(cfg) = assistant_config {
         let mut processor_guard = state.assistant_processor.lock().unwrap();
-        if cfg.is_valid() {
-            *processor_guard = Some(AssistantProcessor::new(cfg));
+
+        // 获取 shared LLM 配置（从参数或从配置文件加载）
+        let shared_config = if let Some(ref llm_cfg) = llm_config {
+            llm_cfg.shared.clone()
+        } else {
+            // 如果没有传递 llm_config，从配置文件加载
+            match config::AppConfig::load() {
+                Ok((app_cfg, _)) => app_cfg.llm_config.shared,
+                Err(e) => {
+                    tracing::warn!("热更新: 无法加载 LLM 配置: {}", e);
+                    config::SharedLlmConfig::default()
+                }
+            }
+        };
+
+        if cfg.is_valid_with_shared(&shared_config) {
+            *processor_guard = Some(AssistantProcessor::new(cfg, &shared_config));
             tracing::info!("热更新: AI 助手处理器已重新初始化");
         } else {
             *processor_guard = None;
@@ -2285,6 +2324,164 @@ async fn update_runtime_config(
         Ok("无配置需要更新".to_string())
     } else {
         Ok(format!("已即时更新: {}", updated.join(", ")))
+    }
+}
+
+// ============================================================================
+// 词典管理命令（自动词库学习功能）
+// ============================================================================
+
+/// 添加学习到的词汇到词典
+#[tauri::command]
+async fn add_learned_word(
+    app_handle: AppHandle,
+    word: String,
+    source: String,
+) -> Result<(), String> {
+    use crate::learning::store::{upsert_entry, entries_to_words};
+    use crate::config::CONFIG_LOCK;
+
+    tracing::info!("添加学习词汇: {} (来源: {})", word, source);
+
+    // 使用全局锁保护配置操作，防止并发覆盖
+    let _guard = CONFIG_LOCK.lock().map_err(|e| format!("获取配置锁失败: {}", e))?;
+
+    // 加载当前配置
+    let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
+
+    // 添加词条（source: "manual" 或 "auto"）
+    upsert_entry(&mut config.dictionary, &word, &source);
+
+    // 保存配置
+    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+
+    // 热更新运行时词库
+    let state = app_handle.state::<AppState>();
+    let words = entries_to_words(&config.dictionary);
+    *state.dictionary.lock().unwrap() = words.clone();
+
+    // 更新 ASR 客户端词库
+    if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
+        client.update_dictionary(words.clone());
+    }
+    if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
+        client.update_dictionary(words.clone());
+    }
+
+    // 发送事件通知前端刷新词典
+    app_handle.emit("dictionary_updated", ()).ok();
+
+    tracing::info!("词汇 '{}' 已添加到词典", word);
+    Ok(())
+}
+
+/// 获取所有词典条目
+#[tauri::command]
+async fn get_dictionary_entries() -> Result<Vec<String>, String> {
+    tracing::info!("获取词典条目...");
+
+    let (config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
+
+    tracing::info!("返回 {} 个词典条目", config.dictionary.len());
+    Ok(config.dictionary)
+}
+
+/// 删除指定词汇的词典条目（按 word 匹配）
+#[tauri::command]
+async fn delete_dictionary_entries(
+    app_handle: AppHandle,
+    words: Vec<String>,
+) -> Result<(), String> {
+    use crate::learning::store::{remove_entries, entries_to_words};
+    use crate::config::CONFIG_LOCK;
+
+    tracing::info!("删除词典条目: {:?}", words);
+
+    // 使用全局锁保护配置操作，防止并发覆盖
+    let _guard = CONFIG_LOCK.lock().map_err(|e| format!("获取配置锁失败: {}", e))?;
+
+    // 加载当前配置
+    let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
+
+    // 删除指定词汇（按 word 匹配，不区分来源）
+    remove_entries(&mut config.dictionary, &words);
+
+    // 保存配置
+    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+
+    // 热更新运行时词库
+    let state = app_handle.state::<AppState>();
+    let dict_words = entries_to_words(&config.dictionary);
+    *state.dictionary.lock().unwrap() = dict_words.clone();
+
+    // 更新 ASR 客户端词库
+    if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
+        client.update_dictionary(dict_words.clone());
+    }
+    if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
+        client.update_dictionary(dict_words.clone());
+    }
+
+    // 发送事件通知前端刷新词典
+    app_handle.emit("dictionary_updated", ()).ok();
+
+    tracing::info!("词典条目删除完成");
+    Ok(())
+}
+
+/// 忽略学习建议（暂不实现黑名单，仅关闭通知）
+#[tauri::command]
+async fn dismiss_learning_suggestion(id: String) -> Result<(), String> {
+    tracing::debug!("忽略学习建议: {}", id);
+    // 当前版本仅关闭通知，不实现黑名单机制
+    // 未来可在此添加：将 id 对应的词汇加入黑名单，避免重复建议
+    Ok(())
+}
+
+/// 显示通知窗口并定位到鼠标所在屏幕的悬浮窗上方
+#[tauri::command]
+async fn show_notification_window(app_handle: AppHandle) -> Result<(), String> {
+    if let Some(notification) = app_handle.get_webview_window("notification") {
+        // 使用 overlay 或 main 窗口获取显示器列表（这些窗口已正确初始化）
+        // notification 窗口在首次显示前可能没有正确初始化
+        let reference_window = app_handle.get_webview_window("overlay")
+            .or_else(|| app_handle.get_webview_window("main"));
+
+        if let Some(ref_win) = reference_window {
+            if let Some(monitor) = find_monitor_at_cursor(&ref_win) {
+                let monitor_pos = monitor.position();
+                let screen_size = monitor.size();
+                let scale_factor = monitor.scale_factor();
+
+                // 通知窗口尺寸（tauri.conf.json 中是逻辑像素，需转换为物理像素）
+                let window_width = (360.0 * scale_factor) as i32;
+                let window_height = (600.0 * scale_factor) as i32;
+
+                // 悬浮窗底部边距 100px + 悬浮窗高度 80px + 间隔 80px = 260px（逻辑像素）
+                // 通知窗口底部距离屏幕底部的距离（物理像素）
+                let bottom_offset = (260.0 * scale_factor) as i32;
+
+                // 水平居中
+                let x = monitor_pos.x + (screen_size.width as i32 - window_width) / 2;
+                // 垂直方向：在悬浮窗上方约 150px
+                let y = monitor_pos.y + screen_size.height as i32 - window_height - bottom_offset;
+
+                // 确保不超出屏幕顶部（至少留 50 逻辑像素）
+                let top_margin = (50.0 * scale_factor) as i32;
+                let y = y.max(monitor_pos.y + top_margin);
+
+                notification.set_position(tauri::PhysicalPosition::new(x, y))
+                    .map_err(|e| format!("设置窗口位置失败: {}", e))?;
+            }
+        }
+
+        // 避免抢占焦点：学习观察依赖前台窗口 hwnd，一旦通知窗口 set_focus 会导致学习误判“失焦”。
+        // 通知窗口只需可见即可。
+        notification.show().map_err(|e| format!("显示窗口失败: {}", e))?;
+
+        Ok(())
+    } else {
+        Err("通知窗口不存在".to_string())
     }
 }
 
@@ -2423,6 +2620,11 @@ pub fn run() {
             set_hotkey_service_active,
             get_hotkey_debug_info,
             update_runtime_config,
+            add_learned_word,
+            get_dictionary_entries,
+            delete_dictionary_entries,
+            dismiss_learning_suggestion,
+            show_notification_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

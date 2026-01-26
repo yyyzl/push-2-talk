@@ -1,4 +1,4 @@
-import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta } from '../types';
+import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig } from '../types';
 
 // 按键显示名称映射
 export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
@@ -50,11 +50,28 @@ export const DEFAULT_PRESETS: LlmPreset[] = [
   }
 ];
 
+// 默认共享 LLM 配置
+export const DEFAULT_SHARED_LLM_CONFIG: SharedLlmConfig = {
+  providers: [],
+  default_provider_id: "",
+  polishing_provider_id: undefined,
+  polishing_model: undefined,
+  assistant_provider_id: undefined,
+  assistant_model: undefined,
+  learning_provider_id: undefined,
+  learning_model: undefined
+};
+
 // 默认 LLM 配置
 export const DEFAULT_LLM_CONFIG: LlmConfig = {
-  endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-  model: "glm-4-flash-250414",
-  api_key: "",
+  shared: DEFAULT_SHARED_LLM_CONFIG,
+  feature_override: {
+    use_shared: true,
+    provider_id: undefined,
+    model: undefined,
+    endpoint: undefined,
+    api_key: undefined
+  },
   presets: DEFAULT_PRESETS,
   active_preset_id: "polishing"
 };
@@ -62,9 +79,13 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
 // AI 助手默认配置
 export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
   enabled: false,
-  endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-  model: "glm-4-flash-250414",
-  api_key: "",
+  llm: {
+    use_shared: true,
+    provider_id: undefined,
+    model: undefined,
+    endpoint: undefined,
+    api_key: undefined
+  },
   qa_system_prompt: `你是一个智能语音助手。用户会通过语音向你提问，你需要：
 1. 理解用户的问题
 2. 给出简洁、准确、有用的回答
@@ -118,6 +139,20 @@ export const DEFAULT_ASR_CACHE = {
   qwen: { api_key: '' },
   doubao: { app_id: '', access_token: '' },
   siliconflow: { api_key: '' }
+};
+
+// 默认自动学习配置
+export const DEFAULT_LEARNING_CONFIG: LearningConfig = {
+  enabled: false,
+  observation_duration_secs: 15,
+  llm_endpoint: null,
+  feature_override: {
+    use_shared: true,
+    provider_id: undefined,
+    model: undefined,
+    endpoint: undefined,
+    api_key: undefined
+  }
 };
 
 // 外部链接

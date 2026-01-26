@@ -6,6 +6,7 @@ import type {
   AppStatus,
   AsrConfig,
   AssistantConfig,
+  DictionaryEntry,
   DualHotkeyConfig,
   HotkeyKey,
   LlmConfig,
@@ -16,6 +17,7 @@ import {
   DEFAULT_LLM_CONFIG,
 } from "../constants";
 import { isAsrConfigValid } from "../utils";
+import { entriesToWords, wordsToEntries, entriesToStorageFormat } from "../utils/dictionaryUtils";
 
 const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
 
@@ -45,8 +47,8 @@ export type UseAppServiceControllerParams = {
   dualHotkeyConfig: DualHotkeyConfig;
   setDualHotkeyConfig: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
 
-  dictionary: string[];
-  setDictionary: React.Dispatch<React.SetStateAction<string[]>>;
+  dictionary: DictionaryEntry[];
+  setDictionary: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
 
   status: AppStatus;
   setStatus: React.Dispatch<React.SetStateAction<AppStatus>>;
@@ -147,7 +149,7 @@ export function useAppServiceController({
       llmConfig?: LlmConfig;
       assistantConfig?: AssistantConfig;
       enableMuteOtherApps?: boolean;
-      dictionary?: string[];
+      dictionary?: DictionaryEntry[];
     }) => {
       if (status !== "running") return;
       try {
@@ -156,7 +158,7 @@ export function useAppServiceController({
           llmConfig: updates.llmConfig,
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
-          dictionary: updates.dictionary,
+          dictionary: updates.dictionary ? entriesToWords(updates.dictionary) : undefined,
         });
       } catch (err) {
         console.error("热更新配置失败:", err);
@@ -235,6 +237,7 @@ export function useAppServiceController({
               dualHotkeyConfig: config.dual_hotkey_config || DEFAULT_DUAL_HOTKEY_CONFIG,
               enableMuteOtherApps: config.enable_mute_other_apps ?? false,
               dictionary: mergedDictionary,
+              theme: config.theme || 'light',
             });
 
             console.log('[迁移] 配置已保存到后端，清理 localStorage');
@@ -310,9 +313,18 @@ export function useAppServiceController({
       const configDictionary =
         config.dictionary && Array.isArray(config.dictionary) ? config.dictionary : [];
 
-      const loadedDictionary = configDictionary.filter(
-        (w) => typeof w === "string" && w.trim()
-      );
+      // 处理词典：支持新格式 DictionaryEntry[] 和旧格式 string[]
+      let loadedDictionary: DictionaryEntry[];
+      if (configDictionary.length > 0 && typeof configDictionary[0] === "object") {
+        // 新格式：DictionaryEntry[]
+        loadedDictionary = configDictionary as unknown as DictionaryEntry[];
+      } else {
+        // 旧格式：string[]，需要转换
+        const words = (configDictionary as unknown as string[]).filter(
+          (w) => typeof w === "string" && w.trim()
+        );
+        loadedDictionary = wordsToEntries(words);
+      }
       setDictionary(loadedDictionary);
 
       const loadedAsrConfig = config.asr_config || null;
@@ -336,7 +348,7 @@ export function useAppServiceController({
           asrConfig: loadedAsrConfig,
           dualHotkeyConfig: loadedDualHotkeyConfig,
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-          dictionary: loadedDictionary,
+          dictionary: entriesToWords(loadedDictionary),
           theme: config.theme || "light",
         });
         setStatus("running");
@@ -365,7 +377,12 @@ export function useAppServiceController({
 
   const handleSaveConfig = useCallback(async () => {
     try {
-      const validDictionary = dictionary.filter((w) => w.trim());
+      // 保存时使用存储格式（保留 source 信息）
+      const storageDictionary = entriesToStorageFormat(dictionary);
+      // 运行时使用纯词汇（用于 ASR API）
+      const runtimeDictionary = entriesToWords(dictionary);
+
+      console.log("[handleSaveConfig] 保存配置, theme=", theme);
 
       await invoke<string>("save_config", {
         apiKey,
@@ -378,11 +395,13 @@ export function useAppServiceController({
         asrConfig,
         dualHotkeyConfig,
         enableMuteOtherApps,
-        dictionary: validDictionary,
+        dictionary: storageDictionary,
         theme,
       });
 
-      setDictionary(validDictionary);
+      console.log("[handleSaveConfig] 配置已保存到后端");
+
+      // 不需要更新 dictionary 状态，因为它已经是正确的格式
 
       if (status === "running") {
         await stopApp();
@@ -397,7 +416,7 @@ export function useAppServiceController({
           asrConfig,
           dualHotkeyConfig,
           enableMuteOtherApps,
-          dictionary: validDictionary,
+          dictionary: runtimeDictionary,
           theme,
         });
       }
@@ -420,7 +439,6 @@ export function useAppServiceController({
     dictionary,
     status,
     flashSuccessToast,
-    setDictionary,
     setError,
     startApp,
     stopApp,
@@ -440,7 +458,7 @@ export function useAppServiceController({
     asrConfig?: AsrConfig;
     dualHotkeyConfig?: DualHotkeyConfig;
     enableMuteOtherApps?: boolean;
-    dictionary?: string[];
+    dictionary?: DictionaryEntry[];
     theme?: string;
   }) => {
     // 先取消 debounce timer
@@ -457,7 +475,10 @@ export function useAppServiceController({
       const finalEnableMuteOtherApps = overrides?.enableMuteOtherApps ?? enableMuteOtherApps;
       const finalDictionary = overrides?.dictionary ?? dictionary;
       const finalTheme = overrides?.theme ?? theme;
-      const validDictionary = finalDictionary.filter((w) => w.trim());
+      // 保存时使用存储格式（保留 source 信息）
+      const storageDictionary = entriesToStorageFormat(finalDictionary);
+      // 运行时使用纯词汇（用于 ASR API）
+      const runtimeDictionary = entriesToWords(finalDictionary);
 
       await invoke<string>("save_config", {
         apiKey,
@@ -470,11 +491,11 @@ export function useAppServiceController({
         asrConfig: finalAsrConfig,
         dualHotkeyConfig: finalDualHotkeyConfig,
         enableMuteOtherApps: finalEnableMuteOtherApps,
-        dictionary: validDictionary,
+        dictionary: storageDictionary,
         theme: finalTheme,
       });
 
-      setDictionary(validDictionary);
+      if (overrides?.dictionary) setDictionary(overrides.dictionary);
       if (overrides?.theme) setTheme(overrides.theme);
 
       if (status === "running") {
@@ -490,7 +511,7 @@ export function useAppServiceController({
           asrConfig: finalAsrConfig,
           dualHotkeyConfig: finalDualHotkeyConfig,
           enableMuteOtherApps: finalEnableMuteOtherApps,
-          dictionary: validDictionary,
+          dictionary: runtimeDictionary,
           theme: finalTheme,
         });
       }
@@ -539,6 +560,11 @@ export function useAppServiceController({
           return;
         }
 
+        // 保存时使用存储格式（保留 source 信息）
+        const storageDictionary = entriesToStorageFormat(dictionary);
+        // 运行时使用纯词汇（用于 ASR API）
+        const runtimeDictionary = entriesToWords(dictionary);
+
         await invoke<string>("save_config", {
           apiKey,
           fallbackApiKey,
@@ -551,7 +577,7 @@ export function useAppServiceController({
           closeAction,
           dualHotkeyConfig,
           enableMuteOtherApps,
-          dictionary,
+          dictionary: storageDictionary,
           theme,
         });
 
@@ -566,7 +592,7 @@ export function useAppServiceController({
           asrConfig,
           dualHotkeyConfig,
           enableMuteOtherApps,
-          dictionary,
+          dictionary: runtimeDictionary,
           theme,
         });
 
@@ -624,7 +650,7 @@ export function useAppServiceController({
             closeAction: action,
             dualHotkeyConfig,
             enableMuteOtherApps,
-            dictionary,
+            dictionary: entriesToStorageFormat(dictionary),
             theme,
           });
         } catch (err) {

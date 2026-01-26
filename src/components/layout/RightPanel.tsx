@@ -3,6 +3,7 @@ import { ArrowRight, Plus, HelpCircle } from "lucide-react";
 import type {
   AsrConfig,
   AsrProvider,
+  DictionaryEntry,
   DualHotkeyConfig,
   HotkeyKey,
   LlmConfig,
@@ -30,7 +31,7 @@ export type RightPanelProps = {
 
   dualHotkeyConfig: DualHotkeyConfig;
 
-  dictionary: string[];
+  dictionary: DictionaryEntry[];
   newWord: string;
   setNewWord: (next: string) => void;
   onAddWord: () => void;
@@ -163,7 +164,7 @@ export function RightPanel({
               </option>
             ))}
           </select>
-          {!llmConfig.api_key && enablePostProcess && (
+          {!llmConfig.shared.api_key && enablePostProcess && (
             <div className="mt-3 text-[10px] font-bold text-amber-600">
               LLM API Key 未配置，请到 Presets 中设置
             </div>
@@ -237,12 +238,12 @@ export function RightPanel({
           </button>
         </div>
         <div className="flex flex-wrap gap-1.5 pt-1 items-center">
-          {[...dictionary].reverse().slice(0, dictionary.length > DICTIONARY_DISPLAY_LIMIT ? DICTIONARY_DISPLAY_LIMIT - 1 : DICTIONARY_DISPLAY_LIMIT).map((w) => (
+          {[...dictionary].reverse().slice(0, dictionary.length > DICTIONARY_DISPLAY_LIMIT ? DICTIONARY_DISPLAY_LIMIT - 1 : DICTIONARY_DISPLAY_LIMIT).map((entry) => (
             <span
-              key={w}
+              key={entry.id}
               className="px-2 py-0.5 bg-stone-50 text-stone-500 rounded text-[10px] font-medium border border-stone-200"
             >
-              {w}
+              {entry.word}
             </span>
           ))}
           {dictionary.length > DICTIONARY_DISPLAY_LIMIT && (

@@ -1,21 +1,21 @@
 import type { Dispatch, SetStateAction } from "react";
 import { AlertCircle } from "lucide-react";
-import type { AssistantConfig } from "../types";
-import { ApiKeyInput } from "../components/common";
+import type { AssistantConfig, SharedLlmConfig } from "../types";
+import { LlmConnectionConfig } from "../components/common";
 
 export type AssistantPageProps = {
   assistantConfig: AssistantConfig;
   setAssistantConfig: Dispatch<SetStateAction<AssistantConfig>>;
-  showApiKey: boolean;
-  setShowApiKey: (next: boolean) => void;
+  sharedConfig: SharedLlmConfig;
+  onNavigateToModels?: () => void;
   isRunning: boolean;
 };
 
 export function AssistantPage({
   assistantConfig,
   setAssistantConfig,
-  showApiKey,
-  setShowApiKey,
+  sharedConfig,
+  onNavigateToModels,
   isRunning,
 }: AssistantPageProps) {
   return (
@@ -31,42 +31,13 @@ export function AssistantPage({
         </div>
 
         <div className="space-y-4">
-          <h4 className="text-sm font-bold text-stone-700">连接信息</h4>
-          <div className="space-y-3 p-4 bg-[var(--paper)] rounded-2xl border border-[var(--stone)]">
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-stone-500">API Key</label>
-              <ApiKeyInput
-                value={assistantConfig.api_key}
-                onChange={(value) => setAssistantConfig((prev) => ({ ...prev, api_key: value }))}
-                show={showApiKey}
-                onToggleShow={() => setShowApiKey(!showApiKey)}
-                placeholder="sk-..."
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-stone-500">模型名称</label>
-                <input
-                  type="text"
-                  value={assistantConfig.model}
-                  disabled={isRunning}
-                  onChange={(e) => setAssistantConfig((prev) => ({ ...prev, model: e.target.value }))}
-                  className="w-full px-3 py-2.5 bg-white border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] disabled:opacity-60"
-                  placeholder="glm-4-flash"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-stone-500">API 地址</label>
-                <input
-                  type="text"
-                  value={assistantConfig.endpoint}
-                  disabled={isRunning}
-                  onChange={(e) => setAssistantConfig((prev) => ({ ...prev, endpoint: e.target.value }))}
-                  className="w-full px-3 py-2.5 bg-white border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] disabled:opacity-60"
-                  placeholder="https://api..."
-                />
-              </div>
-            </div>
+          <h4 className="text-sm font-bold text-stone-700">LLM 连接配置</h4>
+          <div className="p-4 bg-[var(--paper)] rounded-2xl border border-[var(--stone)]">
+            <LlmConnectionConfig
+              sharedConfig={sharedConfig}
+              featureName="assistant"
+              onNavigateToModels={onNavigateToModels}
+            />
           </div>
         </div>
 

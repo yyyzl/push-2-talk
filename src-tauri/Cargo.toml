@@ -43,6 +43,9 @@ base64 = "0.22"
 rodio = "0.17"
 uuid = { version = "1.0", features = ["v4"] }
 flate2 = "1.0"
+lazy_static = "1.4"
+md5 = "0.7"
+sha2 = "0.10"
 
 # WebSocket 实时 ASR 支持
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
@@ -69,6 +72,7 @@ windows = { version = "0.58", features = [
     "Win32_Media_Audio",
     "Win32_System_Com",
     "Win32_Foundation",
+    "Win32_UI_Accessibility",         # UI Automation API - 无干扰文本读取
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",  # 焦点管理: GetForegroundWindow, SetForegroundWindow, IsWindow
     "Win32_System_Threading",         # 焦点管理: GetCurrentThreadId, AttachThreadInput, GetWindowThreadProcessId

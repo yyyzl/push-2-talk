@@ -13,7 +13,7 @@
  */
 
 import { createContext, useContext } from "react";
-import type { AsrConfig, AssistantConfig, DualHotkeyConfig, LlmConfig } from "../types";
+import type { AsrConfig, AssistantConfig, DictionaryEntry, DualHotkeyConfig, LlmConfig } from "../types";
 
 export type ConfigSyncStatus = "idle" | "syncing" | "success" | "error";
 
@@ -28,7 +28,8 @@ export type ConfigOverrides = {
   asrConfig?: AsrConfig;
   dualHotkeyConfig?: DualHotkeyConfig;
   enableMuteOtherApps?: boolean;
-  dictionary?: string[];
+  dictionary?: DictionaryEntry[];
+  theme?: string;
 };
 
 export type ConfigSaveContextValue = {

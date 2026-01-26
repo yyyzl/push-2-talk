@@ -1,7 +1,10 @@
-import { AlertCircle, CheckCircle2, Plus } from "lucide-react";
+import { useState } from "react";
+import { AlertCircle, CheckCircle2, Plus, Trash2 } from "lucide-react";
+import { SourceBadge } from "../components/learning/SourceBadge";
+import type { DictionaryEntry } from "../types";
 
 export type DictionaryPageProps = {
-  dictionary: string[];
+  dictionary: DictionaryEntry[];
   newWord: string;
   setNewWord: (next: string) => void;
   duplicateHint: boolean;
@@ -10,12 +13,15 @@ export type DictionaryPageProps = {
   editingValue: string;
   setEditingValue: (next: string) => void;
   handleAddWord: () => void;
-  handleDeleteWord: (index: number) => void;
+  handleDeleteWord: (id: string) => void;
   handleStartEdit: (index: number) => void;
   handleSaveEdit: () => void;
   handleCancelEdit: () => void;
+  handleBatchDelete: (ids: string[]) => void;
   isRunning: boolean;
 };
+
+type FilterType = "all" | "manual" | "auto";
 
 export function DictionaryPage({
   dictionary,
@@ -27,12 +33,59 @@ export function DictionaryPage({
   editingValue,
   setEditingValue,
   handleAddWord,
-  handleDeleteWord,
+  handleDeleteWord: _handleDeleteWord,
   handleStartEdit,
   handleSaveEdit,
   handleCancelEdit,
+  handleBatchDelete,
   isRunning,
 }: DictionaryPageProps) {
+  const [filter, setFilter] = useState<FilterType>("all");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // 筛选词条
+  const filteredDictionary = dictionary.filter((entry) => {
+    if (filter === "all") return true;
+    return entry.source === filter;
+  });
+
+  // 统计
+  const manualCount = dictionary.filter((e) => e.source === "manual").length;
+  const autoCount = dictionary.filter((e) => e.source === "auto").length;
+
+  // 切换选择
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // 全选/取消全选
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredDictionary.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredDictionary.map((e) => e.id)));
+    }
+  };
+
+  // 批量删除
+  const handleBatchDeleteClick = () => {
+    if (selectedIds.size === 0) return;
+    // 将 ID 映射为 word（后端按 word 匹配删除）
+    const wordsToDelete = dictionary
+      .filter((e) => selectedIds.has(e.id))
+      .map((e) => e.word);
+    handleBatchDelete(wordsToDelete);
+    setSelectedIds(new Set());
+  };
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 font-sans">
       <div className="bg-white border border-[var(--stone)] rounded-2xl p-6 space-y-6">
@@ -80,14 +133,81 @@ export function DictionaryPage({
               <span>该词条已存在</span>
             </div>
           )}
-          <div className="text-xs text-stone-400 font-semibold">共 {dictionary.length} 个词条</div>
         </div>
 
+        {/* 筛选器 + 统计 */}
+        <div className="flex items-center justify-between">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setFilter("all")}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${filter === "all"
+                ? "bg-[var(--ink)] text-white"
+                : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                }`}
+            >
+              全部 ({dictionary.length})
+            </button>
+            <button
+              onClick={() => setFilter("manual")}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${filter === "manual"
+                ? "bg-[var(--steel)] text-white"
+                : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                }`}
+            >
+              手动 ({manualCount})
+            </button>
+            <button
+              onClick={() => setFilter("auto")}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${filter === "auto"
+                ? "bg-[var(--sage)] text-white"
+                : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                }`}
+            >
+              自动 ({autoCount})
+            </button>
+          </div>
+
+          {/* 批量操作 */}
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-stone-500">已选 {selectedIds.size} 项</span>
+              <button
+                onClick={handleBatchDeleteClick}
+                disabled={isRunning}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-red-600 bg-red-50 rounded-full hover:bg-red-100 transition-colors disabled:opacity-50"
+              >
+                <Trash2 size={12} />
+                删除
+              </button>
+            </div>
+          )}
+        </div>
+
+        {filteredDictionary.length > 0 && (
+          <div className="flex items-center justify-between">
+            <button
+              onClick={toggleSelectAll}
+              disabled={isRunning}
+              className="text-xs font-bold text-stone-400 hover:text-[var(--crail)] transition-colors flex items-center gap-1.5"
+            >
+              <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors ${selectedIds.size === filteredDictionary.length && filteredDictionary.length > 0
+                  ? "bg-[var(--crail)] border-[var(--crail)]"
+                  : "border-stone-300"
+                }`}>
+                {selectedIds.size === filteredDictionary.length && filteredDictionary.length > 0 && (
+                  <CheckCircle2 size={10} className="text-white" />
+                )}
+              </div>
+              全选当前列表
+            </button>
+          </div>
+        )}
+
         <div className="flex flex-wrap gap-2">
-          {dictionary.map((word, index) =>
+          {filteredDictionary.map((entry, index) =>
             editingIndex === index ? (
               <div
-                key={index}
+                key={entry.id}
                 className="flex items-center gap-1 px-2 py-1 bg-white border-2 border-[var(--crail)] rounded-full shadow-sm"
               >
                 <input
@@ -121,34 +241,46 @@ export function DictionaryPage({
               </div>
             ) : (
               <div
-                key={index}
-                className="group flex items-center gap-1.5 px-3 py-1.5 bg-white border border-[var(--stone)] rounded-full text-sm text-stone-700 hover:border-[rgba(217,119,87,0.35)] hover:shadow-sm transition-colors cursor-default"
+                key={entry.id}
+                onClick={() => !isRunning && toggleSelect(entry.id)}
+                className={`group relative flex items-center gap-1.5 px-3 py-1.5 border rounded-full text-sm transition-all cursor-pointer select-none ${selectedIds.has(entry.id)
+                  ? "border-[var(--crail)] bg-[rgba(217,119,87,0.08)] text-[var(--crail)]"
+                  : "border-stone-200 bg-white text-stone-700 hover:border-stone-300 hover:bg-stone-50"
+                  }`}
               >
-                <span className="font-semibold" onDoubleClick={() => !isRunning && handleStartEdit(index)}>
-                  {word}
+                {selectedIds.has(entry.id) && (
+                  <CheckCircle2 size={14} className="text-[var(--crail)] animate-in fade-in zoom-in duration-200" />
+                )}
+                <span className="font-semibold" onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  !isRunning && handleStartEdit(index)
+                }}>
+                  {entry.word}
                 </span>
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <SourceBadge source={entry.source} />
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                   <button
-                    onClick={() => handleStartEdit(index)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleStartEdit(index);
+                    }}
                     disabled={isRunning}
                     className="p-0.5 text-stone-400 hover:text-[var(--steel)] transition-colors disabled:opacity-50"
                     title="编辑"
                   >
                     ✎
                   </button>
-                  <button
-                    onClick={() => handleDeleteWord(index)}
-                    disabled={isRunning}
-                    className="p-0.5 text-stone-400 hover:text-red-600 transition-colors disabled:opacity-50"
-                    title="删除"
-                  >
-                    ×
-                  </button>
                 </div>
               </div>
             ),
           )}
         </div>
+
+        {filteredDictionary.length === 0 && (
+          <div className="text-center py-8 text-stone-400 text-sm">
+            {filter === "all" ? "暂无词条，开始添加吧" : `暂无${filter === "manual" ? "手动" : "自动"}添加的词条`}
+          </div>
+        )}
       </div>
     </div>
   );

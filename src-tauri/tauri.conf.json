@@ -4,22 +4,37 @@
   "identifier": "com.pushtotalk.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "PushToTalk",
         "width": 1200,
-        "height": 728,
-        "resizable": true,
-        "fullscreen": false,
-        "decorations": true,
-        "alwaysOnTop": false,
-        "label": "main"
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "visible": false,
+        "center": true,
+        "focusable": true
+      },
+      {
+        "title": "词库学习",
+        "label": "notification",
+        "url": "notification.html",
+        "width": 360,
+        "height": 600,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "focusable": true
       },
       {
         "title": "Recording Overlay",

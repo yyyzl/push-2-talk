@@ -22,10 +22,11 @@ pub struct LlmPostProcessor {
 impl LlmPostProcessor {
     /// 创建新的处理器实例
     pub fn new(config: LlmConfig) -> Self {
+        let resolved = config.resolve_polishing();
         let client_config = OpenAiClientConfig::new(
-            &config.endpoint,
-            &config.api_key,
-            &config.model,
+            &resolved.endpoint,
+            &resolved.api_key,
+            &resolved.model,
         );
         let client = OpenAiClient::new(client_config);
 
@@ -71,13 +72,19 @@ impl LlmPostProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::LlmPreset;
+    use crate::config::{LlmPreset, SharedLlmConfig, LlmFeatureConfig};
 
     fn create_test_config() -> LlmConfig {
         LlmConfig {
-            endpoint: "https://api.example.com/v1/chat/completions".to_string(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
+            shared: SharedLlmConfig {
+                endpoint: "https://api.example.com/v1/chat/completions".to_string(),
+                api_key: "test-key".to_string(),
+                default_model: "test-model".to_string(),
+                polishing_model: None,
+                assistant_model: None,
+                learning_model: None,
+            },
+            feature_override: LlmFeatureConfig::default(),
             presets: vec![
                 LlmPreset {
                     id: "test".to_string(),
