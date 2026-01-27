@@ -16,11 +16,15 @@ const MAX_CHARS: usize = 2048;
 /// # Returns
 /// * `true` - 验证通过（文本匹配）
 /// * `false` - 验证失败（如 VS Code 等无法读取文本的应用）
-pub fn is_asr_text_present(focused_text: &str, asr_original: &str, similarity_threshold: f64) -> bool {
+pub fn is_asr_text_present(
+    focused_text: &str,
+    asr_original: &str,
+    similarity_threshold: f64,
+) -> bool {
     let focused = focused_text.trim();
     let asr = asr_original.trim();
 
-    if asr.is_empty() {
+    if asr.is_empty() || focused.is_empty() {
         return false;
     }
 

@@ -31,6 +31,7 @@ use pipeline::{AssistantPipeline, NormalPipeline, TranscriptionContext};
 use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
+use openai_client::{OpenAiClient, OpenAiClientConfig, ChatOptions, Message};
 
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2485,6 +2486,41 @@ async fn show_notification_window(app_handle: AppHandle) -> Result<(), String> {
     }
 }
 
+/// 测试 LLM Provider 配置是否可用
+///
+/// 发送一个非常短的 Chat Completions 请求来验证：
+/// - endpoint 是否可达
+/// - api_key 是否有效
+/// - model 是否可用
+///
+/// 备注：endpoint 可传 base URL 或 full URL；最终会被 normalize 为 `/chat/completions`。
+#[tauri::command]
+async fn test_llm_provider(endpoint: String, api_key: String, model: String) -> Result<String, String> {
+    let resolved_endpoint = config::normalize_chat_completions_endpoint(&endpoint);
+
+    if resolved_endpoint.trim().is_empty() {
+        return Err("Endpoint 不能为空".to_string());
+    }
+    if api_key.trim().is_empty() {
+        return Err("API Key 不能为空".to_string());
+    }
+    if model.trim().is_empty() {
+        return Err("Model 不能为空".to_string());
+    }
+
+    let client = OpenAiClient::new(OpenAiClientConfig::new(resolved_endpoint, api_key, model));
+    let messages = vec![
+        Message::system("You are a connectivity test. Reply with: OK"),
+        Message::user("OK"),
+    ];
+
+    client
+        .chat(&messages, ChatOptions { max_tokens: 4, temperature: 0.0 })
+        .await
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("测试请求失败: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 初始化日志
@@ -2625,6 +2661,7 @@ pub fn run() {
             delete_dictionary_entries,
             dismiss_learning_suggestion,
             show_notification_window,
+            test_llm_provider,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

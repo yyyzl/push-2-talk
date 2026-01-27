@@ -77,9 +77,14 @@ mod tests {
     fn create_test_config() -> LlmConfig {
         LlmConfig {
             shared: SharedLlmConfig {
-                endpoint: "https://api.example.com/v1/chat/completions".to_string(),
-                api_key: "test-key".to_string(),
-                default_model: "test-model".to_string(),
+                providers: Vec::new(),
+                default_provider_id: String::new(),
+                polishing_provider_id: None,
+                assistant_provider_id: None,
+                learning_provider_id: None,
+                endpoint: Some("https://api.example.com/v1/chat/completions".to_string()),
+                api_key: Some("test-key".to_string()),
+                default_model: Some("test-model".to_string()),
                 polishing_model: None,
                 assistant_model: None,
                 learning_model: None,

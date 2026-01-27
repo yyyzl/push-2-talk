@@ -1,10 +1,10 @@
 // src-tauri/src/config.rs
 
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::collections::HashSet;
-use std::sync::Mutex;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 // 词典相关函数已移至 learning::store 模块
 
@@ -18,7 +18,7 @@ lazy_static::lazy_static! {
     /// 保护所有 config 的读写操作，防止并发 load->modify->save 导致的数据丢失
     ///
     /// 使用方式：
-    /// ```
+    /// ```ignore
     /// let _guard = CONFIG_LOCK.lock().unwrap();
     /// let (mut config, _) = AppConfig::load()?;
     /// // 修改 config...
@@ -77,7 +77,6 @@ pub enum TriggerMode {
     AiAssistant,
 }
 
-
 // ============================================================================
 // 热键配置
 // ============================================================================
@@ -93,11 +92,22 @@ pub enum HotkeyKey {
     ShiftRight,
     AltLeft,
     AltRight,
-    MetaLeft,   // Win/Cmd 左
-    MetaRight,  // Win/Cmd 右
+    MetaLeft,  // Win/Cmd 左
+    MetaRight, // Win/Cmd 右
 
     // 功能键
-    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
 
     // 常用键
     Space,
@@ -106,37 +116,94 @@ pub enum HotkeyKey {
     Escape,
 
     // 字母键
-    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ,
-    KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT,
-    KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+    KeyA,
+    KeyB,
+    KeyC,
+    KeyD,
+    KeyE,
+    KeyF,
+    KeyG,
+    KeyH,
+    KeyI,
+    KeyJ,
+    KeyK,
+    KeyL,
+    KeyM,
+    KeyN,
+    KeyO,
+    KeyP,
+    KeyQ,
+    KeyR,
+    KeyS,
+    KeyT,
+    KeyU,
+    KeyV,
+    KeyW,
+    KeyX,
+    KeyY,
+    KeyZ,
 
     // 数字键
-    Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+    Num0,
+    Num1,
+    Num2,
+    Num3,
+    Num4,
+    Num5,
+    Num6,
+    Num7,
+    Num8,
+    Num9,
 
     // 方向键
-    Up, Down, Left, Right,
+    Up,
+    Down,
+    Left,
+    Right,
 
     // 编辑键
-    Return, Backspace, Delete, Insert, Home, End, PageUp, PageDown,
+    Return,
+    Backspace,
+    Delete,
+    Insert,
+    Home,
+    End,
+    PageUp,
+    PageDown,
 }
 
 impl HotkeyKey {
     /// 判断是否为修饰键
     pub fn is_modifier(&self) -> bool {
-        matches!(self,
-            HotkeyKey::ControlLeft | HotkeyKey::ControlRight |
-            HotkeyKey::ShiftLeft | HotkeyKey::ShiftRight |
-            HotkeyKey::AltLeft | HotkeyKey::AltRight |
-            HotkeyKey::MetaLeft | HotkeyKey::MetaRight
+        matches!(
+            self,
+            HotkeyKey::ControlLeft
+                | HotkeyKey::ControlRight
+                | HotkeyKey::ShiftLeft
+                | HotkeyKey::ShiftRight
+                | HotkeyKey::AltLeft
+                | HotkeyKey::AltRight
+                | HotkeyKey::MetaLeft
+                | HotkeyKey::MetaRight
         )
     }
 
     /// 判断是否为功能键
     pub fn is_function_key(&self) -> bool {
-        matches!(self,
-            HotkeyKey::F1 | HotkeyKey::F2 | HotkeyKey::F3 | HotkeyKey::F4 |
-            HotkeyKey::F5 | HotkeyKey::F6 | HotkeyKey::F7 | HotkeyKey::F8 |
-            HotkeyKey::F9 | HotkeyKey::F10 | HotkeyKey::F11 | HotkeyKey::F12
+        matches!(
+            self,
+            HotkeyKey::F1
+                | HotkeyKey::F2
+                | HotkeyKey::F3
+                | HotkeyKey::F4
+                | HotkeyKey::F5
+                | HotkeyKey::F6
+                | HotkeyKey::F7
+                | HotkeyKey::F8
+                | HotkeyKey::F9
+                | HotkeyKey::F10
+                | HotkeyKey::F11
+                | HotkeyKey::F12
         )
     }
 
@@ -155,29 +222,66 @@ impl HotkeyKey {
             HotkeyKey::Tab => "Tab",
             HotkeyKey::CapsLock => "CapsLock",
             HotkeyKey::Escape => "Esc",
-            HotkeyKey::F1 => "F1", HotkeyKey::F2 => "F2", HotkeyKey::F3 => "F3",
-            HotkeyKey::F4 => "F4", HotkeyKey::F5 => "F5", HotkeyKey::F6 => "F6",
-            HotkeyKey::F7 => "F7", HotkeyKey::F8 => "F8", HotkeyKey::F9 => "F9",
-            HotkeyKey::F10 => "F10", HotkeyKey::F11 => "F11", HotkeyKey::F12 => "F12",
-            HotkeyKey::KeyA => "A", HotkeyKey::KeyB => "B", HotkeyKey::KeyC => "C",
-            HotkeyKey::KeyD => "D", HotkeyKey::KeyE => "E", HotkeyKey::KeyF => "F",
-            HotkeyKey::KeyG => "G", HotkeyKey::KeyH => "H", HotkeyKey::KeyI => "I",
-            HotkeyKey::KeyJ => "J", HotkeyKey::KeyK => "K", HotkeyKey::KeyL => "L",
-            HotkeyKey::KeyM => "M", HotkeyKey::KeyN => "N", HotkeyKey::KeyO => "O",
-            HotkeyKey::KeyP => "P", HotkeyKey::KeyQ => "Q", HotkeyKey::KeyR => "R",
-            HotkeyKey::KeyS => "S", HotkeyKey::KeyT => "T", HotkeyKey::KeyU => "U",
-            HotkeyKey::KeyV => "V", HotkeyKey::KeyW => "W", HotkeyKey::KeyX => "X",
-            HotkeyKey::KeyY => "Y", HotkeyKey::KeyZ => "Z",
-            HotkeyKey::Num0 => "0", HotkeyKey::Num1 => "1", HotkeyKey::Num2 => "2",
-            HotkeyKey::Num3 => "3", HotkeyKey::Num4 => "4", HotkeyKey::Num5 => "5",
-            HotkeyKey::Num6 => "6", HotkeyKey::Num7 => "7", HotkeyKey::Num8 => "8",
+            HotkeyKey::F1 => "F1",
+            HotkeyKey::F2 => "F2",
+            HotkeyKey::F3 => "F3",
+            HotkeyKey::F4 => "F4",
+            HotkeyKey::F5 => "F5",
+            HotkeyKey::F6 => "F6",
+            HotkeyKey::F7 => "F7",
+            HotkeyKey::F8 => "F8",
+            HotkeyKey::F9 => "F9",
+            HotkeyKey::F10 => "F10",
+            HotkeyKey::F11 => "F11",
+            HotkeyKey::F12 => "F12",
+            HotkeyKey::KeyA => "A",
+            HotkeyKey::KeyB => "B",
+            HotkeyKey::KeyC => "C",
+            HotkeyKey::KeyD => "D",
+            HotkeyKey::KeyE => "E",
+            HotkeyKey::KeyF => "F",
+            HotkeyKey::KeyG => "G",
+            HotkeyKey::KeyH => "H",
+            HotkeyKey::KeyI => "I",
+            HotkeyKey::KeyJ => "J",
+            HotkeyKey::KeyK => "K",
+            HotkeyKey::KeyL => "L",
+            HotkeyKey::KeyM => "M",
+            HotkeyKey::KeyN => "N",
+            HotkeyKey::KeyO => "O",
+            HotkeyKey::KeyP => "P",
+            HotkeyKey::KeyQ => "Q",
+            HotkeyKey::KeyR => "R",
+            HotkeyKey::KeyS => "S",
+            HotkeyKey::KeyT => "T",
+            HotkeyKey::KeyU => "U",
+            HotkeyKey::KeyV => "V",
+            HotkeyKey::KeyW => "W",
+            HotkeyKey::KeyX => "X",
+            HotkeyKey::KeyY => "Y",
+            HotkeyKey::KeyZ => "Z",
+            HotkeyKey::Num0 => "0",
+            HotkeyKey::Num1 => "1",
+            HotkeyKey::Num2 => "2",
+            HotkeyKey::Num3 => "3",
+            HotkeyKey::Num4 => "4",
+            HotkeyKey::Num5 => "5",
+            HotkeyKey::Num6 => "6",
+            HotkeyKey::Num7 => "7",
+            HotkeyKey::Num8 => "8",
             HotkeyKey::Num9 => "9",
-            HotkeyKey::Up => "↑", HotkeyKey::Down => "↓",
-            HotkeyKey::Left => "←", HotkeyKey::Right => "→",
-            HotkeyKey::Return => "Enter", HotkeyKey::Backspace => "Backspace",
-            HotkeyKey::Delete => "Delete", HotkeyKey::Insert => "Insert",
-            HotkeyKey::Home => "Home", HotkeyKey::End => "End",
-            HotkeyKey::PageUp => "PageUp", HotkeyKey::PageDown => "PageDown",
+            HotkeyKey::Up => "↑",
+            HotkeyKey::Down => "↓",
+            HotkeyKey::Left => "←",
+            HotkeyKey::Right => "→",
+            HotkeyKey::Return => "Enter",
+            HotkeyKey::Backspace => "Backspace",
+            HotkeyKey::Delete => "Delete",
+            HotkeyKey::Insert => "Insert",
+            HotkeyKey::Home => "Home",
+            HotkeyKey::End => "End",
+            HotkeyKey::PageUp => "PageUp",
+            HotkeyKey::PageDown => "PageDown",
         }
     }
 }
@@ -208,7 +312,7 @@ impl Default for HotkeyConfig {
             keys: vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft],
             mode: HotkeyMode::default(),
             enable_release_lock: false,
-            release_mode_keys: None,  // 默认无松手模式快捷键
+            release_mode_keys: None, // 默认无松手模式快捷键
         }
     }
 }
@@ -235,7 +339,7 @@ fn default_dictation_hotkey() -> HotkeyConfig {
         keys: vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft],
         mode: HotkeyMode::Press,
         enable_release_lock: false,
-        release_mode_keys: Some(vec![HotkeyKey::F2]),  // 默认 F2 为松手模式快捷键
+        release_mode_keys: Some(vec![HotkeyKey::F2]), // 默认 F2 为松手模式快捷键
     }
 }
 
@@ -244,7 +348,7 @@ fn default_assistant_hotkey() -> HotkeyConfig {
         keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
         mode: HotkeyMode::Press,
         enable_release_lock: false,
-        release_mode_keys: None,  // AI助手模式不支持松手模式
+        release_mode_keys: None, // AI助手模式不支持松手模式
     }
 }
 
@@ -266,9 +370,11 @@ impl DualHotkeyConfig {
     /// 3. 两个快捷键不存在子集关系（避免按键冲突）
     pub fn validate(&self) -> Result<()> {
         // 验证各自配置
-        self.dictation.validate()
+        self.dictation
+            .validate()
             .map_err(|e| anyhow::anyhow!("听写模式快捷键配置无效: {}", e))?;
-        self.assistant.validate()
+        self.assistant
+            .validate()
             .map_err(|e| anyhow::anyhow!("AI助手模式快捷键配置无效: {}", e))?;
 
         // 检查冲突：两个快捷键的按键集合不能完全相同
@@ -357,7 +463,8 @@ impl HotkeyConfig {
 
     /// 格式化为显示字符串（用于日志）
     pub fn format_display(&self) -> String {
-        self.keys.iter()
+        self.keys
+            .iter()
             .map(|k| k.display_name())
             .collect::<Vec<_>>()
             .join("+")
@@ -425,8 +532,6 @@ impl Default for AsrConfig {
         }
     }
 }
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -614,15 +719,18 @@ impl SharedLlmConfig {
     /// 注意：此方法用于向后兼容，新代码应使用 resolve_with_feature
     pub fn get_feature_model(&self, feature: &str) -> String {
         match feature {
-            "polishing" => self.polishing_model.clone().unwrap_or_else(|| {
-                self.default_model.clone().unwrap_or_else(default_llm_model)
-            }),
-            "assistant" => self.assistant_model.clone().unwrap_or_else(|| {
-                self.default_model.clone().unwrap_or_else(default_llm_model)
-            }),
-            "learning" => self.learning_model.clone().unwrap_or_else(|| {
-                self.default_model.clone().unwrap_or_else(default_llm_model)
-            }),
+            "polishing" => self
+                .polishing_model
+                .clone()
+                .unwrap_or_else(|| self.default_model.clone().unwrap_or_else(default_llm_model)),
+            "assistant" => self
+                .assistant_model
+                .clone()
+                .unwrap_or_else(|| self.default_model.clone().unwrap_or_else(default_llm_model)),
+            "learning" => self
+                .learning_model
+                .clone()
+                .unwrap_or_else(|| self.default_model.clone().unwrap_or_else(default_llm_model)),
             _ => self.default_model.clone().unwrap_or_else(default_llm_model),
         }
     }
@@ -688,11 +796,17 @@ impl LlmFeatureConfig {
     /// 共享模式优先级：
     /// 1. Feature 的 provider_id > 功能默认绑定 > 全局 default_provider_id
     /// 2. Feature 的 model > 功能默认 model > Provider 的 default_model
-    pub fn resolve_with_feature(&self, shared: &SharedLlmConfig, feature: &str) -> ResolvedLlmClientConfig {
+    pub fn resolve_with_feature(
+        &self,
+        shared: &SharedLlmConfig,
+        feature: &str,
+    ) -> ResolvedLlmClientConfig {
         if !self.use_shared {
             // 独立模式：使用独立配置
             return ResolvedLlmClientConfig {
-                endpoint: self.endpoint.clone().unwrap_or_default(),
+                endpoint: normalize_chat_completions_endpoint(
+                    &self.endpoint.clone().unwrap_or_default(),
+                ),
                 api_key: self.api_key.clone().unwrap_or_default(),
                 model: self.model.clone().unwrap_or_default(),
             };
@@ -703,7 +817,9 @@ impl LlmFeatureConfig {
             // 新模式：使用 Provider Registry
 
             // 确定使用哪个 Provider
-            let provider_id = self.provider_id.as_deref()
+            let provider_id = self
+                .provider_id
+                .as_deref()
                 .or_else(|| match feature {
                     "polishing" => shared.polishing_provider_id.as_deref(),
                     "assistant" => shared.assistant_provider_id.as_deref(),
@@ -715,7 +831,9 @@ impl LlmFeatureConfig {
             // 查找 Provider
             if let Some(provider) = shared.get_provider(provider_id) {
                 // 确定使用哪个模型
-                let model = self.model.clone()
+                let model = self
+                    .model
+                    .clone()
                     .or_else(|| match feature {
                         "polishing" => shared.polishing_model.clone(),
                         "assistant" => shared.assistant_model.clone(),
@@ -725,7 +843,7 @@ impl LlmFeatureConfig {
                     .unwrap_or_else(|| provider.default_model.clone());
 
                 return ResolvedLlmClientConfig {
-                    endpoint: provider.endpoint.clone(),
+                    endpoint: normalize_chat_completions_endpoint(&provider.endpoint),
                     api_key: provider.api_key.clone(),
                     model,
                 };
@@ -733,12 +851,14 @@ impl LlmFeatureConfig {
 
             // Provider 不存在，尝试使用第一个 Provider (降级策略)
             if let Some(first_provider) = shared.providers.first() {
-                let model = self.model.clone()
+                let model = self
+                    .model
+                    .clone()
                     .or_else(|| shared.get_feature_model(feature).into())
                     .unwrap_or_else(|| first_provider.default_model.clone());
 
                 return ResolvedLlmClientConfig {
-                    endpoint: first_provider.endpoint.clone(),
+                    endpoint: normalize_chat_completions_endpoint(&first_provider.endpoint),
                     api_key: first_provider.api_key.clone(),
                     model,
                 };
@@ -749,16 +869,22 @@ impl LlmFeatureConfig {
         let default_model = if !feature.is_empty() {
             shared.get_feature_model(feature)
         } else {
-            shared.default_model.clone().unwrap_or_else(default_llm_model)
+            shared
+                .default_model
+                .clone()
+                .unwrap_or_else(default_llm_model)
         };
 
         ResolvedLlmClientConfig {
-            endpoint: self.endpoint.clone().unwrap_or_else(|| {
-                shared.endpoint.clone().unwrap_or_else(default_llm_endpoint)
-            }),
-            api_key: self.api_key.clone().unwrap_or_else(|| {
-                shared.api_key.clone().unwrap_or_default()
-            }),
+            endpoint: normalize_chat_completions_endpoint(
+                &self.endpoint.clone().unwrap_or_else(|| {
+                    shared.endpoint.clone().unwrap_or_else(default_llm_endpoint)
+                }),
+            ),
+            api_key: self
+                .api_key
+                .clone()
+                .unwrap_or_else(|| shared.api_key.clone().unwrap_or_default()),
             model: self.model.clone().unwrap_or(default_model),
         }
     }
@@ -791,12 +917,44 @@ pub struct LlmConfig {
 impl LlmConfig {
     /// 解析语音润色配置
     pub fn resolve_polishing(&self) -> ResolvedLlmClientConfig {
-        self.feature_override.resolve_with_feature(&self.shared, "polishing")
+        self.feature_override
+            .resolve_with_feature(&self.shared, "polishing")
     }
 }
 
 fn default_llm_endpoint() -> String {
     "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string()
+}
+
+/// Normalize OpenAI-compatible chat completions endpoint.
+///
+/// Users/providers may provide either:
+/// - Base URL (e.g. https://api.openai.com/v1)
+/// - Full endpoint (e.g. https://api.openai.com/v1/chat/completions)
+///
+/// This helper ensures we always end up with a usable `/chat/completions` endpoint.
+pub fn normalize_chat_completions_endpoint(endpoint: &str) -> String {
+    let mut e = endpoint.trim().to_string();
+    if e.is_empty() {
+        return e;
+    }
+
+    // Strip trailing slashes
+    while e.ends_with('/') {
+        e.pop();
+    }
+
+    // Already looks like a completions endpoint
+    if e.ends_with("/chat/completions") {
+        return e;
+    }
+
+    // Tolerate the common typo: /chat.completions
+    if e.ends_with("/chat.completions") {
+        return e.replace("/chat.completions", "/chat/completions");
+    }
+
+    format!("{}/chat/completions", e)
 }
 
 fn default_llm_model() -> String {
@@ -1006,8 +1164,7 @@ impl AppConfig {
     }
 
     pub fn config_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
+        let config_dir = dirs::config_dir().ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
         let app_dir = config_dir.join("PushToTalk");
         std::fs::create_dir_all(&app_dir)?;
         Ok(app_dir.join("config.json"))
@@ -1022,10 +1179,10 @@ impl AppConfig {
 
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            
+
             // 使用 serde_json::Value 先解析，以支持结构迁移
             let v: serde_json::Value = serde_json::from_str(&content)?;
-            
+
             // 尝试直接反序列化为 AppConfig
             let mut config: AppConfig = match serde_json::from_value(v.clone()) {
                 Ok(c) => c,
@@ -1060,14 +1217,19 @@ impl AppConfig {
             // ========== 迁移逻辑 ==========
 
             // 1. 兼容更早的根目录 Key (dashscope_api_key / siliconflow_api_key)
-            if config.asr_config.credentials.qwen_api_key.is_empty() && !config.dashscope_api_key.is_empty() {
+            if config.asr_config.credentials.qwen_api_key.is_empty()
+                && !config.dashscope_api_key.is_empty()
+            {
                 tracing::info!("从根配置迁移 Qwen API Key");
                 config.asr_config.credentials.qwen_api_key = config.dashscope_api_key.clone();
                 migrated = true;
             }
-            if config.asr_config.credentials.sensevoice_api_key.is_empty() && !config.siliconflow_api_key.is_empty() {
+            if config.asr_config.credentials.sensevoice_api_key.is_empty()
+                && !config.siliconflow_api_key.is_empty()
+            {
                 tracing::info!("从根配置迁移 SiliconFlow API Key");
-                config.asr_config.credentials.sensevoice_api_key = config.siliconflow_api_key.clone();
+                config.asr_config.credentials.sensevoice_api_key =
+                    config.siliconflow_api_key.clone();
                 migrated = true;
             }
 
@@ -1085,13 +1247,17 @@ impl AppConfig {
                     // 迁移到 shared 配置
                     if let Some(endpoint) = llm_cfg.get("endpoint").and_then(|v| v.as_str()) {
                         if !endpoint.trim().is_empty() {
-                            tracing::info!("迁移 llm_config.endpoint -> llm_config.shared.endpoint");
+                            tracing::info!(
+                                "迁移 llm_config.endpoint -> llm_config.shared.endpoint"
+                            );
                             config.llm_config.shared.endpoint = Some(endpoint.to_string());
                         }
                     }
                     if let Some(model) = llm_cfg.get("model").and_then(|v| v.as_str()) {
                         if !model.trim().is_empty() {
-                            tracing::info!("迁移 llm_config.model -> llm_config.shared.default_model");
+                            tracing::info!(
+                                "迁移 llm_config.model -> llm_config.shared.default_model"
+                            );
                             config.llm_config.shared.default_model = Some(model.to_string());
                         }
                     }
@@ -1131,11 +1297,26 @@ impl AppConfig {
                         .unwrap_or("")
                         .to_string();
 
-                    if !endpoint.trim().is_empty() || !model.trim().is_empty() || !api_key.trim().is_empty() {
+                    if !endpoint.trim().is_empty()
+                        || !model.trim().is_empty()
+                        || !api_key.trim().is_empty()
+                    {
                         let shared = &config.llm_config.shared;
-                        let matches_shared = shared.endpoint.as_ref().map(|e| e == &endpoint).unwrap_or(false)
-                            && shared.api_key.as_ref().map(|k| k == &api_key).unwrap_or(false)
-                            && shared.default_model.as_ref().map(|m| m == &model).unwrap_or(false);
+                        let matches_shared = shared
+                            .endpoint
+                            .as_ref()
+                            .map(|e| e == &endpoint)
+                            .unwrap_or(false)
+                            && shared
+                                .api_key
+                                .as_ref()
+                                .map(|k| k == &api_key)
+                                .unwrap_or(false)
+                            && shared
+                                .default_model
+                                .as_ref()
+                                .map(|m| m == &model)
+                                .unwrap_or(false);
 
                         if matches_shared {
                             tracing::info!("AI 助手配置与共享配置相同，使用共享配置");
@@ -1162,11 +1343,15 @@ impl AppConfig {
                 let has_legacy_endpoint = learning_cfg.get("feature_override").is_none()
                     && learning_cfg.get("llm_endpoint").is_some();
 
-                if has_legacy_endpoint && config.learning_config.feature_override.endpoint.is_none() {
-                    if let Some(endpoint) = learning_cfg.get("llm_endpoint").and_then(|v| v.as_str()) {
+                if has_legacy_endpoint && config.learning_config.feature_override.endpoint.is_none()
+                {
+                    if let Some(endpoint) =
+                        learning_cfg.get("llm_endpoint").and_then(|v| v.as_str())
+                    {
                         if !endpoint.trim().is_empty() {
                             tracing::info!("迁移 learning_config.llm_endpoint -> learning_config.feature_override.endpoint");
-                            config.learning_config.feature_override.endpoint = Some(endpoint.to_string());
+                            config.learning_config.feature_override.endpoint =
+                                Some(endpoint.to_string());
                             // 重要：设置 use_shared=false 以保留原语义
                             // 否则迁移后会优先使用 Provider Registry，导致 endpoint 被忽略
                             config.learning_config.feature_override.use_shared = false;
@@ -1178,11 +1363,16 @@ impl AppConfig {
 
             // 迁移 5: 旧单快捷键 → 新双快捷键 (保持原有逻辑)
             if let Some(old_hotkey) = config.hotkey_config.take() {
-                let is_default = config.dual_hotkey_config.dictation.keys == vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
-                    && config.dual_hotkey_config.assistant.keys == vec![HotkeyKey::AltLeft, HotkeyKey::Space];
+                let is_default = config.dual_hotkey_config.dictation.keys
+                    == vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
+                    && config.dual_hotkey_config.assistant.keys
+                        == vec![HotkeyKey::AltLeft, HotkeyKey::Space];
 
                 if is_default {
-                    tracing::info!("迁移旧快捷键配置 {} 到听写模式", old_hotkey.format_display());
+                    tracing::info!(
+                        "迁移旧快捷键配置 {} 到听写模式",
+                        old_hotkey.format_display()
+                    );
                     config.dual_hotkey_config.dictation = old_hotkey;
                     migrated = true;
                 }
@@ -1190,7 +1380,10 @@ impl AppConfig {
 
             // 迁移 6: SmartCommandConfig → AssistantConfig (保持原有逻辑)
             if config.smart_command_config.enabled && config.smart_command_config.is_valid() {
-                if !config.assistant_config.is_valid_with_shared(&config.llm_config.shared) {
+                if !config
+                    .assistant_config
+                    .is_valid_with_shared(&config.llm_config.shared)
+                {
                     tracing::info!("迁移 Smart Command 配置到 AI 助手配置");
                     migrated = true;
                     config.assistant_config = AssistantConfig {
@@ -1219,35 +1412,72 @@ impl AppConfig {
                 if has_old_shared_config {
                     tracing::info!("检测到旧版共享配置，开始迁移到 Provider Registry");
 
-                    use sha2::{Sha256, Digest};
+                    use sha2::{Digest, Sha256};
 
                     // 计算 Voice Polishing 的 effective 配置
-                    let polishing_endpoint = config.llm_config.shared.endpoint.clone().unwrap_or_default();
-                    let polishing_api_key = config.llm_config.shared.api_key.clone().unwrap_or_default();
-                    let polishing_model = config.llm_config.shared.polishing_model.clone()
+                    let polishing_endpoint = config
+                        .llm_config
+                        .shared
+                        .endpoint
+                        .clone()
+                        .unwrap_or_default();
+                    let polishing_api_key =
+                        config.llm_config.shared.api_key.clone().unwrap_or_default();
+                    let polishing_model = config
+                        .llm_config
+                        .shared
+                        .polishing_model
+                        .clone()
                         .or_else(|| config.llm_config.shared.default_model.clone())
                         .unwrap_or_else(default_llm_model);
 
                     // 计算 AI Assistant 的 effective 配置
                     let assistant_endpoint = if config.assistant_config.llm.use_shared {
-                        config.assistant_config.llm.endpoint.clone()
+                        config
+                            .assistant_config
+                            .llm
+                            .endpoint
+                            .clone()
                             .unwrap_or_else(|| polishing_endpoint.clone())
                     } else {
-                        config.assistant_config.llm.endpoint.clone().unwrap_or_default()
+                        config
+                            .assistant_config
+                            .llm
+                            .endpoint
+                            .clone()
+                            .unwrap_or_default()
                     };
                     let assistant_api_key = if config.assistant_config.llm.use_shared {
-                        config.assistant_config.llm.api_key.clone()
+                        config
+                            .assistant_config
+                            .llm
+                            .api_key
+                            .clone()
                             .unwrap_or_else(|| polishing_api_key.clone())
                     } else {
-                        config.assistant_config.llm.api_key.clone().unwrap_or_default()
+                        config
+                            .assistant_config
+                            .llm
+                            .api_key
+                            .clone()
+                            .unwrap_or_default()
                     };
                     let assistant_model = if config.assistant_config.llm.use_shared {
-                        config.assistant_config.llm.model.clone()
+                        config
+                            .assistant_config
+                            .llm
+                            .model
+                            .clone()
                             .or_else(|| config.llm_config.shared.assistant_model.clone())
                             .or_else(|| config.llm_config.shared.default_model.clone())
                             .unwrap_or_else(default_llm_model)
                     } else {
-                        config.assistant_config.llm.model.clone().unwrap_or_default()
+                        config
+                            .assistant_config
+                            .llm
+                            .model
+                            .clone()
+                            .unwrap_or_default()
                     };
 
                     // 生成确定性 Provider ID
@@ -1260,8 +1490,10 @@ impl AppConfig {
                         format!("{:x}", result)[..12].to_string()
                     }
 
-                    let polishing_id = generate_provider_id(&polishing_endpoint, &polishing_api_key);
-                    let assistant_id = generate_provider_id(&assistant_endpoint, &assistant_api_key);
+                    let polishing_id =
+                        generate_provider_id(&polishing_endpoint, &polishing_api_key);
+                    let assistant_id =
+                        generate_provider_id(&assistant_endpoint, &assistant_api_key);
 
                     // 判断是否需要创建 1 个或 2 个 Provider
                     if polishing_id == assistant_id {
@@ -1273,7 +1505,12 @@ impl AppConfig {
                             name: "默认提供商 (迁移)".to_string(),
                             endpoint: polishing_endpoint,
                             api_key: polishing_api_key,
-                            default_model: config.llm_config.shared.default_model.clone().unwrap_or_else(default_llm_model),
+                            default_model: config
+                                .llm_config
+                                .shared
+                                .default_model
+                                .clone()
+                                .unwrap_or_else(default_llm_model),
                         };
 
                         config.llm_config.shared.providers.push(provider);
@@ -1284,10 +1521,24 @@ impl AppConfig {
                         config.llm_config.shared.assistant_provider_id = Some(polishing_id.clone());
 
                         // 设置模型覆盖
-                        if polishing_model != config.llm_config.shared.default_model.clone().unwrap_or_else(default_llm_model) {
+                        if polishing_model
+                            != config
+                                .llm_config
+                                .shared
+                                .default_model
+                                .clone()
+                                .unwrap_or_else(default_llm_model)
+                        {
                             config.llm_config.shared.polishing_model = Some(polishing_model);
                         }
-                        if assistant_model != config.llm_config.shared.default_model.clone().unwrap_or_else(default_llm_model) {
+                        if assistant_model
+                            != config
+                                .llm_config
+                                .shared
+                                .default_model
+                                .clone()
+                                .unwrap_or_else(default_llm_model)
+                        {
                             config.llm_config.shared.assistant_model = Some(assistant_model);
                         }
 
@@ -1342,7 +1593,7 @@ impl AppConfig {
             }
 
             if config.llm_config.presets.is_empty() {
-                 tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
+                tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
             }
 
             if migrated {

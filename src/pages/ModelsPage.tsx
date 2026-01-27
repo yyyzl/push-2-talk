@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Plus, Trash2, Edit2, Settings2, Globe, Check, Zap, Sparkles, MessageSquare, GraduationCap } from "lucide-react";
+import { Plus, Trash2, Edit2, Settings2, Globe, Check, Zap, Sparkles, MessageSquare, GraduationCap, PlugZap, ShieldCheck, CircleX, Clock } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SharedLlmConfig, LlmProvider } from "../types";
 import { ApiKeyInput, Modal, ConfigSelect } from "../components/common";
+import { invoke } from "@tauri-apps/api/core";
 
 export type ModelsPageProps = {
   sharedConfig: SharedLlmConfig;
@@ -15,6 +16,37 @@ export type ModelsPageProps = {
 // 使用 crypto.randomUUID() 生成安全的唯一 ID
 const generateId = () => crypto.randomUUID().substring(0, 12);
 
+// LatencyBadge 组件：显示连接测试耗时
+function LatencyBadge({ latencyMs, status }: {
+  latencyMs?: number;
+  status: "idle" | "testing" | "success" | "error"
+}) {
+  if (latencyMs === undefined) return null;
+
+  const formatLatency = (ms: number) => {
+    if (ms < 1000) {
+      return `${Math.round(ms)}ms`;
+    }
+    return `${(ms / 1000).toFixed(2)}s`;
+  };
+
+  const isSuccess = status === "success";
+
+  return (
+    <span
+      className={[
+        "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border",
+        isSuccess
+          ? "bg-emerald-50 border-emerald-100 text-emerald-700"
+          : "bg-stone-100 border-stone-200 text-stone-600",
+      ].join(" ")}
+    >
+      <Clock size={12} />
+      {formatLatency(latencyMs)}
+    </span>
+  );
+}
+
 export function ModelsPage({
   sharedConfig,
   setSharedConfig,
@@ -24,6 +56,11 @@ export function ModelsPage({
 }: ModelsPageProps) {
   const [editingProvider, setEditingProvider] = useState<LlmProvider | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [testState, setTestState] = useState<{
+    status: "idle" | "testing" | "success" | "error";
+    message?: string;
+    latencyMs?: number;  // 新增：连接耗时（毫秒）
+  }>({ status: "idle" });
   // 删除确认弹窗状态
   const [deleteConfirm, setDeleteConfirm] = useState<{ show: boolean; providerId: string | null }>({
     show: false,
@@ -109,15 +146,49 @@ export function ModelsPage({
       api_key: "",
       default_model: "",
     });
+    setTestState({ status: "idle" });  // 重置测试状态
     setIsModalOpen(true);
   };
 
   const openEditModal = (provider: LlmProvider) => {
     setEditingProvider({ ...provider });
+    setTestState({ status: "idle" });  // 重置测试状态
     setIsModalOpen(true);
   };
 
   const providerOptions = sharedConfig.providers.map(p => ({ value: p.id, label: p.name }));
+
+  const runProviderTest = async () => {
+    if (!editingProvider) return;
+    setTestState({ status: "testing" });
+
+    const startTime = performance.now();
+
+    try {
+      const res = await invoke<string>("test_llm_provider", {
+        endpoint: editingProvider.endpoint,
+        apiKey: editingProvider.api_key,
+        model: editingProvider.default_model,
+      });
+      const endTime = performance.now();
+      const latencyMs = endTime - startTime;
+
+      setTestState({
+        status: "success",
+        message: res || "连接成功",
+        latencyMs
+      });
+    } catch (err) {
+      const endTime = performance.now();
+      const latencyMs = endTime - startTime;
+
+      setTestState({
+        status: "error",
+        message: String(err),
+        latencyMs
+      });
+    }
+  };
 
   // 表单验证
   const isFormValid = editingProvider &&
@@ -232,9 +303,6 @@ export function ModelsPage({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             {sharedConfig.providers.map(provider => {
               const isDefault = provider.id === sharedConfig.default_provider_id;
-              // 检查是否有任何功能绑定到此 Provider
-              const isUsed = isDefault ||
-                [sharedConfig.polishing_provider_id, sharedConfig.assistant_provider_id, sharedConfig.learning_provider_id].includes(provider.id);
 
               return (
                 <div key={provider.id} className="group relative flex flex-col justify-between bg-white border border-[var(--stone)] rounded-2xl p-6 hover:border-[var(--steel)] hover:shadow-lg transition-all duration-300">
@@ -244,17 +312,48 @@ export function ModelsPage({
 
                       <div>
                         <h3 className="text-base font-bold text-[var(--ink)] leading-tight">{provider.name}</h3>
-                        <div className="flex items-center gap-2 mt-1.5">
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                           {isDefault && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-50 text-amber-600 rounded-full border border-amber-100 flex items-center gap-1">
-                              <Check size={8} strokeWidth={4} /> 默认
+                            <span className="h-[22px] text-[10px] font-bold px-2 bg-amber-50 text-amber-600 rounded-full border border-amber-100 flex items-center gap-1">
+                              <Zap size={10} /> 默认
                             </span>
                           )}
-                          {!isDefault && isUsed && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-sky-50 text-sky-600 rounded-full border border-sky-100">
-                              使用中
-                            </span>
-                          )}
+                          {(() => {
+                            // 收集绑定到此 Provider 的功能
+                            const boundFeatures: { icon: typeof Sparkles; color: string; name: string }[] = [];
+
+                            // 检查直接绑定或跟随默认（undefined 且当前是默认提供商）
+                            const isPolishingBound = sharedConfig.polishing_provider_id === provider.id ||
+                              (!sharedConfig.polishing_provider_id && isDefault);
+                            const isAssistantBound = sharedConfig.assistant_provider_id === provider.id ||
+                              (!sharedConfig.assistant_provider_id && isDefault);
+                            const isLearningBound = sharedConfig.learning_provider_id === provider.id ||
+                              (!sharedConfig.learning_provider_id && isDefault);
+
+                            if (isPolishingBound) {
+                              boundFeatures.push({ icon: Sparkles, color: "text-purple-500", name: "语句润色" });
+                            }
+                            if (isAssistantBound) {
+                              boundFeatures.push({ icon: MessageSquare, color: "text-sky-500", name: "AI 助手" });
+                            }
+                            if (isLearningBound) {
+                              boundFeatures.push({ icon: GraduationCap, color: "text-[var(--sage)]", name: "词库学习" });
+                            }
+
+                            if (boundFeatures.length === 0) return null;
+
+                            return (
+                              <span
+                                className="h-[22px] px-2 bg-stone-100 rounded-full border border-stone-200 flex items-center gap-1.5"
+                                title={boundFeatures.map(f => f.name).join("、")}
+                              >
+                                {boundFeatures.map((feature, idx) => {
+                                  const Icon = feature.icon;
+                                  return <Icon key={idx} size={12} className={feature.color} />;
+                                })}
+                              </span>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -340,7 +439,7 @@ export function ModelsPage({
                 <p className="text-xs text-stone-400 ml-1">起个好记的名字，方便后续选择</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-6">
                 <div className="space-y-2">
                   <label className="text-sm font-bold text-[var(--ink)] ml-1">模型代码 (Model)</label>
                   <input
@@ -359,7 +458,7 @@ export function ModelsPage({
                     value={editingProvider.endpoint}
                     onChange={e => setEditingProvider({ ...editingProvider, endpoint: e.target.value })}
                     className="w-full px-4 py-3 bg-[var(--paper)] border-2 border-transparent focus:bg-white focus:border-[var(--steel)] rounded-xl text-sm transition-all focus:outline-none placeholder:text-stone-300 font-mono"
-                    placeholder="https://api.example.com/v1"
+                    placeholder="https://api.example.com/v1/chat/completions"
                   />
                 </div>
               </div>
@@ -373,6 +472,74 @@ export function ModelsPage({
                   onToggleShow={() => setShowApiKey(!showApiKey)}
                 />
                 <p className="text-xs text-stone-400 ml-1">密钥将安全存储在本地</p>
+              </div>
+
+              <div className="pt-2">
+                <div className="rounded-2xl border border-[var(--stone)] bg-[var(--paper)] p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck size={16} className="text-[var(--sage)]" />
+                        <h4 className="text-sm font-bold text-[var(--ink)]">连接测试</h4>
+                      </div>
+                      <p className="text-xs text-stone-500 mt-1">
+                        点击测试会向你的模型发送一次极短的请求，用于验证 Endpoint / Key / Model 是否可用。
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={runProviderTest}
+                      disabled={!isFormValid || testState.status === "testing"}
+                      className="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-white border border-[var(--stone)] hover:border-[var(--steel)] hover:shadow-sm transition-all disabled:opacity-50"
+                    >
+                      {testState.status === "testing" ? (
+                        <span className="inline-flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                          测试中
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-2">
+                          <PlugZap size={16} />
+                          测试连接
+                        </span>
+                      )}
+                    </button>
+                  </div>
+
+                  {testState.status !== "idle" && testState.status !== "testing" && (
+                    <div
+                      className={[
+                        "mt-4 rounded-xl px-4 py-3 text-sm border",
+                        testState.status === "success"
+                          ? "bg-emerald-50 border-emerald-100 text-emerald-800"
+                          : "bg-red-50 border-red-100 text-red-700",
+                      ].join(" ")}
+                    >
+                      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-2">
+                        <div className="flex items-start gap-2 min-w-0">
+                          <div className="mt-0.5">
+                            {testState.status === "success" ? (
+                              <Check size={16} className="text-emerald-600" />
+                            ) : (
+                              <CircleX size={16} className="text-red-600" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold">
+                              {testState.status === "success" ? "连接正常" : "连接失败"}
+                            </div>
+                            {testState.message && (
+                              <div className="text-xs font-mono mt-1 whitespace-pre-wrap break-words">
+                                {testState.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <LatencyBadge latencyMs={testState.latencyMs} status={testState.status} />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

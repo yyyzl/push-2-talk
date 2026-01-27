@@ -17,7 +17,7 @@ import {
   DEFAULT_LLM_CONFIG,
 } from "../constants";
 import { isAsrConfigValid } from "../utils";
-import { entriesToWords, wordsToEntries, entriesToStorageFormat } from "../utils/dictionaryUtils";
+import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
 
 const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
 
@@ -319,11 +319,11 @@ export function useAppServiceController({
         // 新格式：DictionaryEntry[]
         loadedDictionary = configDictionary as unknown as DictionaryEntry[];
       } else {
-        // 旧格式：string[]，需要转换
+        // 旧格式：string[]，需要转换（支持 "word" 和 "word|auto" 格式）
         const words = (configDictionary as unknown as string[]).filter(
           (w) => typeof w === "string" && w.trim()
         );
-        loadedDictionary = wordsToEntries(words);
+        loadedDictionary = words.map(parseEntry);
       }
       setDictionary(loadedDictionary);
 

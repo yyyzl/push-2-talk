@@ -111,6 +111,7 @@ mod tests {
             enabled: true,
             llm: LlmFeatureConfig {
                 use_shared: false,
+                provider_id: None,
                 endpoint: Some("https://api.example.com/v1/chat/completions".to_string()),
                 model: Some("test-model".to_string()),
                 api_key: Some("test-key".to_string()),
