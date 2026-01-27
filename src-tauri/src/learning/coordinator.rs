@@ -5,12 +5,12 @@
 
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter};
 use tokio::time::{sleep, Duration};
-use tokio::task::AbortHandle;
 use uuid::Uuid;
 
 use crate::config::{AppConfig, LearningConfig};
@@ -18,9 +18,12 @@ use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs};
 use crate::learning::llm_judge::LlmJudge;
 use crate::learning::validator::is_asr_text_present;
 
-// 全局活跃观察任务管理器（存储 AbortHandle）
+// 全局活跃观察任务管理器（存储优雅取消标志）
+// 使用 Arc<AtomicBool> 替代 AbortHandle，实现"优雅取消"：
+// - 旧任务收到取消信号后，立即结束观察期，但继续执行 diff/LLM 流程
+// - 避免直接 abort 导致学习丢失
 lazy_static::lazy_static! {
-    static ref ACTIVE_OBSERVATIONS: Arc<Mutex<HashMap<isize, AbortHandle>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref ACTIVE_OBSERVATIONS: Arc<Mutex<HashMap<isize, Arc<AtomicBool>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 /// 扩展上下文的最大字符数（防止 CJK 文本导致上下文膨胀）
@@ -82,20 +85,24 @@ pub fn start_learning_observation(
         return tauri::async_runtime::JoinHandle::Tokio(tokio::spawn(async {}));
     }
 
-    // 取消同一窗口的旧观察任务（去重机制）
+    // 取消同一窗口的旧观察任务（优雅取消：发送信号让旧任务提前结束观察期）
+    // 旧任务会继续执行 diff/LLM 流程，不会丢失学习机会
     {
         let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-        if let Some(old_handle) = active.remove(&target_hwnd) {
+        if let Some(old_cancel_flag) = active.remove(&target_hwnd) {
             tracing::info!(
-                "Learning: 取消旧观察任务 [hwnd={}]",
+                "Learning: 优雅取消旧观察任务 [hwnd={}]（旧任务将继续完成学习流程）",
                 target_hwnd
             );
-            old_handle.abort();
+            old_cancel_flag.store(true, Ordering::SeqCst);
         }
     }
 
-    // 启动新任务（使用 tokio::spawn 以获取 AbortHandle）
-    // 注意：先获取 AbortHandle 并写入 map，再让任务开始执行
+    // 创建新任务的取消标志
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_flag_clone = cancel_flag.clone();
+
+    // 启动新任务
     let handle = tokio::spawn(async move {
         // RAII 清理守卫：确保任务结束时从 ACTIVE_OBSERVATIONS 中移除
         struct CleanupGuard {
@@ -120,8 +127,13 @@ pub fn start_learning_observation(
             duration.as_secs()
         );
 
-        // 尝试获取修正后的文本（使用墙钟时间控制）
-        let corrected = match observe_correction_text(&observation_id, duration, target_hwnd).await {
+        // 尝试获取修正后的文本（使用墙钟时间控制，支持优雅取消）
+        let corrected = match observe_correction_text(
+            &observation_id,
+            duration,
+            target_hwnd,
+            cancel_flag_clone.clone(),
+        ).await {
             Some(text) => text,
             None => {
                 tracing::info!(
@@ -364,10 +376,10 @@ pub fn start_learning_observation(
         );
     });
 
-    // 保存新任务的 AbortHandle
+    // 保存新任务的取消标志
     {
         let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-        active.insert(target_hwnd, handle.abort_handle());
+        active.insert(target_hwnd, cancel_flag);
     }
 
     // 包装为 Tauri JoinHandle
@@ -381,10 +393,15 @@ pub fn start_learning_observation(
 /// # 焦点检查
 /// 每次读取前检查目标窗口是否仍在前台，如果用户已切换窗口则跳过读取
 ///
+/// # 优雅取消
+/// 当 cancel_flag 被设置为 true 时，立即结束观察期，但返回已获取的文本（如有）
+/// 这样旧任务可以继续执行 diff/LLM 流程，不会丢失学习机会
+///
 /// # 参数
 /// * `observation_id` - 观察任务ID（用于日志关联）
 /// * `duration` - 观察期时长
 /// * `target_hwnd` - 目标窗口句柄
+/// * `cancel_flag` - 优雅取消标志
 ///
 /// # 返回值
 /// * `Some(String)` - 成功获取修正后的文本
@@ -393,6 +410,7 @@ async fn observe_correction_text(
     observation_id: &str,
     duration: Duration,
     target_hwnd: isize,
+    cancel_flag: Arc<AtomicBool>,
 ) -> Option<String> {
     // 降低轮询频率：100ms → 500ms，减少线程风暴
     let check_interval = Duration::from_millis(500);
@@ -409,10 +427,21 @@ async fn observe_correction_text(
     let mut focus_lost_count = 0;
     let mut check_count = 0;
     let mut ended_due_to_focus_loss = false;
+    let mut ended_due_to_cancel = false;
     const MAX_FOCUS_LOST_COUNT: usize = 3; // 连续 3 次失焦后提前结束
 
     // 使用墙钟时间控制循环
     while Instant::now() < deadline {
+        // 检查优雅取消标志
+        if cancel_flag.load(Ordering::SeqCst) {
+            tracing::info!(
+                "Learning [{}]: 收到优雅取消信号，提前结束观察期（将继续执行学习流程）",
+                &observation_id[..8]
+            );
+            ended_due_to_cancel = true;
+            break;
+        }
+
         sleep(check_interval).await;
         check_count += 1;
 
@@ -475,7 +504,35 @@ async fn observe_correction_text(
     }
 
     // Debug 级别输出实际文本内容
-    if ended_due_to_focus_loss {
+    if ended_due_to_cancel {
+        // 优雅取消：旧任务被新任务取代，但仍应继续学习流程
+        tracing::info!(
+            "Learning [{}]: 因优雅取消提前结束（检测次数: {}）",
+            &observation_id[..8],
+            check_count
+        );
+        // 即使没有读取到文本，也尝试立即读取一次
+        if last_text.is_none() {
+            tracing::info!(
+                "Learning [{}]: 优雅取消时尚未读取到文本，尝试立即读取",
+                &observation_id[..8]
+            );
+            let text = tokio::task::spawn_blocking(move || get_text_via_uia(target_hwnd))
+                .await
+                .ok()
+                .flatten();
+            if let Some(content) = text {
+                if !content.trim().is_empty() {
+                    tracing::info!(
+                        "Learning [{}]: 优雅取消时立即读取成功（长度: {}）",
+                        &observation_id[..8],
+                        content.len()
+                    );
+                    last_text = Some(content);
+                }
+            }
+        }
+    } else if ended_due_to_focus_loss {
         // 数据可靠性较差：窗口失焦意味着后续读取可能不可靠。
         // 但如果在失焦前已成功读取到文本，仍可返回 last_text，避免学习功能过于脆弱。
         tracing::info!(
