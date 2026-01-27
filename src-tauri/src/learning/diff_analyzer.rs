@@ -448,22 +448,22 @@ fn expand_to_word_boundary(
     current_chars: &[char],
 ) -> DiffResult {
     // 向左扩展原文
-    while diff.orig_start > 0 && is_word_char(baseline_chars[diff.orig_start - 1]) {
+    while diff.orig_start > 0 && crate::learning::is_word_char(baseline_chars[diff.orig_start - 1]) {
         diff.orig_start -= 1;
     }
 
     // 向右扩展原文
-    while diff.orig_end < baseline_chars.len() && is_word_char(baseline_chars[diff.orig_end]) {
+    while diff.orig_end < baseline_chars.len() && crate::learning::is_word_char(baseline_chars[diff.orig_end]) {
         diff.orig_end += 1;
     }
 
     // 向左扩展修正文本
-    while diff.curr_start > 0 && is_word_char(current_chars[diff.curr_start - 1]) {
+    while diff.curr_start > 0 && crate::learning::is_word_char(current_chars[diff.curr_start - 1]) {
         diff.curr_start -= 1;
     }
 
     // 向右扩展修正文本
-    while diff.curr_end < current_chars.len() && is_word_char(current_chars[diff.curr_end]) {
+    while diff.curr_end < current_chars.len() && crate::learning::is_word_char(current_chars[diff.curr_end]) {
         diff.curr_end += 1;
     }
 
@@ -482,9 +482,9 @@ fn expand_to_word_boundary(
     diff
 }
 
-/// 判断是否为单词字符（仅英文字母、数字、下划线、连字符）
+/// 判断是否为单词字符（使用统一的定义）
 fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    crate::learning::is_word_char(c)
 }
 
 /// 判断两个差异块是否应该合并

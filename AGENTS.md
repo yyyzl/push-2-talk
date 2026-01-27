@@ -1,11 +1,27 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `src/` holds the React + TypeScript UI (main window and overlay).
-- `index.html` and `overlay.html` are the Vite entry points for the two windows.
+- `src/` holds the React + TypeScript UI (main window, overlay, and notification windows).
+- `index.html`, `overlay.html`, and `notification.html` are the Vite entry points for the three windows.
 - `src-tauri/` contains the Rust backend, `src-tauri/tauri.conf.json`, and app icons in `src-tauri/icons/`.
 - `ui/` is for auxiliary UI assets or prototypes used by the frontend.
 - `scripts/` has build/release helpers; `dist/` is generated frontend output.
+
+### Key Backend Modules (src-tauri/src/)
+- `asr/` - Multi-provider ASR with HTTP and realtime modes (Qwen, Doubao, SenseVoice)
+- `pipeline/` - Processing pipelines for dictation and assistant modes
+- `learning/` - Auto vocabulary learning (coordinator, diff_analyzer, llm_judge, validator, store)
+- `uia_text_reader.rs` - Windows UI Automation text capture
+- `openai_client.rs` - Shared LLM client with connection testing
+- `config.rs` - Configuration management with automatic migration
+
+### Key Frontend Structure (src/)
+- `pages/` - Page components (Dashboard, ASR, Models, LLM, Assistant, Hotkeys, Dictionary, Preferences, History, Help)
+- `components/` - Reusable UI components (common/, layout/, learning/, live/, modals/, history/)
+- `windows/` - Overlay and notification window components
+- `hooks/` - Custom React hooks (useAppServiceController, useDictionary, useHotkeyRecording, useUpdater)
+- `types/` - TypeScript type definitions
+- `utils/` - Utility functions (dictionaryUtils)
 
 ## Build, Test, and Development Commands
 - `npm install` installs frontend dependencies.
@@ -33,13 +49,22 @@
 - Global hotkeys require admin rights; preserve ghost-key detection and the 500ms watchdog when editing hotkey logic.
 - Keep clipboard/focus timing safeguards (100ms delay before capture, 150ms delay before insert) in assistant/overlay flows.
 - Config lives at `%APPDATA%\PushToTalk\config.json`; migration logic is in `src-tauri/src/config.rs`.
+- UIA text reader uses Windows UI Automation API; maintain COM initialization guards and timeout protection.
+- Learning module uses async observation tasks; respect the deduplication mechanism per window handle.
 
 ## Commit & Pull Request Guidelines
-- Follow Conventional Commit-style prefixes seen in history: `feat:`, `fix:`, `perf:`, `refactor:`; short summaries can be Chinese or English.
+- Follow Conventional Commit-style prefixes seen in history: `feat:`, `fix:`, `perf:`, `refactor:`, `chore:`; short summaries can be Chinese or English.
 - PRs should include a clear description, test steps, and screenshots for UI changes; link related issues when possible.
 - Keep changes scoped and call out any Windows/admin-impacting behavior.
 
 ## Security & Configuration Tips
 - Do not commit API keys or local config files.
 - Auto-update uses NSIS; avoid reintroducing MSI or multi-instance installers.
+- LLM provider credentials are stored in config.json; ensure proper migration when changing schema.
 - For deeper architecture details, see `CLAUDE.md`.
+
+## Recent Feature Areas
+- **LLM Provider Registry**: Multi-provider management in `ModelsPage.tsx` and `config.rs`
+- **Auto Vocabulary Learning**: `learning/` module with UIA text capture
+- **Theme Support**: Light/dark themes via `ThemeSelector.tsx` and CSS variables
+- **Connection Testing**: `test_llm_connection` command with latency measurement

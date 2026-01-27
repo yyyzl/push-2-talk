@@ -14,3 +14,15 @@ pub mod validator;
 pub mod diff_analyzer;
 pub mod llm_judge;
 pub mod coordinator;
+
+/// 统一的词字符判断函数
+///
+/// 用于词级 diff 合并和上下文截取，确保两处对词边界的理解一致
+///
+/// # 规则
+/// - ASCII 字母数字（a-z, A-Z, 0-9）
+/// - 下划线（_）
+/// - 连字符（-）
+pub(crate) fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}

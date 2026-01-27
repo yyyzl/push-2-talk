@@ -23,6 +23,13 @@ lazy_static::lazy_static! {
     static ref ACTIVE_OBSERVATIONS: Arc<Mutex<HashMap<isize, AbortHandle>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
+/// 扩展上下文的最大字符数（防止 CJK 文本导致上下文膨胀）
+const MAX_CONTEXT_CHARS: usize = 256;
+
+/// 扩展上下文时前后各取的词数
+const CONTEXT_WORDS_BEFORE: usize = 10;
+const CONTEXT_WORDS_AFTER: usize = 10;
+
 /// 学习建议事件 payload
 #[derive(Debug, Clone, Serialize)]
 pub struct LearningSuggestion {
@@ -259,8 +266,24 @@ pub fn start_learning_observation(
                 diff.corrected_segment
             );
 
+            // 提取扩展上下文（前后各 10 个词，而不是原来的 10 个字符）
+            let extended_context = extract_extended_context(
+                &corrected_for_diff,
+                diff.curr_start,
+                diff.curr_end,
+                CONTEXT_WORDS_BEFORE,
+                CONTEXT_WORDS_AFTER,
+            );
+
+            tracing::debug!(
+                "Learning [{}]: 扩展上下文（长度: {}）: \"{}\"",
+                &observation_id[..8],
+                extended_context.len(),
+                truncate_text(&extended_context, 100)
+            );
+
             let result = match judge
-                .judge(&diff.original_segment, &diff.corrected_segment, &diff.context)
+                .judge(&diff.original_segment, &diff.corrected_segment, &extended_context)
                 .await
             {
                 Ok(result) => result,
@@ -616,5 +639,110 @@ fn truncate_text(text: &str, max_len: usize) -> String {
     } else {
         let truncated: String = chars.iter().take(max_len).collect();
         format!("{}...", truncated)
+    }
+}
+
+/// 从修正文本中提取修改点前后各 N 个词的上下文
+///
+/// 用于 LLM 判断短语联动（例如："claude" + "code" → "claude code"）
+///
+/// # 参数
+/// * `corrected` - 修正后的完整文本
+/// * `diff_start` - diff 在 corrected 中的起始字符位置
+/// * `diff_end` - diff 在 corrected 中的结束字符位置
+/// * `words_before` - 前面取多少个词（默认 10）
+/// * `words_after` - 后面取多少个词（默认 10）
+///
+/// # 返回值
+/// 扩展后的上下文字符串
+fn extract_extended_context(
+    corrected: &str,
+    diff_start: usize,
+    diff_end: usize,
+    words_before: usize,
+    words_after: usize,
+) -> String {
+    let chars: Vec<char> = corrected.chars().collect();
+    let total_len = chars.len();
+
+    // 边界检查 - 异常情况下使用保守的短上下文
+    if diff_start >= total_len || diff_end > total_len || diff_start >= diff_end {
+        tracing::warn!(
+            "Learning: diff 索引异常 (start={}, end={}, len={}), 退化到短上下文",
+            diff_start, diff_end, total_len
+        );
+        // 退化到更保守的短上下文（前后各 50 字符）
+        let safe_start = diff_start.min(total_len).saturating_sub(50);
+        let safe_end = diff_end.min(total_len).saturating_add(50).min(total_len);
+        return chars[safe_start..safe_end].iter().collect();
+    }
+
+    // 向前扫描，找到 words_before 个词的边界
+    let mut start_pos = diff_start;
+    let mut word_count = 0;
+    let mut in_word = false;
+
+    for i in (0..diff_start).rev() {
+        let ch = chars[i];
+        let is_word_char = crate::learning::is_word_char(ch);
+
+        if is_word_char {
+            if !in_word {
+                word_count += 1;
+                if word_count > words_before {
+                    start_pos = i + 1;
+                    break;
+                }
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+        }
+
+        if i == 0 {
+            start_pos = 0;
+        }
+    }
+
+    // 向后扫描，找到 words_after 个词的边界
+    let mut end_pos = diff_end;
+    word_count = 0;
+    in_word = false;
+
+    for i in diff_end..total_len {
+        let ch = chars[i];
+        let is_word_char = crate::learning::is_word_char(ch);
+
+        if is_word_char {
+            if !in_word {
+                word_count += 1;
+                if word_count > words_after {
+                    end_pos = i;
+                    break;
+                }
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+        }
+
+        if i == total_len - 1 {
+            end_pos = total_len;
+        }
+    }
+
+    // 截取范围
+    let result: String = chars[start_pos..end_pos].iter().collect();
+
+    // 硬上限保护（防止 CJK 无空格文本导致上下文膨胀）
+    if result.chars().count() > MAX_CONTEXT_CHARS {
+        tracing::warn!(
+            "Learning: 上下文过长 ({} 字符), 截断到 {}",
+            result.chars().count(),
+            MAX_CONTEXT_CHARS
+        );
+        result.chars().take(MAX_CONTEXT_CHARS).collect()
+    } else {
+        result
     }
 }

@@ -91,6 +91,10 @@ PushToTalk is a desktop application built with Tauri 2.0 that enables voice-to-t
 - **AGC (Automatic Gain Control)**: Auto volume adjustment for better recognition of soft speech
 - **Mute Other Apps**: Optional feature to mute other applications during recording
 - **Multi-Monitor Support**: Overlay window automatically adapts to multi-display environments
+- **Auto Vocabulary Learning**: Monitors user corrections to ASR errors and automatically learns proper nouns and terms
+- **UIA Text Reading**: Uses Windows UI Automation API for non-intrusive text capture (replaces clipboard method)
+- **LLM Provider Registry**: Multi-provider management with connection testing and latency display
+- **Theme Support**: Light/dark theme switching
 
 ## Development Commands
 
@@ -225,28 +229,71 @@ The Rust backend is organized into independent modules that communicate through 
     - **pipeline/assistant.rs** - AI Assistant pipeline: Capture → ASR → Context LLM → Replace
     - Pipeline result structure tracks timing metrics (ASR time, LLM time, total time)
     - Clean separation of concerns between transcription and text processing
+    - **Learning integration**: Triggers vocabulary learning observation after text insertion
+
+13. **learning/** - Auto vocabulary learning module
+    - **learning/coordinator.rs** - Learning workflow orchestrator
+      - Triggers observation after ASR text insertion
+      - Manages observation tasks per window (deduplication)
+      - Configurable observation duration (default 5 seconds)
+    - **learning/diff_analyzer.rs** - Text difference analyzer
+      - Word-level diff detection between ASR output and user corrections
+      - Context extraction for LLM judgment
+      - Handles CJK and ASCII text boundaries
+    - **learning/llm_judge.rs** - LLM-based vocabulary judgment
+      - Determines if corrections are proper nouns, terms, or frequent words
+      - Uses configurable LLM provider from shared config
+    - **learning/validator.rs** - ASR text presence validator
+      - Verifies ASR text still exists in target window
+      - Uses UIA text reader for non-intrusive validation
+    - **learning/store.rs** - Dictionary entry storage
+      - Manages auto-learned vocabulary entries
+      - Tracks word frequency and last used time
+    - **Event emission**: `learning_suggestion` event for frontend toast notifications
+
+14. **uia_text_reader.rs** - Windows UI Automation text reader
+    - Non-intrusive text capture from focused windows
+    - Uses `IUIAutomationTextPattern` and `IUIAutomationValuePattern`
+    - **COM initialization**: RAII `ComGuard` for proper cleanup
+    - **Timeout protection**: 2-second UIA call timeout
+    - **Concurrency control**: Max 2 concurrent UIA workers
+    - **Blacklist mechanism**: Temporarily skips problematic windows (3 failures → 30s blacklist)
+    - Replaces clipboard-based text capture for learning validation
+
+15. **openai_client.rs** - Shared OpenAI-compatible API client
+    - Unified HTTP client for all LLM calls
+    - Connection testing with latency measurement
+    - Supports provider registry configuration
 
 ### Frontend Architecture (src/)
 
 Multi-page React app with Tauri IPC communication:
 
-- **Main Window (App.tsx)**: Configuration UI with tabbed interface
-  - ASR provider selection with fallback configuration
-  - Primary and fallback ASR provider settings
-  - Custom dual-hotkey binding UI (73 keys supported)
-  - Recording mode toggle (Press vs Toggle/Release)
-  - AI Assistant configuration with dual system prompts
-  - LLM post-processing settings with custom prompt presets
-  - Transcription history display with search and copy
-  - Minimize-to-tray and auto-start toggles
-  - **Auto-update integration**:
-    - Automatic check on startup
-    - Manual check button
-    - Update status tracking (idle → checking → available → downloading → ready)
-    - Progress indication with visual feedback
-    - Silent installation via Tauri Plugin Updater v2
+- **Main Window (App.tsx)**: Configuration UI with sidebar navigation
+  - **Pages**:
+    - `DashboardPage.tsx` - Overview and quick actions
+    - `AsrPage.tsx` - ASR provider selection and configuration
+    - `ModelsPage.tsx` - LLM provider registry management (NEW)
+      - Add/edit/delete LLM providers
+      - Connection testing with latency display
+      - Default provider selection
+    - `LlmPage.tsx` - Text polishing configuration
+    - `AssistantPage.tsx` - AI Assistant mode settings
+    - `HotkeysPage.tsx` - Dual hotkey configuration
+    - `DictionaryPage.tsx` - Personal dictionary management
+      - Manual and auto-learned entries
+      - Source badges (manual/auto)
+    - `PreferencesPage.tsx` - System preferences (theme, tray, auto-start)
+    - `HistoryPage.tsx` - Transcription history with search
+    - `HelpPage.tsx` - Help and support links
+  - **Components**:
+    - `Sidebar.tsx` - Navigation sidebar with icons
+    - `TopStatusBar.tsx` - Service status and quick controls
+    - `LlmConnectionConfig.tsx` - Reusable LLM provider selector
+    - `ThemeSelector.tsx` - Light/dark theme toggle
+    - `VocabularyLearningToast.tsx` - Learning suggestion notifications
 
-- **Overlay Window (OverlayWindow.tsx)**: Floating recording status indicator
+- **Overlay Window (src/windows/OverlayWindow.tsx)**: Floating recording status indicator
   - **Three visual states**:
     1. **Recording (Normal)**: 9-bar waveform, red gradient pill
     2. **Recording (Locked/Toggle)**: 5-bar mini waveform + dual control buttons, blue pill (#3B82F6)
@@ -262,10 +309,16 @@ Multi-page React app with Tauri IPC communication:
     - Duplicate listener prevention
     - Submit button debouncing
 
+- **Notification Window (src/windows/NotificationWindow.tsx)**: Learning suggestion toast
+  - Displays vocabulary learning suggestions
+  - Accept/reject buttons for user feedback
+  - Shows diff context (original → corrected)
+  - Auto-dismiss after timeout
+
 - **State Management**: React hooks (useState, useEffect) for local state
 - **Tauri Communication**:
   - `invoke()` for commands: `save_config`, `load_config`, `start_app`, `stop_app`, `get_history`, `get_auto_start_enabled`, `set_auto_start`, etc.
-  - `listen()` for events: `recording_started`, `recording_stopped`, `recording_locked`, `transcribing`, `transcription_complete`, `error`, `audio_level`, `overlay_update`
+  - `listen()` for events: `recording_started`, `recording_stopped`, `recording_locked`, `transcribing`, `transcription_complete`, `error`, `audio_level`, `overlay_update`, `learning_suggestion`
 
 ### Critical Event Flow
 
@@ -370,6 +423,17 @@ AI Assistant Pipeline:
   → text_inserter.insert_text() replaces selection or inserts at cursor
   → Emits "transcription_complete"
   → Saves to history
+
+Learning Observation Flow (after text insertion):
+  → Pipeline triggers start_learning_observation()
+  → Waits observation_duration_secs (default 5s)
+  → UIA text reader captures current window text
+  → Validates ASR text still present
+  → diff_analyzer detects user corrections
+  → LLM judge evaluates if correction is vocabulary-worthy
+  → Emits "learning_suggestion" event to frontend
+  → User accepts/rejects via notification toast
+  → Accepted words added to dictionary with "auto" source
 ```
 
 ### Tauri IPC Commands (lib.rs)
@@ -384,6 +448,9 @@ All backend functions exposed via `#[tauri::command]`:
 - `clear_history()` - Delete all history records
 - `get_auto_start_enabled()` - Check if auto-start is enabled
 - `set_auto_start(enable: bool)` - Toggle auto-start on boot (requires admin)
+- `test_llm_connection(endpoint, api_key, model)` - Test LLM provider connection with latency measurement (NEW)
+- `accept_learning_suggestion(word)` - Accept vocabulary learning suggestion (NEW)
+- `reject_learning_suggestion(id)` - Reject vocabulary learning suggestion (NEW)
 
 The `AppState` struct manages shared mutable state across all services using `Arc<Mutex<>>` and atomic flags.
 
@@ -400,7 +467,7 @@ The `AppState` struct manages shared mutable state across all services using `Ar
 - **Ed25519 Signature**: Public key verification for security
 - **Artifact Creation**: `createUpdaterArtifacts: true` in tauri.conf.json
 - **Update Flow**: Check → Download → Verify → Install → Restart
-- **Current Version**: 1.0.4
+- **Current Version**: 1.5.2
 
 ## Important Implementation Details
 
@@ -530,61 +597,69 @@ Config file location: `%APPDATA%\PushToTalk\config.json`
 ```json
 {
   "asr_config": {
-    "primary": {
-      "provider": "qwen",
-      "mode": "realtime",
-      "dashscope_api_key": "sk-..."
+    "credentials": {
+      "qwen_api_key": "sk-...",
+      "sensevoice_api_key": "sk-...",
+      "doubao_app_id": "...",
+      "doubao_access_token": "..."
     },
-    "fallback": {
-      "provider": "siliconflow",
-      "mode": "http",
-      "siliconflow_api_key": "sk-..."
-    },
-    "enable_fallback": true
-  },
-  "dual_hotkey_config": {
-    "dictation": {
-      "keys": [
-        {"key": "ControlLeft"},
-        {"key": "MetaLeft"}
-      ],
-      "mode": "Press",
-      "enable_release_lock": true,
-      "release_mode_keys": [
-        {"key": "F2"}
-      ]
-    },
-    "assistant": {
-      "keys": [
-        {"key": "AltLeft"},
-        {"key": "Space"}
-      ],
-      "mode": "Press",
-      "enable_release_lock": false,
-      "release_mode_keys": null
+    "selection": {
+      "active_provider": "qwen",
+      "enable_fallback": true,
+      "fallback_provider": "siliconflow"
     }
   },
-  "llm_enabled": true,
-  "llm_api_key": "sk-...",
-  "llm_base_url": "https://open.bigmodel.cn/api/paas/v4",
-  "llm_model": "glm-4-flash",
-  "llm_system_prompt": "...",
-  "llm_presets": [
-    {"name": "文本润色", "prompt": "..."},
-    {"name": "中译英", "prompt": "..."}
-  ],
+  "use_realtime_asr": true,
+  "dual_hotkey_config": {
+    "dictation": {
+      "keys": ["control_left", "meta_left"],
+      "release_mode_keys": ["f2"]
+    },
+    "assistant": {
+      "keys": ["alt_left", "space"]
+    }
+  },
+  "enable_llm_post_process": true,
+  "llm_config": {
+    "shared": {
+      "providers": [
+        {
+          "id": "zhipu",
+          "name": "智谱AI",
+          "endpoint": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+          "api_key": "sk-...",
+          "default_model": "glm-4-flash"
+        }
+      ],
+      "default_provider_id": "zhipu",
+      "polishing_provider_id": "zhipu",
+      "assistant_provider_id": "zhipu",
+      "learning_provider_id": "zhipu"
+    },
+    "feature_override": {
+      "use_shared": true
+    },
+    "presets": [
+      {"id": "1", "name": "文本润色", "system_prompt": "..."},
+      {"id": "2", "name": "中译英", "system_prompt": "..."}
+    ],
+    "active_preset_id": "1"
+  },
   "assistant_config": {
     "enabled": true,
-    "endpoint": "https://api.openai.com/v1/chat/completions",
-    "model": "gpt-4",
-    "api_key": "sk-...",
+    "llm": {"use_shared": true},
     "qa_system_prompt": "You are a helpful assistant...",
     "text_processing_system_prompt": "You are an expert text editor..."
   },
-  "dictionary": ["专业术语1", "人名", "地名"],
+  "learning_config": {
+    "enabled": true,
+    "observation_duration_secs": 5,
+    "feature_override": {"use_shared": true}
+  },
+  "dictionary": ["专业术语1", "人名|auto", "地名"],
   "enable_mute_other_apps": false,
-  "minimize_to_tray": true,
-  "transcription_mode": "Dictation"
+  "close_action": "minimize",
+  "theme": "light"
 }
 ```
 
@@ -609,3 +684,6 @@ Config file location: `%APPDATA%\PushToTalk\config.json`
 8. **Focus Management**: Overlay window hiding + delay ensures text insertion succeeds
 9. **Dual Hotkey System**: Independent configuration for dictation and assistant modes
 10. **Automatic Migration**: Backward compatibility for configuration schema changes
+11. **LLM Provider Registry**: Centralized provider management with per-feature binding
+12. **UIA Text Reading**: Non-intrusive text capture via Windows UI Automation API
+13. **Auto Vocabulary Learning**: Intelligent correction monitoring with LLM-based judgment
