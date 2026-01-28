@@ -4,7 +4,7 @@
 // 流程：Pipeline 触发 → 等待观察期 → 验证 → Diff 分析 → LLM 判断 → 发送建议
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -242,6 +242,14 @@ pub fn start_learning_observation(
             &resolved.model,
         );
 
+        // 预计算词库集合（规范化比对），避免在 diff 循环内反复线性扫描
+        let dictionary_word_set: HashSet<String> = app_config
+            .dictionary
+            .iter()
+            .map(|entry| crate::learning::store::extract_word(entry).trim().to_string())
+            .filter(|w| !w.is_empty())
+            .collect();
+
         // 逐个判断差异
         for diff in diffs {
             let candidate = diff.corrected_segment.trim();
@@ -337,11 +345,22 @@ pub fn start_learning_observation(
                 continue;
             }
 
-            // 创建建议（使用简化格式）
+            // 检查词库是否已存在该词（使用预计算的 HashSet 进行 O(1) 查找）
+            let normalized_word = crate::learning::store::normalize_word(&word);
+            if dictionary_word_set.contains(&normalized_word) {
+                tracing::info!(
+                    "Learning [{}]: 词汇 \"{}\" 已存在于词库，跳过通知",
+                    &observation_id[..8],
+                    normalized_word
+                );
+                continue;
+            }
+
+            // 创建建议（使用规范化后的词汇，确保与词库比对一致）
             let suggestion_id = uuid::Uuid::new_v4().to_string();
             let suggestion = LearningSuggestion {
                 id: suggestion_id,
-                word: word.clone(),
+                word: normalized_word.clone(),
                 original: diff.original_segment.clone(),
                 corrected: diff.corrected_segment.clone(),
                 context: diff.context.clone(),
@@ -352,7 +371,7 @@ pub fn start_learning_observation(
             tracing::info!(
                 "Learning [{}]: 发送学习建议到前端 - 词汇: \"{}\", 分类: \"{}\", 原因: \"{}\"",
                 &observation_id[..8],
-                word,
+                normalized_word,
                 suggestion.category,
                 suggestion.reason
             );
