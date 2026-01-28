@@ -10,11 +10,11 @@ use anyhow::Result;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
+use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::text_inserter::TextInserter;
-use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 
 /// 普通模式处理管道
 ///
@@ -49,18 +49,33 @@ impl NormalPipeline {
         &self,
         app: &AppHandle,
         post_processor: Option<LlmPostProcessor>,
+        enable_post_process: bool,
+        dictionary: Vec<String>,
+        enable_dictionary_enhancement: bool,
         text_inserter: &mut Option<TextInserter>,
         asr_result: Result<String>,
         asr_time_ms: u64,
-        _context: TranscriptionContext,  // 普通模式不使用上下文
-        target_hwnd: Option<isize>,      // 目标窗口句柄（用于焦点恢复）
+        _context: TranscriptionContext, // 普通模式不使用上下文
+        target_hwnd: Option<isize>,     // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果
         let text = asr_result?;
-        tracing::info!("NormalPipeline: 收到 ASR 结果: {} (耗时: {}ms)", text, asr_time_ms);
+        tracing::info!(
+            "NormalPipeline: 收到 ASR 结果: {} (耗时: {}ms)",
+            text,
+            asr_time_ms
+        );
 
         // 2. 可选 LLM 后处理
-        let (final_text, original_text, llm_time_ms) = Self::maybe_polish(app, post_processor, &text).await;
+        let (final_text, original_text, llm_time_ms) = Self::maybe_polish(
+            app,
+            post_processor,
+            enable_post_process,
+            &dictionary,
+            enable_dictionary_enhancement,
+            &text,
+        )
+        .await;
 
         // 3. 插入前隐藏窗口并主动恢复焦点到目标应用
         // 使用新的焦点恢复机制，确保文本插入到正确的窗口
@@ -103,14 +118,34 @@ impl NormalPipeline {
     async fn maybe_polish(
         app: &AppHandle,
         processor: Option<LlmPostProcessor>,
+        enable_post_process: bool,
+        dictionary: &[String],
+        enable_dictionary_enhancement: bool,
         text: &str,
     ) -> (String, Option<String>, Option<u64>) {
+        if !enable_post_process && !enable_dictionary_enhancement {
+            return (text.to_string(), None, None);
+        }
+
+        // 仅开启词库增强且词库为空：无需调用 LLM
+        if !enable_post_process && enable_dictionary_enhancement && dictionary.is_empty() {
+            return (text.to_string(), None, None);
+        }
+
         if let Some(processor) = processor {
             tracing::info!("NormalPipeline: 开始 LLM 后处理...");
             let _ = app.emit("post_processing", "polishing");
 
             let llm_start = Instant::now();
-            match processor.polish_transcript(text).await {
+            match processor
+                .polish_transcript(
+                    text,
+                    dictionary,
+                    enable_post_process,
+                    enable_dictionary_enhancement,
+                )
+                .await
+            {
                 Ok(polished) => {
                     let llm_elapsed = llm_start.elapsed().as_millis() as u64;
                     tracing::info!(
@@ -150,7 +185,6 @@ impl NormalPipeline {
             false
         }
     }
-
 }
 
 impl Default for NormalPipeline {

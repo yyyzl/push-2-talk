@@ -26,6 +26,8 @@ export type RightPanelProps = {
 
   enablePostProcess: boolean;
   setEnablePostProcess: Dispatch<SetStateAction<boolean>>;
+  enableDictionaryEnhancement: boolean;
+  setEnableDictionaryEnhancement: Dispatch<SetStateAction<boolean>>;
   llmConfig: LlmConfig;
   setLlmConfig: Dispatch<SetStateAction<LlmConfig>>;
 
@@ -47,6 +49,8 @@ export function RightPanel({
   setUseRealtime,
   enablePostProcess,
   setEnablePostProcess,
+  enableDictionaryEnhancement,
+  setEnableDictionaryEnhancement,
   llmConfig,
   setLlmConfig,
   dualHotkeyConfig,
@@ -164,7 +168,22 @@ export function RightPanel({
               </option>
             ))}
           </select>
-          {!llmConfig.shared.api_key && enablePostProcess && (
+          <div className="mt-3 flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold text-stone-500">开启词库增强</span>
+              <Tooltip content="将个人词库注入提示词，用于同音词纠错与专业术语优先匹配；可独立于语句润色开关单独生效（仍会调用 LLM）">
+                <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+              </Tooltip>
+            </div>
+            <Toggle
+              checked={enableDictionaryEnhancement}
+              onCheckedChange={setEnableDictionaryEnhancement}
+              disabled={isRunning}
+              size="sm"
+              variant="orange"
+            />
+          </div>
+          {!llmConfig.shared.api_key && (enablePostProcess || enableDictionaryEnhancement) && (
             <div className="mt-3 text-[10px] font-bold text-amber-600">
               LLM API Key 未配置，请到 Presets 中设置
             </div>

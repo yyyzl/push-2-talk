@@ -113,6 +113,7 @@ export interface AppConfig {
   asr_config: AsrConfig;
   use_realtime_asr: boolean;
   enable_llm_post_process: boolean;
+  enable_dictionary_enhancement: boolean;
   llm_config: LlmConfig;
   assistant_config: AssistantConfig;
   learning_config: LearningConfig;

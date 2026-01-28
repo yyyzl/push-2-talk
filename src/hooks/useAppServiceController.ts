@@ -36,6 +36,9 @@ export type UseAppServiceControllerParams = {
   enablePostProcess: boolean;
   setEnablePostProcess: React.Dispatch<React.SetStateAction<boolean>>;
 
+  enableDictionaryEnhancement: boolean;
+  setEnableDictionaryEnhancement: React.Dispatch<React.SetStateAction<boolean>>;
+
   llmConfig: LlmConfig;
   setLlmConfig: React.Dispatch<React.SetStateAction<LlmConfig>>;
 
@@ -87,6 +90,8 @@ export function useAppServiceController({
   setUseRealtime,
   enablePostProcess,
   setEnablePostProcess,
+  enableDictionaryEnhancement,
+  setEnableDictionaryEnhancement,
   llmConfig,
   setLlmConfig,
   assistantConfig,
@@ -124,6 +129,7 @@ export function useAppServiceController({
       fallbackApiKey: string;
       useRealtime: boolean;
       enablePostProcess: boolean;
+      enableDictionaryEnhancement: boolean;
       llmConfig: LlmConfig;
       smartCommandConfig: null;
       assistantConfig: AssistantConfig;
@@ -146,6 +152,7 @@ export function useAppServiceController({
   const applyRuntimeConfig = useCallback(
     async (updates: {
       enablePostProcess?: boolean;
+      enableDictionaryEnhancement?: boolean;
       llmConfig?: LlmConfig;
       assistantConfig?: AssistantConfig;
       enableMuteOtherApps?: boolean;
@@ -155,6 +162,7 @@ export function useAppServiceController({
       try {
         await invoke<string>("update_runtime_config", {
           enablePostProcess: updates.enablePostProcess,
+          enableDictionaryEnhancement: updates.enableDictionaryEnhancement,
           llmConfig: updates.llmConfig,
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
@@ -230,6 +238,7 @@ export function useAppServiceController({
               fallbackApiKey: config.siliconflow_api_key || '',
               useRealtime: config.use_realtime_asr ?? true,
               enablePostProcess: config.enable_llm_post_process ?? false,
+              enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
               llmConfig: config.llm_config || DEFAULT_LLM_CONFIG,
               smartCommandConfig: null,
               assistantConfig: config.assistant_config || DEFAULT_ASSISTANT_CONFIG,
@@ -260,6 +269,7 @@ export function useAppServiceController({
 
       setUseRealtime(config.use_realtime_asr ?? true);
       setEnablePostProcess(config.enable_llm_post_process ?? false);
+      setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? true);
 
       // 智能补齐 llm_config
       const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
@@ -342,6 +352,7 @@ export function useAppServiceController({
           fallbackApiKey: config.siliconflow_api_key || "",
           useRealtime: config.use_realtime_asr ?? true,
           enablePostProcess: config.enable_llm_post_process ?? false,
+          enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
           llmConfig: loadedLlmConfig,
           smartCommandConfig: null,
           assistantConfig: loadedAssistantConfig,
@@ -367,6 +378,7 @@ export function useAppServiceController({
     setEnableAutostart,
     setEnableMuteOtherApps,
     setEnablePostProcess,
+    setEnableDictionaryEnhancement,
     setFallbackApiKey,
     setLlmConfig,
     setStatus,
@@ -389,6 +401,7 @@ export function useAppServiceController({
         fallbackApiKey,
         useRealtime,
         enablePostProcess,
+        enableDictionaryEnhancement,
         llmConfig,
         smartCommandConfig: null,
         assistantConfig,
@@ -410,6 +423,7 @@ export function useAppServiceController({
           fallbackApiKey,
           useRealtime,
           enablePostProcess,
+          enableDictionaryEnhancement,
           llmConfig,
           smartCommandConfig: null,
           assistantConfig,
@@ -431,6 +445,7 @@ export function useAppServiceController({
     fallbackApiKey,
     useRealtime,
     enablePostProcess,
+    enableDictionaryEnhancement,
     llmConfig,
     assistantConfig,
     asrConfig,
@@ -453,6 +468,7 @@ export function useAppServiceController({
   const immediatelySaveConfig = useCallback(async (overrides?: {
     useRealtime?: boolean;
     enablePostProcess?: boolean;
+    enableDictionaryEnhancement?: boolean;
     llmConfig?: LlmConfig;
     assistantConfig?: AssistantConfig;
     asrConfig?: AsrConfig;
@@ -468,6 +484,8 @@ export function useAppServiceController({
       // 合并当前状态和传入的 overrides
       const finalUseRealtime = overrides?.useRealtime ?? useRealtime;
       const finalEnablePostProcess = overrides?.enablePostProcess ?? enablePostProcess;
+      const finalEnableDictionaryEnhancement =
+        overrides?.enableDictionaryEnhancement ?? enableDictionaryEnhancement;
       const finalLlmConfig = overrides?.llmConfig ?? llmConfig;
       const finalAssistantConfig = overrides?.assistantConfig ?? assistantConfig;
       const finalAsrConfig = overrides?.asrConfig ?? asrConfig;
@@ -485,6 +503,7 @@ export function useAppServiceController({
         fallbackApiKey,
         useRealtime: finalUseRealtime,
         enablePostProcess: finalEnablePostProcess,
+        enableDictionaryEnhancement: finalEnableDictionaryEnhancement,
         llmConfig: finalLlmConfig,
         smartCommandConfig: null,
         assistantConfig: finalAssistantConfig,
@@ -505,6 +524,7 @@ export function useAppServiceController({
           fallbackApiKey,
           useRealtime: finalUseRealtime,
           enablePostProcess: finalEnablePostProcess,
+          enableDictionaryEnhancement: finalEnableDictionaryEnhancement,
           llmConfig: finalLlmConfig,
           smartCommandConfig: null,
           assistantConfig: finalAssistantConfig,
@@ -528,6 +548,7 @@ export function useAppServiceController({
     fallbackApiKey,
     useRealtime,
     enablePostProcess,
+    enableDictionaryEnhancement,
     llmConfig,
     assistantConfig,
     asrConfig,
@@ -570,6 +591,7 @@ export function useAppServiceController({
           fallbackApiKey,
           useRealtime,
           enablePostProcess,
+          enableDictionaryEnhancement,
           llmConfig,
           smartCommandConfig: null,
           assistantConfig,
@@ -586,6 +608,7 @@ export function useAppServiceController({
           fallbackApiKey,
           useRealtime,
           enablePostProcess,
+          enableDictionaryEnhancement,
           llmConfig,
           smartCommandConfig: null,
           assistantConfig,
@@ -615,6 +638,7 @@ export function useAppServiceController({
     dualHotkeyConfig,
     enableMuteOtherApps,
     enablePostProcess,
+    enableDictionaryEnhancement,
     fallbackApiKey,
     llmConfig,
     setError,
@@ -643,6 +667,7 @@ export function useAppServiceController({
             fallbackApiKey,
             useRealtime,
             enablePostProcess,
+            enableDictionaryEnhancement,
             llmConfig,
             smartCommandConfig: null,
             assistantConfig,

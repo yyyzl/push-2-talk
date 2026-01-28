@@ -11,6 +11,8 @@ type UnlistenFn = () => void;
 
 export type UseTauriEventListenersParams = {
   llmConfigRef: React.RefObject<LlmConfig>;
+  enablePostProcessRef?: React.RefObject<boolean>;
+  enableDictionaryEnhancementRef?: React.RefObject<boolean>;
 
   setStatus: React.Dispatch<React.SetStateAction<AppStatus>>;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
@@ -28,6 +30,8 @@ export type UseTauriEventListenersParams = {
 
 export function useTauriEventListeners({
   llmConfigRef,
+  enablePostProcessRef,
+  enableDictionaryEnhancementRef,
   setStatus,
   setError,
   setTranscript,
@@ -114,8 +118,12 @@ export function useTauriEventListeners({
 
           const llmConfig = llmConfigRef.current;
           const mode = (result.mode as "normal" | "assistant") || null;
+          const enablePostProcess = enablePostProcessRef?.current ?? true;
+          const enableDictionaryEnhancement = enableDictionaryEnhancementRef?.current ?? false;
           const presetName = result.original_text && mode !== "assistant"
-            ? llmConfig?.presets.find((p) => p.id === llmConfig.active_preset_id)?.name || null
+            ? enablePostProcess
+              ? llmConfig?.presets.find((p) => p.id === llmConfig.active_preset_id)?.name || null
+              : (enableDictionaryEnhancement ? "词库增强" : null)
             : null;
 
           addHistoryRecord({

@@ -23,6 +23,7 @@ export type ConfigSyncStatus = "idle" | "syncing" | "success" | "error";
 export type ConfigOverrides = {
   useRealtime?: boolean;
   enablePostProcess?: boolean;
+  enableDictionaryEnhancement?: boolean;
   llmConfig?: LlmConfig;
   assistantConfig?: AssistantConfig;
   asrConfig?: AsrConfig;

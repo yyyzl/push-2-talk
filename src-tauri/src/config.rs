@@ -545,6 +545,9 @@ pub struct AppConfig {
     pub use_realtime_asr: bool,
     #[serde(default)]
     pub enable_llm_post_process: bool,
+    /// 语句润色：是否启用“词库增强”（将个人词库注入提示词用于同音词纠错）
+    #[serde(default = "default_enable_dictionary_enhancement")]
+    pub enable_dictionary_enhancement: bool,
     #[serde(default)]
     pub llm_config: LlmConfig,
     /// Smart Command 独立配置（保留以便向后兼容）
@@ -1141,6 +1144,10 @@ fn default_use_realtime_asr() -> bool {
     false
 }
 
+fn default_enable_dictionary_enhancement() -> bool {
+    true
+}
+
 impl AppConfig {
     pub fn new() -> Self {
         Self {
@@ -1149,6 +1156,7 @@ impl AppConfig {
             asr_config: AsrConfig::default(),
             use_realtime_asr: default_use_realtime_asr(),
             enable_llm_post_process: false,
+            enable_dictionary_enhancement: default_enable_dictionary_enhancement(),
             llm_config: LlmConfig::default(),
             smart_command_config: SmartCommandConfig::default(),
             assistant_config: AssistantConfig::default(),

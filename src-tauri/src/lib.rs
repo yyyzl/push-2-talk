@@ -1,11 +1,11 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod asr;
 mod assistant_processor;
 mod audio_mute_manager;
 mod audio_recorder;
 mod audio_utils;
-mod asr;
 mod beep_player;
 mod clipboard_manager;
 mod config;
@@ -20,26 +20,28 @@ mod uia_text_reader;
 mod usage_stats;
 mod win32_input;
 
+use asr::{
+    DoubaoASRClient, DoubaoRealtimeClient, DoubaoRealtimeSession, QwenASRClient,
+    QwenRealtimeClient, RealtimeSession, SenseVoiceClient,
+};
+use assistant_processor::AssistantProcessor;
 use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
-use asr::{QwenASRClient, SenseVoiceClient, DoubaoASRClient, QwenRealtimeClient, DoubaoRealtimeClient, DoubaoRealtimeSession, RealtimeSession};
-use assistant_processor::AssistantProcessor;
 use config::AppConfig;
 use hotkey_service::HotkeyService;
 use llm_post_processor::LlmPostProcessor;
+use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
 use pipeline::{AssistantPipeline, NormalPipeline, TranscriptionContext};
 use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
-use openai_client::{OpenAiClient, OpenAiClientConfig, ChatOptions, Message};
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{
-    AppHandle, Emitter, Manager,
-    tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
     menu::{Menu, MenuItem},
-    WindowEvent,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, WindowEvent,
 };
 
 // ================== Windows 鼠标位置检测 ==================
@@ -75,8 +77,11 @@ fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monito
     for monitor in monitors {
         let pos = monitor.position();
         let size = monitor.size();
-        if cursor_x >= pos.x && cursor_x < pos.x + size.width as i32
-           && cursor_y >= pos.y && cursor_y < pos.y + size.height as i32 {
+        if cursor_x >= pos.x
+            && cursor_x < pos.x + size.width as i32
+            && cursor_y >= pos.y
+            && cursor_y < pos.y + size.height as i32
+        {
             return Some(monitor);
         }
     }
@@ -94,6 +99,8 @@ struct AppState {
     is_running: Arc<Mutex<bool>>,
     use_realtime_asr: Arc<Mutex<bool>>,
     enable_post_process: Arc<Mutex<bool>>,
+    /// 语句润色：是否启用“词库增强”（将个人词库注入提示词）
+    enable_dictionary_enhancement: Arc<Mutex<bool>>,
     enable_fallback: Arc<Mutex<bool>>,
     qwen_client: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client: Arc<Mutex<Option<SenseVoiceClient>>>,
@@ -138,6 +145,7 @@ async fn save_config(
     fallback_api_key: String,
     use_realtime: Option<bool>,
     enable_post_process: Option<bool>,
+    enable_dictionary_enhancement: Option<bool>,
     llm_config: Option<config::LlmConfig>,
     smart_command_config: Option<config::SmartCommandConfig>,
     close_action: Option<String>,
@@ -153,7 +161,9 @@ async fn save_config(
     tracing::info!("保存配置...");
 
     // 某些前端调用只会提交部分字段（例如仅更新热键/词库），这里用旧配置兜底避免意外清空。
-    let existing = AppConfig::load().map(|(c, _)| c).unwrap_or_else(|_| AppConfig::new());
+    let existing = AppConfig::load()
+        .map(|(c, _)| c)
+        .unwrap_or_else(|_| AppConfig::new());
 
     // 智能合并 llm_config：如果传入的 presets 为空，保留旧值
     let final_llm_config = match llm_config {
@@ -169,7 +179,12 @@ async fn save_config(
 
     // 智能合并 assistant_config：如果传入的配置无效，保留旧值
     let final_assistant_config = match assistant_config {
-        Some(cfg) if !cfg.is_valid_with_shared(&final_llm_config.shared) && existing.assistant_config.is_valid_with_shared(&final_llm_config.shared) => {
+        Some(cfg)
+            if !cfg.is_valid_with_shared(&final_llm_config.shared)
+                && existing
+                    .assistant_config
+                    .is_valid_with_shared(&final_llm_config.shared) =>
+        {
             tracing::warn!("检测到无效 assistant_config，保留旧配置");
             existing.assistant_config
         }
@@ -224,6 +239,8 @@ async fn save_config(
         }),
         use_realtime_asr: use_realtime.unwrap_or(existing.use_realtime_asr),
         enable_llm_post_process: enable_post_process.unwrap_or(existing.enable_llm_post_process),
+        enable_dictionary_enhancement: enable_dictionary_enhancement
+            .unwrap_or(existing.enable_dictionary_enhancement),
         llm_config: final_llm_config,
         smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
         assistant_config: final_assistant_config,
@@ -237,11 +254,12 @@ async fn save_config(
         theme: theme.unwrap_or(existing.theme),
     };
 
-    config
-        .save()
-        .map_err(|e| format!("保存配置失败: {}", e))?;
+    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
 
-    tracing::info!("[save_config] 发送 config_updated 事件, theme={}", config.theme);
+    tracing::info!(
+        "[save_config] 发送 config_updated 事件, theme={}",
+        config.theme
+    );
     let _ = app.emit("config_updated", &config);
 
     Ok("配置已保存".to_string())
@@ -306,11 +324,15 @@ async fn handle_recording_start(
             let monitor_pos = monitor.position();
             let screen_size = monitor.size();
             let scale_factor = monitor.scale_factor();
-            let overlay_size = overlay.outer_size().unwrap_or(tauri::PhysicalSize::new(120, 44));
+            let overlay_size = overlay
+                .outer_size()
+                .unwrap_or(tauri::PhysicalSize::new(120, 44));
 
             // 全程使用物理像素计算
             let x = monitor_pos.x + (screen_size.width as i32 - overlay_size.width as i32) / 2;
-            let y = monitor_pos.y + screen_size.height as i32 - overlay_size.height as i32 - (100.0 * scale_factor) as i32;
+            let y = monitor_pos.y + screen_size.height as i32
+                - overlay_size.height as i32
+                - (100.0 * scale_factor) as i32;
 
             let _ = overlay.set_position(tauri::PhysicalPosition::new(x, y));
         }
@@ -321,10 +343,27 @@ async fn handle_recording_start(
         let provider = realtime_provider.lock().unwrap().clone();
         match provider {
             Some(config::AsrProvider::Doubao) => {
-                handle_doubao_realtime_start(app, streaming_recorder, doubao_session, audio_sender_handle, doubao_app_id, doubao_access_token, dictionary).await;
+                handle_doubao_realtime_start(
+                    app,
+                    streaming_recorder,
+                    doubao_session,
+                    audio_sender_handle,
+                    doubao_app_id,
+                    doubao_access_token,
+                    dictionary,
+                )
+                .await;
             }
             _ => {
-                handle_qwen_realtime_start(app, streaming_recorder, active_session, audio_sender_handle, api_key, dictionary).await;
+                handle_qwen_realtime_start(
+                    app,
+                    streaming_recorder,
+                    active_session,
+                    audio_sender_handle,
+                    api_key,
+                    dictionary,
+                )
+                .await;
             }
         }
     } else {
@@ -378,8 +417,11 @@ async fn handle_doubao_realtime_start(
     };
 
     if let Some(chunk_rx) = chunk_rx {
-        if let (Some(app_id), Some(access_token)) = (doubao_app_id.as_ref(), doubao_access_token.as_ref()) {
-            let realtime_client = DoubaoRealtimeClient::new(app_id.clone(), access_token.clone(), dictionary);
+        if let (Some(app_id), Some(access_token)) =
+            (doubao_app_id.as_ref(), doubao_access_token.as_ref())
+        {
+            let realtime_client =
+                DoubaoRealtimeClient::new(app_id.clone(), access_token.clone(), dictionary);
             // 清理旧的会话和任务（防止资源泄漏）
             {
                 let mut session_guard = doubao_session.lock().await;
@@ -428,7 +470,10 @@ async fn handle_doubao_realtime_start(
                     *audio_sender_handle.lock().unwrap() = Some(sender_handle);
                 }
                 Err(e) => {
-                    tracing::error!("建立豆包 WebSocket 连接失败: {}，录音已启动，将使用备用方案", e);
+                    tracing::error!(
+                        "建立豆包 WebSocket 连接失败: {}，录音已启动，将使用备用方案",
+                        e
+                    );
                 }
             }
         } else {
@@ -547,6 +592,7 @@ async fn start_app(
     fallback_api_key: String,
     use_realtime: Option<bool>,
     enable_post_process: Option<bool>,
+    enable_dictionary_enhancement: Option<bool>,
     llm_config: Option<config::LlmConfig>,
     _smart_command_config: Option<config::SmartCommandConfig>,
     asr_config: Option<config::AsrConfig>,
@@ -590,8 +636,34 @@ async fn start_app(
     let enable_post_process_mode = enable_post_process.unwrap_or(false);
     *state.enable_post_process.lock().unwrap() = enable_post_process_mode;
 
-    tracing::info!("ASR 模式: {}", if use_realtime_mode { "实时 WebSocket" } else { "HTTP" });
-    tracing::info!("LLM 后处理: {}", if enable_post_process_mode { "启用" } else { "禁用" });
+    // 确定是否启用词库增强（默认启用）
+    let enable_dictionary_enhancement_mode = enable_dictionary_enhancement.unwrap_or(true);
+    *state.enable_dictionary_enhancement.lock().unwrap() = enable_dictionary_enhancement_mode;
+
+    tracing::info!(
+        "ASR 模式: {}",
+        if use_realtime_mode {
+            "实时 WebSocket"
+        } else {
+            "HTTP"
+        }
+    );
+    tracing::info!(
+        "LLM 后处理: {}",
+        if enable_post_process_mode {
+            "启用"
+        } else {
+            "禁用"
+        }
+    );
+    tracing::info!(
+        "词库增强: {}",
+        if enable_dictionary_enhancement_mode {
+            "启用"
+        } else {
+            "禁用"
+        }
+    );
 
     let dict = dictionary.unwrap_or_default();
     tracing::info!("词库: {} 个词", dict.len());
@@ -618,12 +690,14 @@ async fn start_app(
                     cfg.credentials.sensevoice_api_key.clone(),
                 ));
             }
-            if !cfg.credentials.doubao_app_id.is_empty() && !cfg.credentials.doubao_access_token.is_empty() {
-                 *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(
+            if !cfg.credentials.doubao_app_id.is_empty()
+                && !cfg.credentials.doubao_access_token.is_empty()
+            {
+                *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(
                     cfg.credentials.doubao_app_id.clone(),
                     cfg.credentials.doubao_access_token.clone(),
                     dict.clone(),
-                 ));
+                ));
             }
 
             // 设置实时转录提供商
@@ -632,10 +706,12 @@ async fn start_app(
         } else {
             // 旧逻辑回退（基本不会走到这里）
             if !api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(api_key.clone(), dict.clone()));
+                *state.qwen_client.lock().unwrap() =
+                    Some(QwenASRClient::new(api_key.clone(), dict.clone()));
             }
             if !fallback_api_key.is_empty() {
-                *state.sensevoice_client.lock().unwrap() = Some(SenseVoiceClient::new(fallback_api_key.clone()));
+                *state.sensevoice_client.lock().unwrap() =
+                    Some(SenseVoiceClient::new(fallback_api_key.clone()));
             }
         }
     }
@@ -655,15 +731,28 @@ async fn start_app(
         let mut processor_guard = state.post_processor.lock().unwrap();
         let llm_cfg = llm_config.clone().unwrap_or_default();
         let resolved = llm_cfg.resolve_polishing();
-        tracing::info!("[DEBUG] LLM 后处理配置: enabled={}, api_key_len={}", enable_post_process_mode, resolved.api_key.len());
-        if enable_post_process_mode && !resolved.api_key.trim().is_empty() {
-            tracing::info!("LLM 后处理器配置: endpoint={}, model={}", resolved.endpoint, resolved.model);
+        let should_enable_post_processing =
+            enable_post_process_mode || enable_dictionary_enhancement_mode;
+        tracing::info!(
+            "[DEBUG] LLM 后处理配置: post_process={}, dictionary_enhancement={}, api_key_len={}",
+            enable_post_process_mode,
+            enable_dictionary_enhancement_mode,
+            resolved.api_key.len()
+        );
+        if should_enable_post_processing && !resolved.api_key.trim().is_empty() {
+            tracing::info!(
+                "LLM 后处理器配置: endpoint={}, model={}",
+                resolved.endpoint,
+                resolved.model
+            );
             *processor_guard = Some(LlmPostProcessor::new(llm_cfg));
             tracing::info!("LLM 后处理器已初始化");
         } else {
             *processor_guard = None;
-            if enable_post_process_mode {
-                tracing::warn!("LLM 后处理已启用但未配置 API Key，将跳过后处理");
+            if should_enable_post_processing {
+                tracing::warn!(
+                    "LLM 后处理已启用（语句润色或词库增强）但未配置 API Key，将跳过后处理"
+                );
             }
         }
     }
@@ -688,8 +777,7 @@ async fn start_app(
 
     // 初始化文本插入器
     tracing::info!("[DEBUG] 初始化文本插入器...");
-    let text_inserter = TextInserter::new()
-        .map_err(|e| format!("初始化文本插入器失败: {}", e))?;
+    let text_inserter = TextInserter::new().map_err(|e| format!("初始化文本插入器失败: {}", e))?;
     *state.text_inserter.lock().unwrap() = Some(text_inserter);
     tracing::info!("[DEBUG] 文本插入器初始化完成");
 
@@ -713,12 +801,12 @@ async fn start_app(
     *state.streaming_recorder.lock().unwrap() = None;
 
     if use_realtime_mode {
-        let streaming_recorder = StreamingRecorder::new()
-            .map_err(|e| format!("初始化流式录音器失败: {}", e))?;
+        let streaming_recorder =
+            StreamingRecorder::new().map_err(|e| format!("初始化流式录音器失败: {}", e))?;
         *state.streaming_recorder.lock().unwrap() = Some(streaming_recorder);
     } else {
-        let audio_recorder = AudioRecorder::new()
-            .map_err(|e| format!("初始化音频录制器失败: {}", e))?;
+        let audio_recorder =
+            AudioRecorder::new().map_err(|e| format!("初始化音频录制器失败: {}", e))?;
         *state.audio_recorder.lock().unwrap() = Some(audio_recorder);
     }
 
@@ -734,7 +822,8 @@ async fn start_app(
 
     // 验证热键配置
     tracing::info!("[DEBUG] 验证热键配置...");
-    dual_hotkey_cfg.validate()
+    dual_hotkey_cfg
+        .validate()
         .map_err(|e| format!("热键配置无效: {}", e))?;
     tracing::info!("[DEBUG] 热键配置验证通过");
 
@@ -767,11 +856,9 @@ async fn start_app(
                 Some(cfg.credentials.doubao_app_id.clone()),
                 Some(cfg.credentials.doubao_access_token.clone()),
             ),
-            config::AsrProvider::SiliconFlow => (
-                cfg.credentials.sensevoice_api_key.clone(),
-                None,
-                None,
-            ),
+            config::AsrProvider::SiliconFlow => {
+                (cfg.credentials.sensevoice_api_key.clone(), None, None)
+            }
         }
     } else {
         (String::new(), None, None)
@@ -847,7 +934,11 @@ async fn start_app(
 
         // 保存当前触发模式
         *current_trigger_mode_start.lock().unwrap() = Some(trigger_mode);
-        let mode_desc = if is_release_mode { "松手模式" } else { "普通模式" };
+        let mode_desc = if is_release_mode {
+            "松手模式"
+        } else {
+            "普通模式"
+        };
         tracing::info!("触发模式: {:?} ({})", trigger_mode, mode_desc);
 
         // 注意：剪贴板捕获已移至 on_stop 回调
@@ -893,7 +984,8 @@ async fn start_app(
                 doubao_access_token,
                 audio_mute_manager,
                 dictionary,
-            ).await;
+            )
+            .await;
 
             // 2. 录音初始化完成后，再发送锁定事件
             // 这样前端会先收到 started (重置UI)，再收到 locked (切换为蓝色UI)
@@ -1007,7 +1099,8 @@ async fn start_app(
                             target_hwnd,
                             usage_stats.clone(),
                             recording_start_instant.clone(),
-                        ).await;
+                        )
+                        .await;
                     } else {
                         handle_http_transcription(
                             app,
@@ -1021,7 +1114,8 @@ async fn start_app(
                             target_hwnd,
                             usage_stats.clone(),
                             recording_start_instant.clone(),
-                        ).await;
+                        )
+                        .await;
                     }
                 }
                 config::TriggerMode::AiAssistant => {
@@ -1034,20 +1128,21 @@ async fn start_app(
 
                     // 捕获选中文本（此时用户已松开热键，Ctrl+C 模拟安全）
                     tracing::info!("AI 助手模式：开始捕获选中文本...");
-                    let (clipboard_guard, selected_text) = match clipboard_manager::get_selected_text() {
-                        Ok((guard, text)) => {
-                            if let Some(ref t) = text {
-                                tracing::info!("已捕获选中文本: {} 字符", t.len());
-                            } else {
-                                tracing::info!("无选中文本，将使用问答模式");
+                    let (clipboard_guard, selected_text) =
+                        match clipboard_manager::get_selected_text() {
+                            Ok((guard, text)) => {
+                                if let Some(ref t) = text {
+                                    tracing::info!("已捕获选中文本: {} 字符", t.len());
+                                } else {
+                                    tracing::info!("无选中文本，将使用问答模式");
+                                }
+                                (Some(guard), text)
                             }
-                            (Some(guard), text)
-                        }
-                        Err(e) => {
-                            tracing::warn!("捕获选中文本失败: {}，继续处理但无上下文", e);
-                            (None, None)
-                        }
-                    };
+                            Err(e) => {
+                                tracing::warn!("捕获选中文本失败: {}，继续处理但无上下文", e);
+                                (None, None)
+                            }
+                        };
 
                     handle_assistant_mode(
                         app,
@@ -1068,7 +1163,8 @@ async fn start_app(
                         target_hwnd,
                         usage_stats.clone(),
                         recording_start_instant.clone(),
-                    ).await;
+                    )
+                    .await;
                 }
             }
         });
@@ -1083,7 +1179,11 @@ async fn start_app(
     // 标记为运行中（重新获取锁）
     *state.is_running.lock().unwrap() = true;
     tracing::info!("[DEBUG] 启动完成!");
-    let mode_str = if use_realtime_mode { "实时模式" } else { "HTTP 模式" };
+    let mode_str = if use_realtime_mode {
+        "实时模式"
+    } else {
+        "HTTP 模式"
+    };
     let dictation_display = dual_hotkey_cfg.dictation.format_display();
     let assistant_display = dual_hotkey_cfg.assistant.format_display();
     Ok(format!(
@@ -1111,7 +1211,7 @@ async fn handle_assistant_mode(
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
     use_realtime: bool,
-    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -1205,9 +1305,24 @@ async fn handle_assistant_mode(
             let doubao = { doubao_client_state.lock().unwrap().clone() };
             let sensevoice = { sensevoice_client_state.lock().unwrap().clone() };
             let active_prov = realtime_provider.lock().unwrap().clone();
-            let fallback_prov = app.state::<AppState>().fallback_provider.lock().unwrap().clone();
+            let fallback_prov = app
+                .state::<AppState>()
+                .fallback_provider
+                .lock()
+                .unwrap()
+                .clone();
 
-            transcribe_with_available_clients(qwen, doubao, sensevoice, data, enable_fb, active_prov, fallback_prov, "(AI助手HTTP) ").await
+            transcribe_with_available_clients(
+                qwen,
+                doubao,
+                sensevoice,
+                data,
+                enable_fb,
+                active_prov,
+                fallback_prov,
+                "(AI助手HTTP) ",
+            )
+            .await
         } else {
             Err(anyhow::anyhow!("未获取到音频数据"))
         };
@@ -1226,9 +1341,24 @@ async fn handle_assistant_mode(
         let doubao = { doubao_client_state.lock().unwrap().clone() };
         let sensevoice = { sensevoice_client_state.lock().unwrap().clone() };
         let active_prov = realtime_provider.lock().unwrap().clone();
-        let fallback_prov = app.state::<AppState>().fallback_provider.lock().unwrap().clone();
+        let fallback_prov = app
+            .state::<AppState>()
+            .fallback_provider
+            .lock()
+            .unwrap()
+            .clone();
 
-        transcribe_with_available_clients(qwen, doubao, sensevoice, &data, enable_fb, active_prov, fallback_prov, "(AI助手备用) ").await
+        transcribe_with_available_clients(
+            qwen,
+            doubao,
+            sensevoice,
+            &data,
+            enable_fb,
+            active_prov,
+            fallback_prov,
+            "(AI助手备用) ",
+        )
+        .await
     } else {
         asr_result
     };
@@ -1243,7 +1373,15 @@ async fn handle_assistant_mode(
     };
 
     let pipeline_result = pipeline
-        .process(&app, processor, clipboard_guard, final_result, asr_time_ms, context, target_hwnd)
+        .process(
+            &app,
+            processor,
+            clipboard_guard,
+            final_result,
+            asr_time_ms,
+            context,
+            target_hwnd,
+        )
         .await;
 
     // 4. 处理结果
@@ -1255,7 +1393,8 @@ async fn handle_assistant_mode(
             if let Some(start_time) = recording_start_instant.lock().unwrap().take() {
                 let recording_ms = start_time.elapsed().as_millis() as u64;
                 // 统计非空白字符数（与前端旧逻辑保持一致）
-                let recognized_chars = result.text.chars().filter(|c| !c.is_whitespace()).count() as u64;
+                let recognized_chars =
+                    result.text.chars().filter(|c| !c.is_whitespace()).count() as u64;
 
                 let mut stats = usage_stats.lock().unwrap();
                 if let Err(e) = stats.update_and_save(recording_ms, recognized_chars) {
@@ -1304,7 +1443,8 @@ async fn transcribe_with_available_clients(
             (Some(config::AsrProvider::Qwen), Some(config::AsrProvider::SiliconFlow)) => {
                 if let (Some(q), Some(s)) = (&qwen, &sensevoice) {
                     tracing::info!("{}使用千问+SenseVoice并行竞速", log_prefix);
-                    asr::transcribe_with_fallback_clients(q.clone(), s.clone(), audio_data.to_vec()).await
+                    asr::transcribe_with_fallback_clients(q.clone(), s.clone(), audio_data.to_vec())
+                        .await
                 } else {
                     Err(anyhow::anyhow!("千问或 SenseVoice 客户端未初始化"))
                 }
@@ -1312,7 +1452,12 @@ async fn transcribe_with_available_clients(
             (Some(config::AsrProvider::Doubao), Some(config::AsrProvider::SiliconFlow)) => {
                 if let (Some(d), Some(s)) = (&doubao, &sensevoice) {
                     tracing::info!("{}使用豆包+SenseVoice并行竞速", log_prefix);
-                    asr::transcribe_doubao_sensevoice_race(d.clone(), s.clone(), audio_data.to_vec()).await
+                    asr::transcribe_doubao_sensevoice_race(
+                        d.clone(),
+                        s.clone(),
+                        audio_data.to_vec(),
+                    )
+                    .await
                 } else {
                     Err(anyhow::anyhow!("豆包或 SenseVoice 客户端未初始化"))
                 }
@@ -1396,7 +1541,7 @@ async fn handle_http_transcription(
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
-    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -1428,16 +1573,44 @@ async fn handle_http_transcription(
         let qwen = { qwen_client_state.lock().unwrap().clone() };
         let doubao = { doubao_client_state.lock().unwrap().clone() };
         let sensevoice = { sensevoice_client_state.lock().unwrap().clone() };
-        let active_prov = app.state::<AppState>().realtime_provider.lock().unwrap().clone();
-        let fallback_prov = app.state::<AppState>().fallback_provider.lock().unwrap().clone();
+        let active_prov = app
+            .state::<AppState>()
+            .realtime_provider
+            .lock()
+            .unwrap()
+            .clone();
+        let fallback_prov = app
+            .state::<AppState>()
+            .fallback_provider
+            .lock()
+            .unwrap()
+            .clone();
 
         let asr_start = std::time::Instant::now();
         let result = transcribe_with_available_clients(
-            qwen, doubao, sensevoice, &audio_data, enable_fallback, active_prov, fallback_prov, "(HTTP) "
-        ).await;
+            qwen,
+            doubao,
+            sensevoice,
+            &audio_data,
+            enable_fallback,
+            active_prov,
+            fallback_prov,
+            "(HTTP) ",
+        )
+        .await;
         let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
-        handle_transcription_result(app, post_processor, text_inserter, result, asr_time_ms, target_hwnd, usage_stats, recording_start_instant).await;
+        handle_transcription_result(
+            app,
+            post_processor,
+            text_inserter,
+            result,
+            asr_time_ms,
+            target_hwnd,
+            usage_stats,
+            recording_start_instant,
+        )
+        .await;
     }
 }
 
@@ -1455,7 +1628,7 @@ async fn handle_realtime_stop(
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
-    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -1529,7 +1702,17 @@ async fn handle_realtime_stop(
                         tracing::info!("豆包实时转录成功: {} (ASR 耗时: {}ms)", text, asr_time_ms);
                         drop(doubao_session_guard);
                         *doubao_session.lock().await = None;
-                        handle_transcription_result(app, post_processor, text_inserter, Ok(text), asr_time_ms, target_hwnd, usage_stats, recording_start_instant).await;
+                        handle_transcription_result(
+                            app,
+                            post_processor,
+                            text_inserter,
+                            Ok(text),
+                            asr_time_ms,
+                            target_hwnd,
+                            usage_stats,
+                            recording_start_instant,
+                        )
+                        .await;
                     }
                     Err(e) => {
                         tracing::warn!("豆包等待转录结果失败: {}，尝试备用方案", e);
@@ -1620,7 +1803,17 @@ async fn handle_realtime_stop(
                         let _ = session.close().await;
                         drop(session_guard);
                         *active_session.lock().await = None;
-                        handle_transcription_result(app, post_processor, text_inserter, Ok(text), asr_time_ms, target_hwnd, usage_stats, recording_start_instant).await;
+                        handle_transcription_result(
+                            app,
+                            post_processor,
+                            text_inserter,
+                            Ok(text),
+                            asr_time_ms,
+                            target_hwnd,
+                            usage_stats,
+                            recording_start_instant,
+                        )
+                        .await;
                     }
                     Err(e) => {
                         tracing::warn!("千问等待转录结果失败: {}，尝试备用方案", e);
@@ -1687,23 +1880,51 @@ async fn fallback_transcription(
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     audio_data: Vec<u8>,
     enable_fallback: bool,
-    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
     let qwen = { qwen_client_state.lock().unwrap().clone() };
     let sensevoice = { sensevoice_client_state.lock().unwrap().clone() };
     let doubao = { doubao_client_state.lock().unwrap().clone() };
-    let active_prov = app.state::<AppState>().realtime_provider.lock().unwrap().clone();
-    let fallback_prov = app.state::<AppState>().fallback_provider.lock().unwrap().clone();
+    let active_prov = app
+        .state::<AppState>()
+        .realtime_provider
+        .lock()
+        .unwrap()
+        .clone();
+    let fallback_prov = app
+        .state::<AppState>()
+        .fallback_provider
+        .lock()
+        .unwrap()
+        .clone();
 
     let asr_start = std::time::Instant::now();
     let result = transcribe_with_available_clients(
-        qwen, doubao, sensevoice, &audio_data, enable_fallback, active_prov, fallback_prov, "(备用) "
-    ).await;
+        qwen,
+        doubao,
+        sensevoice,
+        &audio_data,
+        enable_fallback,
+        active_prov,
+        fallback_prov,
+        "(备用) ",
+    )
+    .await;
     let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
-    handle_transcription_result(app, post_processor, text_inserter, result, asr_time_ms, target_hwnd, usage_stats, recording_start_instant).await;
+    handle_transcription_result(
+        app,
+        post_processor,
+        text_inserter,
+        result,
+        asr_time_ms,
+        target_hwnd,
+        usage_stats,
+        recording_start_instant,
+    )
+    .await;
 }
 
 /// 统一的错误处理辅助函数 - 发送错误事件并隐藏悬浮窗
@@ -1744,7 +1965,7 @@ struct TranscriptionResult {
     llm_time_ms: Option<u64>,
     total_time_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    mode: Option<String>,  // 新增：处理模式
+    mode: Option<String>, // 新增：处理模式
     #[serde(skip_serializing_if = "Option::is_none")]
     inserted: Option<bool>, // 新增：是否已自动插入
 }
@@ -1759,18 +1980,35 @@ async fn handle_transcription_result(
     text_inserter: Arc<Mutex<Option<TextInserter>>>,
     result: anyhow::Result<String>,
     asr_time_ms: u64,
-    target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
     // 从锁中提取处理器（clone 后立即释放锁）
     let post_proc = { post_processor.lock().unwrap().clone() };
 
+    // 从 state 获取最新词库与词库增强开关（避免 pipeline 内持锁）
+    let state = app.state::<AppState>();
+    let dictionary = { state.dictionary.lock().unwrap().clone() };
+    let enable_post_process = { *state.enable_post_process.lock().unwrap() };
+    let enable_dictionary_enhancement = { *state.enable_dictionary_enhancement.lock().unwrap() };
+
     // 听写模式：只使用 NormalPipeline
     let pipeline = NormalPipeline::new();
     let mut inserter = { text_inserter.lock().unwrap().take() };
     let pipeline_result = pipeline
-        .process(&app, post_proc, &mut inserter, result, asr_time_ms, TranscriptionContext::empty(), target_hwnd)
+        .process(
+            &app,
+            post_proc,
+            enable_post_process,
+            dictionary,
+            enable_dictionary_enhancement,
+            &mut inserter,
+            result,
+            asr_time_ms,
+            TranscriptionContext::empty(),
+            target_hwnd,
+        )
         .await;
     // 归还 text_inserter
     *text_inserter.lock().unwrap() = inserter;
@@ -1785,7 +2023,8 @@ async fn handle_transcription_result(
             if let Some(start_time) = recording_start_instant.lock().unwrap().take() {
                 let recording_ms = start_time.elapsed().as_millis() as u64;
                 // 统计非空白字符数（与前端旧逻辑保持一致）
-                let recognized_chars = result.text.chars().filter(|c| !c.is_whitespace()).count() as u64;
+                let recognized_chars =
+                    result.text.chars().filter(|c| !c.is_whitespace()).count() as u64;
 
                 let mut stats = usage_stats.lock().unwrap();
                 if let Err(e) = stats.update_and_save(recording_ms, recognized_chars) {
@@ -1983,9 +2222,11 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
 
     // 防止与 on_stop 竞态：使用 compare_exchange 原子操作
     // 如果已经在处理中，直接返回
-    if state.is_processing_stop.compare_exchange(
-        false, true, Ordering::SeqCst, Ordering::SeqCst
-    ).is_err() {
+    if state
+        .is_processing_stop
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         tracing::warn!("已有停止处理正在进行中，跳过重复触发");
         return Err("正在处理中".to_string());
     }
@@ -1998,7 +2239,10 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
     state.hotkey_service.reset_state();
 
     // 获取并清空触发模式（松手模式仅支持听写模式）
-    let trigger_mode = state.current_trigger_mode.lock().unwrap()
+    let trigger_mode = state
+        .current_trigger_mode
+        .lock()
+        .unwrap()
         .take()
         .unwrap_or(config::TriggerMode::Dictation);
 
@@ -2034,7 +2278,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
     let sensevoice_client = Arc::clone(&state.sensevoice_client);
     let doubao_client = Arc::clone(&state.doubao_client);
     let enable_fallback = Arc::clone(&state.enable_fallback);
-    let target_hwnd = *state.target_window.lock().unwrap();  // 获取目标窗口句柄
+    let target_hwnd = *state.target_window.lock().unwrap(); // 获取目标窗口句柄
     let usage_stats = Arc::clone(&state.usage_stats);
     let recording_start_instant = Arc::clone(&state.recording_start_instant);
 
@@ -2059,7 +2303,8 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
                     target_hwnd,
                     usage_stats,
                     recording_start_instant,
-                ).await;
+                )
+                .await;
             } else {
                 handle_http_transcription(
                     app,
@@ -2073,7 +2318,8 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
                     target_hwnd,
                     usage_stats,
                     recording_start_instant,
-                ).await;
+                )
+                .await;
             }
         }
         config::TriggerMode::AiAssistant => {
@@ -2101,9 +2347,11 @@ async fn cancel_locked_recording(app_handle: AppHandle) -> Result<String, String
     }
 
     // 防止与 on_stop 竞态：使用 compare_exchange 原子操作
-    if state.is_processing_stop.compare_exchange(
-        false, true, Ordering::SeqCst, Ordering::SeqCst
-    ).is_err() {
+    if state
+        .is_processing_stop
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         tracing::warn!("已有停止处理正在进行中，跳过重复触发");
         return Err("正在处理中".to_string());
     }
@@ -2179,7 +2427,12 @@ async fn set_autostart(app: AppHandle, enabled: bool) -> Result<String, String> 
     } else {
         manager.disable().map_err(|e| e.to_string())?;
     }
-    Ok(if enabled { "已启用开机自启" } else { "已禁用开机自启" }.to_string())
+    Ok(if enabled {
+        "已启用开机自启"
+    } else {
+        "已禁用开机自启"
+    }
+    .to_string())
 }
 
 /// 获取开机自启动状态
@@ -2230,6 +2483,7 @@ async fn get_hotkey_debug_info(app_handle: AppHandle) -> Result<String, String> 
 async fn update_runtime_config(
     app_handle: AppHandle,
     enable_post_process: Option<bool>,
+    enable_dictionary_enhancement: Option<bool>,
     llm_config: Option<config::LlmConfig>,
     assistant_config: Option<config::AssistantConfig>,
     enable_mute_other_apps: Option<bool>,
@@ -2252,12 +2506,20 @@ async fn update_runtime_config(
         updated.push("LLM后处理开关");
     }
 
+    // 1.1 更新词库增强开关
+    if let Some(enabled) = enable_dictionary_enhancement {
+        *state.enable_dictionary_enhancement.lock().unwrap() = enabled;
+        tracing::info!("热更新: 词库增强 = {}", enabled);
+        updated.push("词库增强");
+    }
+
     // 2. 更新 LLM 配置（重新初始化处理器）
     if let Some(ref cfg) = llm_config {
         let enable_pp = *state.enable_post_process.lock().unwrap();
+        let enable_dict = *state.enable_dictionary_enhancement.lock().unwrap();
         let mut processor_guard = state.post_processor.lock().unwrap();
         let resolved = cfg.resolve_polishing();
-        if enable_pp && !resolved.api_key.trim().is_empty() {
+        if (enable_pp || enable_dict) && !resolved.api_key.trim().is_empty() {
             *processor_guard = Some(LlmPostProcessor::new(cfg.clone()));
             tracing::info!("热更新: LLM 处理器已重新初始化");
         } else {
@@ -2339,13 +2601,15 @@ async fn add_learned_word(
     word: String,
     source: String,
 ) -> Result<(), String> {
-    use crate::learning::store::{upsert_entry, entries_to_words};
     use crate::config::CONFIG_LOCK;
+    use crate::learning::store::{entries_to_words, upsert_entry};
 
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
 
     // 使用全局锁保护配置操作，防止并发覆盖
-    let _guard = CONFIG_LOCK.lock().map_err(|e| format!("获取配置锁失败: {}", e))?;
+    let _guard = CONFIG_LOCK
+        .lock()
+        .map_err(|e| format!("获取配置锁失败: {}", e))?;
 
     // 加载当前配置
     let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
@@ -2393,13 +2657,15 @@ async fn delete_dictionary_entries(
     app_handle: AppHandle,
     words: Vec<String>,
 ) -> Result<(), String> {
-    use crate::learning::store::{remove_entries, entries_to_words};
     use crate::config::CONFIG_LOCK;
+    use crate::learning::store::{entries_to_words, remove_entries};
 
     tracing::info!("删除词典条目: {:?}", words);
 
     // 使用全局锁保护配置操作，防止并发覆盖
-    let _guard = CONFIG_LOCK.lock().map_err(|e| format!("获取配置锁失败: {}", e))?;
+    let _guard = CONFIG_LOCK
+        .lock()
+        .map_err(|e| format!("获取配置锁失败: {}", e))?;
 
     // 加载当前配置
     let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
@@ -2445,7 +2711,8 @@ async fn show_notification_window(app_handle: AppHandle) -> Result<(), String> {
     if let Some(notification) = app_handle.get_webview_window("notification") {
         // 使用 overlay 或 main 窗口获取显示器列表（这些窗口已正确初始化）
         // notification 窗口在首次显示前可能没有正确初始化
-        let reference_window = app_handle.get_webview_window("overlay")
+        let reference_window = app_handle
+            .get_webview_window("overlay")
             .or_else(|| app_handle.get_webview_window("main"));
 
         if let Some(ref_win) = reference_window {
@@ -2471,14 +2738,17 @@ async fn show_notification_window(app_handle: AppHandle) -> Result<(), String> {
                 let top_margin = (50.0 * scale_factor) as i32;
                 let y = y.max(monitor_pos.y + top_margin);
 
-                notification.set_position(tauri::PhysicalPosition::new(x, y))
+                notification
+                    .set_position(tauri::PhysicalPosition::new(x, y))
                     .map_err(|e| format!("设置窗口位置失败: {}", e))?;
             }
         }
 
         // 避免抢占焦点：学习观察依赖前台窗口 hwnd，一旦通知窗口 set_focus 会导致学习误判“失焦”。
         // 通知窗口只需可见即可。
-        notification.show().map_err(|e| format!("显示窗口失败: {}", e))?;
+        notification
+            .show()
+            .map_err(|e| format!("显示窗口失败: {}", e))?;
 
         Ok(())
     } else {
@@ -2495,7 +2765,11 @@ async fn show_notification_window(app_handle: AppHandle) -> Result<(), String> {
 ///
 /// 备注：endpoint 可传 base URL 或 full URL；最终会被 normalize 为 `/chat/completions`。
 #[tauri::command]
-async fn test_llm_provider(endpoint: String, api_key: String, model: String) -> Result<String, String> {
+async fn test_llm_provider(
+    endpoint: String,
+    api_key: String,
+    model: String,
+) -> Result<String, String> {
     let resolved_endpoint = config::normalize_chat_completions_endpoint(&endpoint);
 
     if resolved_endpoint.trim().is_empty() {
@@ -2515,7 +2789,13 @@ async fn test_llm_provider(endpoint: String, api_key: String, model: String) -> 
     ];
 
     client
-        .chat(&messages, ChatOptions { max_tokens: 4, temperature: 0.0 })
+        .chat(
+            &messages,
+            ChatOptions {
+                max_tokens: 4,
+                temperature: 0.0,
+            },
+        )
         .await
         .map(|s| s.trim().to_string())
         .map_err(|e| format!("测试请求失败: {e}"))
@@ -2570,6 +2850,7 @@ pub fn run() {
                 is_running: Arc::new(Mutex::new(false)),
                 use_realtime_asr: Arc::new(Mutex::new(true)),
                 enable_post_process: Arc::new(Mutex::new(false)),
+                enable_dictionary_enhancement: Arc::new(Mutex::new(true)),
                 enable_fallback: Arc::new(Mutex::new(false)),
                 qwen_client: Arc::new(Mutex::new(None)),
                 sensevoice_client: Arc::new(Mutex::new(None)),
@@ -2602,22 +2883,25 @@ pub fn run() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .tooltip("PushToTalk - AI 语音转写助手")
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
                     }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();

@@ -66,6 +66,7 @@ function App() {
 
   const [useRealtime, setUseRealtime] = useState(false);
   const [enablePostProcess, setEnablePostProcess] = useState(false);
+  const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(true);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
@@ -183,8 +184,18 @@ function App() {
   useEffect(() => {
     llmConfigRef.current = llmConfig;
   }, [llmConfig]);
+  const enablePostProcessRef = useRef(enablePostProcess);
+  useEffect(() => {
+    enablePostProcessRef.current = enablePostProcess;
+  }, [enablePostProcess]);
+  const enableDictionaryEnhancementRef = useRef(enableDictionaryEnhancement);
+  useEffect(() => {
+    enableDictionaryEnhancementRef.current = enableDictionaryEnhancement;
+  }, [enableDictionaryEnhancement]);
   useTauriEventListeners({
     llmConfigRef,
+    enablePostProcessRef,
+    enableDictionaryEnhancementRef,
     setStatus,
     setError,
     setTranscript,
@@ -237,6 +248,8 @@ function App() {
     setUseRealtime,
     enablePostProcess,
     setEnablePostProcess,
+    enableDictionaryEnhancement,
+    setEnableDictionaryEnhancement,
     llmConfig,
     setLlmConfig,
     assistantConfig,
@@ -369,12 +382,13 @@ function App() {
 
     void applyRuntimeConfig({
       enablePostProcess,
+      enableDictionaryEnhancement,
       llmConfig,
       assistantConfig,
       enableMuteOtherApps,
       dictionary,
     });
-  }, [enablePostProcess, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, status, applyRuntimeConfig]);
+  }, [enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, status, applyRuntimeConfig]);
 
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
@@ -410,6 +424,7 @@ function App() {
     asrConfig,
     useRealtime,
     enablePostProcess,
+    enableDictionaryEnhancement,
     llmConfig,
     assistantConfig,
     dictionary,
@@ -618,6 +633,8 @@ function App() {
                 setUseRealtime={setUseRealtime}
                 enablePostProcess={enablePostProcess}
                 setEnablePostProcess={setEnablePostProcess}
+                enableDictionaryEnhancement={enableDictionaryEnhancement}
+                setEnableDictionaryEnhancement={setEnableDictionaryEnhancement}
                 llmConfig={llmConfig}
                 setLlmConfig={setLlmConfig}
                 dualHotkeyConfig={dualHotkeyConfig}
