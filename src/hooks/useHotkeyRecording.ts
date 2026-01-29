@@ -23,6 +23,7 @@ export type UseHotkeyRecordingParams = {
   enableMuteOtherApps: boolean;
   closeAction: "close" | "minimize" | null;
   dictionary: DictionaryEntry[];
+  builtinDictionaryDomains: string[];
 
   dualHotkeyConfig: DualHotkeyConfig;
   setDualHotkeyConfig: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
@@ -54,6 +55,7 @@ export function useHotkeyRecording({
   enableMuteOtherApps,
   closeAction,
   dictionary,
+  builtinDictionaryDomains,
   dualHotkeyConfig,
   setDualHotkeyConfig,
   onSaveConfig,
@@ -172,6 +174,7 @@ export function useHotkeyRecording({
           enableMuteOtherApps,
           closeAction,
           dictionary,
+          builtinDictionaryDomains,
         }).catch(() => {
           setHotkeyError("保存热键配置失败");
           window.setTimeout(() => setHotkeyError(null), 3000);
@@ -201,6 +204,7 @@ export function useHotkeyRecording({
     enableMuteOtherApps,
     closeAction,
     dictionary,
+    builtinDictionaryDomains,
     dualHotkeyConfig,
     setDualHotkeyConfig,
   ]);
@@ -258,6 +262,7 @@ export function useHotkeyRecording({
           enableMuteOtherApps,
           closeAction,
           dictionary,
+          builtinDictionaryDomains,
         }).catch(() => {
           setHotkeyError("保存热键配置失败");
           window.setTimeout(() => setHotkeyError(null), 3000);

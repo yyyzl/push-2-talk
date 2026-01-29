@@ -156,6 +156,7 @@ async fn save_config(
     learning_config: Option<config::LearningConfig>,
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
+    builtin_dictionary_domains: Option<Vec<String>>,
     theme: Option<String>,
 ) -> Result<String, String> {
     tracing::info!("保存配置...");
@@ -251,6 +252,8 @@ async fn save_config(
         transcription_mode: existing.transcription_mode,
         enable_mute_other_apps: enable_mute_other_apps.unwrap_or(existing.enable_mute_other_apps),
         dictionary: final_dictionary,
+        builtin_dictionary_domains: builtin_dictionary_domains
+            .unwrap_or(existing.builtin_dictionary_domains),
         theme: theme.unwrap_or(existing.theme),
     };
 

@@ -18,8 +18,35 @@ import {
 } from "../constants";
 import { isAsrConfigValid } from "../utils";
 import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
+import { getBuiltinWordsForDomains, normalizeBuiltinDictionaryDomains } from "../utils/builtinDictionary";
 
 const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
+
+const buildRuntimeDictionary = (
+  dictionaryEntries: DictionaryEntry[],
+  builtinDomains: string[],
+): string[] => {
+  const userWords = entriesToWords(dictionaryEntries);
+  const builtinWords = getBuiltinWordsForDomains(builtinDomains);
+  if (builtinWords.length === 0) return userWords;
+
+  const merged = new Set<string>();
+  const result: string[] = [];
+
+  for (const word of userWords) {
+    if (merged.has(word)) continue;
+    merged.add(word);
+    result.push(word);
+  }
+
+  for (const word of builtinWords) {
+    if (merged.has(word)) continue;
+    merged.add(word);
+    result.push(word);
+  }
+
+  return result;
+};
 
 export type UseAppServiceControllerParams = {
   setAsrConfig: React.Dispatch<React.SetStateAction<AsrConfig>>;
@@ -52,6 +79,9 @@ export type UseAppServiceControllerParams = {
 
   dictionary: DictionaryEntry[];
   setDictionary: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
+
+  builtinDictionaryDomains: string[];
+  setBuiltinDictionaryDomains: React.Dispatch<React.SetStateAction<string[]>>;
 
   status: AppStatus;
   setStatus: React.Dispatch<React.SetStateAction<AppStatus>>;
@@ -101,6 +131,8 @@ export function useAppServiceController({
   setDualHotkeyConfig,
   dictionary,
   setDictionary,
+  builtinDictionaryDomains,
+  setBuiltinDictionaryDomains,
   status,
   setStatus,
   setError,
@@ -166,13 +198,15 @@ export function useAppServiceController({
           llmConfig: updates.llmConfig,
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
-          dictionary: updates.dictionary ? entriesToWords(updates.dictionary) : undefined,
+          dictionary: updates.dictionary
+            ? buildRuntimeDictionary(updates.dictionary, builtinDictionaryDomains)
+            : undefined,
         });
       } catch (err) {
         console.error("热更新配置失败:", err);
       }
     },
-    [status],
+    [builtinDictionaryDomains, status],
   );
 
   const loadConfig = useCallback(async () => {
@@ -246,6 +280,9 @@ export function useAppServiceController({
               dualHotkeyConfig: config.dual_hotkey_config || DEFAULT_DUAL_HOTKEY_CONFIG,
               enableMuteOtherApps: config.enable_mute_other_apps ?? false,
               dictionary: mergedDictionary,
+              builtinDictionaryDomains: normalizeBuiltinDictionaryDomains(
+                config.builtin_dictionary_domains || []
+              ),
               theme: config.theme || 'light',
             });
 
@@ -337,6 +374,11 @@ export function useAppServiceController({
       }
       setDictionary(loadedDictionary);
 
+      const loadedBuiltinDictionaryDomains = normalizeBuiltinDictionaryDomains(
+        config.builtin_dictionary_domains || []
+      );
+      setBuiltinDictionaryDomains(loadedBuiltinDictionaryDomains);
+
       const loadedAsrConfig = config.asr_config || null;
       const loadedDualHotkeyConfig = config.dual_hotkey_config || {
         dictation:
@@ -359,7 +401,10 @@ export function useAppServiceController({
           asrConfig: loadedAsrConfig,
           dualHotkeyConfig: loadedDualHotkeyConfig,
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-          dictionary: entriesToWords(loadedDictionary),
+          dictionary: buildRuntimeDictionary(
+            loadedDictionary,
+            loadedBuiltinDictionaryDomains
+          ),
           theme: config.theme || "light",
         });
         setStatus("running");
@@ -374,6 +419,7 @@ export function useAppServiceController({
     setAssistantConfig,
     setCloseAction,
     setDictionary,
+    setBuiltinDictionaryDomains,
     setDualHotkeyConfig,
     setEnableAutostart,
     setEnableMuteOtherApps,
@@ -392,7 +438,7 @@ export function useAppServiceController({
       // 保存时使用存储格式（保留 source 信息）
       const storageDictionary = entriesToStorageFormat(dictionary);
       // 运行时使用纯词汇（用于 ASR API）
-      const runtimeDictionary = entriesToWords(dictionary);
+      const runtimeDictionary = buildRuntimeDictionary(dictionary, builtinDictionaryDomains);
 
       console.log("[handleSaveConfig] 保存配置, theme=", theme);
 
@@ -409,6 +455,7 @@ export function useAppServiceController({
         dualHotkeyConfig,
         enableMuteOtherApps,
         dictionary: storageDictionary,
+        builtinDictionaryDomains,
         theme,
       });
 
@@ -452,6 +499,7 @@ export function useAppServiceController({
     dualHotkeyConfig,
     enableMuteOtherApps,
     dictionary,
+    builtinDictionaryDomains,
     status,
     flashSuccessToast,
     setError,
@@ -475,6 +523,7 @@ export function useAppServiceController({
     dualHotkeyConfig?: DualHotkeyConfig;
     enableMuteOtherApps?: boolean;
     dictionary?: DictionaryEntry[];
+    builtinDictionaryDomains?: string[];
     theme?: string;
   }) => {
     // 先取消 debounce timer
@@ -492,11 +541,16 @@ export function useAppServiceController({
       const finalDualHotkeyConfig = overrides?.dualHotkeyConfig ?? dualHotkeyConfig;
       const finalEnableMuteOtherApps = overrides?.enableMuteOtherApps ?? enableMuteOtherApps;
       const finalDictionary = overrides?.dictionary ?? dictionary;
+      const finalBuiltinDictionaryDomains =
+        overrides?.builtinDictionaryDomains ?? builtinDictionaryDomains;
       const finalTheme = overrides?.theme ?? theme;
       // 保存时使用存储格式（保留 source 信息）
       const storageDictionary = entriesToStorageFormat(finalDictionary);
       // 运行时使用纯词汇（用于 ASR API）
-      const runtimeDictionary = entriesToWords(finalDictionary);
+      const runtimeDictionary = buildRuntimeDictionary(
+        finalDictionary,
+        finalBuiltinDictionaryDomains
+      );
 
       await invoke<string>("save_config", {
         apiKey,
@@ -511,10 +565,14 @@ export function useAppServiceController({
         dualHotkeyConfig: finalDualHotkeyConfig,
         enableMuteOtherApps: finalEnableMuteOtherApps,
         dictionary: storageDictionary,
+        builtinDictionaryDomains: finalBuiltinDictionaryDomains,
         theme: finalTheme,
       });
 
       if (overrides?.dictionary) setDictionary(overrides.dictionary);
+      if (overrides?.builtinDictionaryDomains) {
+        setBuiltinDictionaryDomains(overrides.builtinDictionaryDomains);
+      }
       if (overrides?.theme) setTheme(overrides.theme);
 
       if (status === "running") {
@@ -555,8 +613,10 @@ export function useAppServiceController({
     dualHotkeyConfig,
     enableMuteOtherApps,
     dictionary,
+    builtinDictionaryDomains,
     status,
     setDictionary,
+    setBuiltinDictionaryDomains,
     setError,
     startApp,
     stopApp,
@@ -584,7 +644,7 @@ export function useAppServiceController({
         // 保存时使用存储格式（保留 source 信息）
         const storageDictionary = entriesToStorageFormat(dictionary);
         // 运行时使用纯词汇（用于 ASR API）
-        const runtimeDictionary = entriesToWords(dictionary);
+        const runtimeDictionary = buildRuntimeDictionary(dictionary, builtinDictionaryDomains);
 
         await invoke<string>("save_config", {
           apiKey,
@@ -600,6 +660,7 @@ export function useAppServiceController({
           dualHotkeyConfig,
           enableMuteOtherApps,
           dictionary: storageDictionary,
+          builtinDictionaryDomains,
           theme,
         });
 
@@ -635,6 +696,7 @@ export function useAppServiceController({
     asrConfig,
     closeAction,
     dictionary,
+    builtinDictionaryDomains,
     dualHotkeyConfig,
     enableMuteOtherApps,
     enablePostProcess,
@@ -676,6 +738,7 @@ export function useAppServiceController({
             dualHotkeyConfig,
             enableMuteOtherApps,
             dictionary: entriesToStorageFormat(dictionary),
+            builtinDictionaryDomains,
             theme,
           });
         } catch (err) {
@@ -697,6 +760,7 @@ export function useAppServiceController({
       assistantConfig,
       asrConfig,
       dictionary,
+      builtinDictionaryDomains,
       dualHotkeyConfig,
       enableMuteOtherApps,
       enablePostProcess,

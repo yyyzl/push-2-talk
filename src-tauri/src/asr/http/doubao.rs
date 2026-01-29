@@ -49,6 +49,10 @@ impl DoubaoASRClient {
         if let Some(c) = corpus {
             request_obj["corpus"] = c;
         }
+        //NOTE: 实验性功能，能提升性能
+        request_obj["model_version"] = "400".into();
+        request_obj["enable_ddc"] = true.into();
+        
 
         let request_body = serde_json::json!({
             "user": {

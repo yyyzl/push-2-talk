@@ -92,7 +92,7 @@ impl ChatOptions {
     pub fn for_polishing() -> Self {
         Self {
             max_tokens: 2048,  // 使用与 Smart Command 相同的值，避免 API 兼容性问题
-            temperature: 0.3,
+            temperature: 0.7,
         }
     }
 

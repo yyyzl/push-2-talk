@@ -81,10 +81,14 @@ impl QwenASRClient {
                 ]
             },
             "parameters": {
-                "result_format": "message",
-                "enable_itn": false,
-                "disfluency_removal": true,
-                "language": "zh"
+                // NOTE: 疑似无效参数，暂时注释掉
+                // "result_format": "message",
+                // "enable_itn": true,
+                // "disfluency_removal": true,
+                // "language": "zh",
+                "asr_options": {
+                    "enable_itn": true
+                }
             }
         });
 

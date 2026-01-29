@@ -30,6 +30,7 @@ export type ConfigOverrides = {
   dualHotkeyConfig?: DualHotkeyConfig;
   enableMuteOtherApps?: boolean;
   dictionary?: DictionaryEntry[];
+  builtinDictionaryDomains?: string[];
   theme?: string;
 };
 

@@ -577,6 +577,9 @@ pub struct AppConfig {
     /// 个人词典（热词列表）- 简化格式："word" 或 "word|auto"
     #[serde(default)]
     pub dictionary: Vec<String>,
+    /// 内置词库领域（用于组合请求词库）
+    #[serde(default)]
+    pub builtin_dictionary_domains: Vec<String>,
     /// 悬浮窗主题 ("light" | "dark")
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -1167,6 +1170,7 @@ impl AppConfig {
             transcription_mode: TranscriptionMode::default(),
             enable_mute_other_apps: false,
             dictionary: Vec::new(),
+            builtin_dictionary_domains: Vec::new(),
             theme: default_theme(),
         }
     }
@@ -1215,6 +1219,12 @@ impl AppConfig {
                         if let Ok(dict) = serde_json::from_value(dictionary.clone()) {
                             tracing::info!("成功恢复 dictionary");
                             cfg.dictionary = dict;
+                        }
+                    }
+                    if let Some(builtin_domains) = v.get("builtin_dictionary_domains") {
+                        if let Ok(domains) = serde_json::from_value(builtin_domains.clone()) {
+                            tracing::info!("成功恢复 builtin_dictionary_domains");
+                            cfg.builtin_dictionary_domains = domains;
                         }
                     }
 

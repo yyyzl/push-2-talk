@@ -13,6 +13,7 @@ export type UseTauriEventListenersParams = {
   llmConfigRef: React.RefObject<LlmConfig>;
   enablePostProcessRef?: React.RefObject<boolean>;
   enableDictionaryEnhancementRef?: React.RefObject<boolean>;
+  setActivePresetName?: React.Dispatch<React.SetStateAction<string | null>>;
 
   setStatus: React.Dispatch<React.SetStateAction<AppStatus>>;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
@@ -32,6 +33,7 @@ export function useTauriEventListeners({
   llmConfigRef,
   enablePostProcessRef,
   enableDictionaryEnhancementRef,
+  setActivePresetName,
   setStatus,
   setError,
   setTranscript,
@@ -126,6 +128,8 @@ export function useTauriEventListeners({
               : (enableDictionaryEnhancement ? "词库增强" : null)
             : null;
 
+          setActivePresetName?.(presetName);
+
           addHistoryRecord({
             id: nanoid(8),
             timestamp: Date.now(),
@@ -200,6 +204,7 @@ export function useTauriEventListeners({
   }, [
     llmConfigRef,
     setAsrTime,
+    setActivePresetName,
     setCurrentMode,
     setError,
     setHistory,

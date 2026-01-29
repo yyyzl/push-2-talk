@@ -38,6 +38,9 @@ export function TranscriptDisplay({
   const realtimeCompactText = transcript
     ? transcript.replace(/\s+/g, " ").trim()
     : "";
+  const polishLabel = currentMode === "assistant"
+    ? "AI 助手"
+    : (activePresetName || "智能润色");
 
   // 检测实际溢出（仅在内容变化时检测，展开/收起时保持状态）
   useEffect(() => {
@@ -164,7 +167,7 @@ export function TranscriptDisplay({
 
         {originalTranscript ? (
           <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col border-r border-[var(--stone)] pr-4">
+            <div className="flex flex-col border-r border-[var(--stone)] ">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs text-stone-400 flex items-center gap-1">
                   <Mic size={12} /> {currentMode === "assistant" ? "用户问题" : "原始转录"}
@@ -186,9 +189,7 @@ export function TranscriptDisplay({
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs text-[var(--crail)] flex items-center gap-1">
                   {currentMode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
-                  {currentMode === "assistant"
-                    ? "AI 助手"
-                    : `${activePresetName || "智能"}润色`}
+                  {polishLabel}
                 </div>
                 <button
                   onClick={(e) => onCopy(transcript, e)}

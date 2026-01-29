@@ -76,6 +76,7 @@ function App() {
   const [asrTime, setAsrTime] = useState<number | null>(null);
   const [llmTime, setLlmTime] = useState<number | null>(null);
   const [totalTime, setTotalTime] = useState<number | null>(null);
+  const [activePresetName, setActivePresetName] = useState<string | null>(null);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const {
     dictionary,
@@ -94,6 +95,7 @@ function App() {
     handleCancelEdit,
     handleBatchDelete,
   } = useDictionary();
+  const [builtinDictionaryDomains, setBuiltinDictionaryDomains] = useState<string[]>([]);
   const {
     history,
     setHistory,
@@ -150,6 +152,7 @@ function App() {
     enableMuteOtherApps,
     closeAction,
     dictionary,
+    builtinDictionaryDomains,
     dualHotkeyConfig,
     setDualHotkeyConfig,
     onSaveConfig: async (overrides) => {
@@ -196,6 +199,7 @@ function App() {
     llmConfigRef,
     enablePostProcessRef,
     enableDictionaryEnhancementRef,
+    setActivePresetName,
     setStatus,
     setError,
     setTranscript,
@@ -259,6 +263,8 @@ function App() {
     setDualHotkeyConfig,
     dictionary,
     setDictionary,
+    builtinDictionaryDomains,
+    setBuiltinDictionaryDomains,
     status,
     setStatus,
     setError,
@@ -388,7 +394,7 @@ function App() {
       enableMuteOtherApps,
       dictionary,
     });
-  }, [enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, status, applyRuntimeConfig]);
+  }, [enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, status, applyRuntimeConfig]);
 
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
@@ -428,6 +434,7 @@ function App() {
     llmConfig,
     assistantConfig,
     dictionary,
+    builtinDictionaryDomains,
     enableMuteOtherApps,
     closeAction,
     dualHotkeyConfig,
@@ -458,7 +465,7 @@ function App() {
             asrTime={asrTime}
             llmTime={llmTime}
             totalTime={totalTime}
-            activePresetName={activePreset?.name || null}
+            activePresetName={activePresetName}
             transcriptEndRef={transcriptEndRef}
             onCopyText={handleCopyText}
             history={history}
@@ -531,6 +538,8 @@ function App() {
             handleSaveEdit={handleSaveEdit}
             handleCancelEdit={handleCancelEdit}
             handleBatchDelete={handleBatchDelete}
+            builtinDictionaryDomains={builtinDictionaryDomains}
+            setBuiltinDictionaryDomains={setBuiltinDictionaryDomains}
             isRunning={isConfigLocked}
           />
         );

@@ -109,7 +109,7 @@ export function Sidebar({
           title="LLM 模型配置"
         >
           <Zap className="shrink-0 w-5 h-5" />
-          <span className={navTextClass}>LLM 模型</span>
+          <span className={navTextClass}>LLM 模型配置</span>
         </button>
 
         <button
@@ -142,10 +142,10 @@ export function Sidebar({
         <button
           onClick={() => onNavigate("dictionary")}
           className={navItem("dictionary")}
-          title="个人词库"
+          title="词库"
         >
           <GraduationCap className="shrink-0 w-5 h-5" />
-          <span className={navTextClass}>个人词库</span>
+          <span className={navTextClass}>词库</span>
         </button>
 
         <div
