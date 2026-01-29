@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type MouseEvent, type RefObject } from "react";
-import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp } from "lucide-react";
+import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp, BookOpen } from "lucide-react";
 
 export type TranscriptDisplayProps = {
   transcript: string;
@@ -12,6 +12,8 @@ export type TranscriptDisplayProps = {
   transcriptEndRef: RefObject<HTMLDivElement>;
   onCopy: (text: string, e?: MouseEvent) => void;
   variant?: "default" | "compact";
+  enablePostProcess: boolean;
+  enableDictionaryEnhancement: boolean;
 };
 
 export function TranscriptDisplay({
@@ -25,6 +27,8 @@ export function TranscriptDisplay({
   transcriptEndRef,
   onCopy,
   variant = "default",
+  enablePostProcess,
+  enableDictionaryEnhancement,
 }: TranscriptDisplayProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -38,9 +42,24 @@ export function TranscriptDisplay({
   const realtimeCompactText = transcript
     ? transcript.replace(/\s+/g, " ").trim()
     : "";
-  const polishLabel = currentMode === "assistant"
-    ? "AI 助手"
-    : (activePresetName || "智能润色");
+
+  // Determine display icon and label based on mode and config
+  const getStatusConfig = () => {
+    if (currentMode === "assistant") {
+      return { Icon: MessageSquare, label: "AI 助手" };
+    }
+    // Priority: PostProcess (Polishing) > Dictionary Enhancement
+    if (enablePostProcess) {
+      return { Icon: Sparkles, label: `${activePresetName || "智能"}润色` };
+    }
+    if (enableDictionaryEnhancement) {
+      return { Icon: BookOpen, label: "词库增强" };
+    }
+    // Fallback
+    return { Icon: Sparkles, label: `${activePresetName || "智能"}润色` };
+  };
+
+  const { Icon: StatusIcon, label: statusLabel } = getStatusConfig();
 
   // 检测实际溢出（仅在内容变化时检测，展开/收起时保持状态）
   useEffect(() => {
@@ -188,8 +207,8 @@ export function TranscriptDisplay({
             <div className="flex flex-col">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs text-[var(--crail)] flex items-center gap-1">
-                  {currentMode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
-                  {polishLabel}
+                  <StatusIcon size={12} />
+                  {statusLabel}
                 </div>
                 <button
                   onClick={(e) => onCopy(transcript, e)}

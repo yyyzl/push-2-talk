@@ -1148,7 +1148,7 @@ fn default_use_realtime_asr() -> bool {
 }
 
 fn default_enable_dictionary_enhancement() -> bool {
-    true
+    false
 }
 
 impl AppConfig {

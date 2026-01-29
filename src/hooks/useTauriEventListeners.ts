@@ -120,7 +120,7 @@ export function useTauriEventListeners({
 
           const llmConfig = llmConfigRef.current;
           const mode = (result.mode as "normal" | "assistant") || null;
-          const enablePostProcess = enablePostProcessRef?.current ?? true;
+          const enablePostProcess = enablePostProcessRef?.current ?? false;
           const enableDictionaryEnhancement = enableDictionaryEnhancementRef?.current ?? false;
           const presetName = result.original_text && mode !== "assistant"
             ? enablePostProcess

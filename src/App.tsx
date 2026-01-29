@@ -470,6 +470,8 @@ function App() {
             onCopyText={handleCopyText}
             history={history}
             onOpenHistory={() => navigate("history")}
+            enablePostProcess={enablePostProcess}
+            enableDictionaryEnhancement={enableDictionaryEnhancement}
           />
         );
       case "asr":

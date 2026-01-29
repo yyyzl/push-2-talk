@@ -1,5 +1,5 @@
 # 版本号一键更新脚本
-# 用法: .\bump-version.ps1 1.0.2
+# 用法: .\bump-version.ps1 1.5.3
 
 param(
     [Parameter(Mandatory=$true, Position=0)]

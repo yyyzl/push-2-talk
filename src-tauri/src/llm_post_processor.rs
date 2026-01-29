@@ -122,7 +122,7 @@ impl LlmPostProcessor {
                 let total = words.len();
                 let mut word_list: Vec<&str> = Vec::new();
 
-                for word in words {
+                for word in &words {
                     if used >= Self::MAX_DICTIONARY_ENTRIES {
                         break;
                     }

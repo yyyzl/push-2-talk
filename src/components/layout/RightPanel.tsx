@@ -168,9 +168,11 @@ export function RightPanel({
               </option>
             ))}
           </select>
-          <div className="mt-3 flex items-center justify-between">
+          {/* 虚线分割线 */}
+          <div className="my-3 border-t border-dashed border-stone-200" />
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-bold text-stone-500">开启词库增强</span>
+              <span className="text-xs font-bold text-stone-700">词库增强</span>
               <Tooltip content="将个人词库注入提示词，用于同音词纠错与专业术语优先匹配；可独立于语句润色开关单独生效（仍会调用 LLM）">
                 <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
               </Tooltip>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2, Edit2, Settings2, Globe, Check, Zap, Sparkles, MessageSquare, GraduationCap, PlugZap, ShieldCheck, CircleX, Clock } from "lucide-react";
+import { Plus, Trash2, Edit2, Settings2, Globe, Check, Zap, Sparkles, MessageSquare, GraduationCap, PlugZap, ShieldCheck, CircleX, Clock, BookOpen } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SharedLlmConfig, LlmProvider } from "../types";
 import { ApiKeyInput, Modal, ConfigSelect } from "../components/common";
@@ -229,11 +229,14 @@ export function ModelsPage({
             </p>
           </div>
 
-          {/* Polishing Provider Card */}
+          {/* Polishing Provider Card - 同时绑定词库增强 */}
           <div className="relative group bg-[var(--paper)] rounded-2xl p-4 border border-[var(--stone)] hover:border-[var(--steel)] transition-all hover:shadow-md">
             <div className="flex items-center gap-2 mb-3">
-              <Sparkles size={16} className="text-purple-500" />
-              <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">语句润色</label>
+              <div className="flex items-center gap-1.5">
+                <Sparkles size={16} className="text-purple-500" />
+                <BookOpen size={14} className="text-pink-500" />
+              </div>
+              <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">语句润色 · 词库增强</label>
             </div>
             <ConfigSelect
               value={sharedConfig.polishing_provider_id || ""}
@@ -332,6 +335,7 @@ export function ModelsPage({
 
                             if (isPolishingBound) {
                               boundFeatures.push({ icon: Sparkles, color: "text-purple-500", name: "语句润色" });
+                              boundFeatures.push({ icon: BookOpen, color: "text-pink-500", name: "词库增强" });
                             }
                             if (isAssistantBound) {
                               boundFeatures.push({ icon: MessageSquare, color: "text-sky-500", name: "AI 助手" });

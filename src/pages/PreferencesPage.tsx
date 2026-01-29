@@ -1,8 +1,8 @@
-import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2 } from "lucide-react";
+import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle } from "lucide-react";
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
-import { Toggle, ThemeSelector, LlmConnectionConfig } from "../components/common";
+import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../components/common";
 import { RedDot } from "../components/common/RedDot";
 import { SettingsModal } from "../components/modals/SettingsModal";
 
@@ -163,7 +163,12 @@ export function PreferencesPage({
               <GraduationCap size={16} />
             </div>
             <div>
-              <div className="text-sm font-bold text-[var(--ink)]">自动词库学习</div>
+              <div className="flex items-center gap-1.5">
+                <div className="text-sm font-bold text-[var(--ink)]">自动词库学习</div>
+                <Tooltip content="AI 自动识别语音中的专业术语、人名和地名，学习后会自动添加到个人词库中，提高后续识别准确率。">
+                  <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+                </Tooltip>
+              </div>
               <div className="text-[11px] text-stone-400 font-semibold">
                 {learningEnabled ? "AI 自动识别专业术语" : "手动管理词库"}
               </div>
