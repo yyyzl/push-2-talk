@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use crate::config::LlmConfig;
 use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
@@ -18,6 +19,8 @@ use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
 pub struct LlmPostProcessor {
     client: OpenAiClient,
     config: LlmConfig,
+    /// 配置哈希（用于检测配置是否变化，避免不必要的重建）
+    config_hash: u64,
 }
 
 impl LlmPostProcessor {
@@ -81,8 +84,31 @@ impl LlmPostProcessor {
         let client_config =
             OpenAiClientConfig::new(&resolved.endpoint, &resolved.api_key, &resolved.model);
         let client = OpenAiClient::new(client_config);
+        let config_hash = Self::compute_config_hash(&config);
 
-        Self { client, config }
+        Self { client, config, config_hash }
+    }
+
+    /// 计算配置哈希（用于检测配置是否变化）
+    fn compute_config_hash(config: &LlmConfig) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // 哈希关键字段：endpoint、api_key、model、active_preset_id、当前 preset 的 system_prompt
+        let resolved = config.resolve_polishing();
+        resolved.endpoint.hash(&mut hasher);
+        resolved.api_key.hash(&mut hasher);
+        resolved.model.hash(&mut hasher);
+        config.active_preset_id.hash(&mut hasher);
+        // 哈希当前激活的 preset 的 system_prompt
+        if let Some(preset) = config.presets.iter().find(|p| p.id == config.active_preset_id) {
+            preset.system_prompt.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// 检查新配置是否与当前配置不同（需要重建处理器）
+    pub fn config_changed(&self, new_config: &LlmConfig) -> bool {
+        let new_hash = Self::compute_config_hash(new_config);
+        self.config_hash != new_hash
     }
 
     /// 获取当前激活的润色 Prompt

@@ -211,6 +211,13 @@ function App() {
     setShowCloseDialog,
     setHistory,
     setUsageStats,
+    onPolishingFailed: (errorMessage) => {
+      // 显示润色失败提示（截断过长的错误信息）
+      const shortMsg = errorMessage.length > 50
+        ? errorMessage.slice(0, 50) + "..."
+        : errorMessage;
+      showToast(`润色失败：${shortMsg}，已显示原文`);
+    },
   });
 
   // 取消 debounce timer 的回调，供即时保存使用
@@ -381,11 +388,37 @@ function App() {
     }
   }, [status]);
 
-  // 热更新：配置变更时立即应用到运行时（无需等待 debounce）
+  // 热更新：配置变更时在 running 状态下立即应用
+  // 使用 hash 去重，避免配置未变时重复调用后端
+  // 注意：null 表示未初始化（首次进入 running 时设置基准，不触发 apply）
+  const lastAppliedConfigHashRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!hasLoadedConfigRef.current) return;
     if (status !== "running") return;
 
+    const configHash = JSON.stringify({
+      enablePostProcess,
+      enableDictionaryEnhancement,
+      llmConfig,
+      assistantConfig,
+      enableMuteOtherApps,
+      dictionary,
+      builtinDictionaryDomains,
+    });
+
+    // 首次进入 running 时初始化基准（不触发 apply，因为后端启动时已加载配置）
+    if (lastAppliedConfigHashRef.current === null) {
+      lastAppliedConfigHashRef.current = configHash;
+      return;
+    }
+
+    // 配置未变，跳过
+    if (configHash === lastAppliedConfigHashRef.current) return;
+
+    // 配置变了，应用后再更新基准（确保成功后才更新，失败时允许重试）
+    // 注意：builtinDictionaryDomains 在 hash 中但不传给 applyRuntimeConfig
+    // 因为它已在 useAppServiceController 内部通过闭包捕获
     void applyRuntimeConfig({
       enablePostProcess,
       enableDictionaryEnhancement,
@@ -393,8 +426,14 @@ function App() {
       assistantConfig,
       enableMuteOtherApps,
       dictionary,
+    }).then((success) => {
+      if (success) {
+        // 成功后才更新基准，确保下次相同配置不会重复触发
+        lastAppliedConfigHashRef.current = configHash;
+      }
+      // 失败时不更新基准，下次相同配置会重试
     });
-  }, [enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, status, applyRuntimeConfig]);
+  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
 
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.

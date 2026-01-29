@@ -157,6 +157,9 @@ impl NormalPipeline {
                 }
                 Err(e) => {
                     tracing::warn!("NormalPipeline: LLM 后处理失败，使用原文: {}", e);
+                    // 通知前端润色失败（脱敏：只发送通用提示，不暴露底层错误细节）
+                    let _ = app.emit("polishing_failed", "润色服务暂时不可用");
+                    // original_text 保持 None，避免被前端误判为"有润色结果"
                     (text.to_string(), None, None)
                 }
             }

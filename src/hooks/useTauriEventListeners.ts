@@ -27,6 +27,9 @@ export type UseTauriEventListenersParams = {
 
   setHistory: React.Dispatch<React.SetStateAction<HistoryRecord[]>>;
   setUsageStats?: React.Dispatch<React.SetStateAction<UsageStats>>;
+
+  /** 润色失败时的回调（用于显示 Toast 提示） */
+  onPolishingFailed?: (errorMessage: string) => void;
 };
 
 export function useTauriEventListeners({
@@ -45,6 +48,7 @@ export function useTauriEventListeners({
   setShowCloseDialog,
   setHistory,
   setUsageStats,
+  onPolishingFailed,
 }: UseTauriEventListenersParams) {
   useEffect(() => {
     let unlistenFns: UnlistenFn[] = [];
@@ -171,6 +175,12 @@ export function useTauriEventListeners({
         if (!(await registerListener("transcription_cancelled", () => {
           setStatus("running");
           setError(null);
+        }))) return;
+
+        // 监听润色失败事件（让用户知道润色尝试过但失败了）
+        if (!(await registerListener<string>("polishing_failed", (errorMessage) => {
+          console.warn("润色失败:", errorMessage);
+          onPolishingFailed?.(errorMessage);
         }))) return;
 
         if (!(await registerListener("close_requested", async () => {
