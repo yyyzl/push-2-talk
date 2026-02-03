@@ -16,6 +16,9 @@ export type DashboardPageProps = {
 
   history: HistoryRecord[];
   onOpenHistory: () => void;
+
+  enablePostProcess: boolean;
+  enableDictionaryEnhancement: boolean;
 };
 
 export function DashboardPage({
@@ -30,6 +33,8 @@ export function DashboardPage({
   onCopyText,
   history,
   onOpenHistory,
+  enablePostProcess,
+  enableDictionaryEnhancement,
 }: DashboardPageProps) {
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -44,6 +49,8 @@ export function DashboardPage({
         transcriptEndRef={transcriptEndRef}
         onCopy={onCopyText}
         variant="compact"
+        enablePostProcess={enablePostProcess}
+        enableDictionaryEnhancement={enableDictionaryEnhancement}
       />
 
       <RecentActivity history={history} onCopyText={onCopyText} onOpenHistory={onOpenHistory} />

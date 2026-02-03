@@ -2516,19 +2516,73 @@ async fn update_runtime_config(
         updated.push("词库增强");
     }
 
-    // 2. 更新 LLM 配置（重新初始化处理器）
+    // 1.2 检查是否需要初始化/销毁 LLM 处理器（当仅更新开关而未传入 llm_config 时）
+    if llm_config.is_none()
+        && (enable_post_process.is_some() || enable_dictionary_enhancement.is_some())
+    {
+        let enable_pp = *state.enable_post_process.lock().unwrap();
+        let enable_dict = *state.enable_dictionary_enhancement.lock().unwrap();
+        let mut processor_guard = state.post_processor.lock().unwrap();
+
+        if enable_pp || enable_dict {
+            // 需要处理器但当前为空，从配置文件加载
+            if processor_guard.is_none() {
+                match config::AppConfig::load() {
+                    Ok((app_cfg, _)) => {
+                        let resolved = app_cfg.llm_config.resolve_polishing();
+                        if !resolved.api_key.trim().is_empty() {
+                            *processor_guard = Some(LlmPostProcessor::new(app_cfg.llm_config));
+                            tracing::info!("热更新: LLM 处理器已从配置文件初始化");
+                            updated.push("LLM处理器");
+                        } else {
+                            tracing::warn!(
+                                "热更新: 词库增强/后处理已启用但 API Key 未配置"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("热更新: 无法加载配置文件: {}", e);
+                    }
+                }
+            }
+        } else {
+            // 两个开关都关闭，销毁处理器
+            if processor_guard.is_some() {
+                *processor_guard = None;
+                tracing::info!("热更新: LLM 处理器已销毁（后处理和词库增强均已禁用）");
+                updated.push("LLM处理器");
+            }
+        }
+    }
+
+    // 2. 更新 LLM 配置（仅在配置变化时重新初始化处理器）
     if let Some(ref cfg) = llm_config {
         let enable_pp = *state.enable_post_process.lock().unwrap();
         let enable_dict = *state.enable_dictionary_enhancement.lock().unwrap();
         let mut processor_guard = state.post_processor.lock().unwrap();
         let resolved = cfg.resolve_polishing();
+
         if (enable_pp || enable_dict) && !resolved.api_key.trim().is_empty() {
-            *processor_guard = Some(LlmPostProcessor::new(cfg.clone()));
-            tracing::info!("热更新: LLM 处理器已重新初始化");
+            // 检查配置是否真的变了
+            let needs_rebuild = match &*processor_guard {
+                Some(existing) => existing.config_changed(cfg),
+                None => true,
+            };
+
+            if needs_rebuild {
+                *processor_guard = Some(LlmPostProcessor::new(cfg.clone()));
+                tracing::info!("热更新: LLM 处理器已重新初始化（配置变更）");
+                updated.push("LLM配置");
+            } else {
+                tracing::debug!("热更新: LLM 配置未变，跳过重建");
+            }
         } else {
-            *processor_guard = None;
+            if processor_guard.is_some() {
+                *processor_guard = None;
+                tracing::info!("热更新: LLM 处理器已销毁");
+                updated.push("LLM配置");
+            }
         }
-        updated.push("LLM配置");
     }
 
     // 3. 更新 AI 助手配置

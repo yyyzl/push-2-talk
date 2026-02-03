@@ -189,8 +189,8 @@ export function useAppServiceController({
       assistantConfig?: AssistantConfig;
       enableMuteOtherApps?: boolean;
       dictionary?: DictionaryEntry[];
-    }) => {
-      if (status !== "running") return;
+    }): Promise<boolean> => {
+      if (status !== "running") return false;
       try {
         await invoke<string>("update_runtime_config", {
           enablePostProcess: updates.enablePostProcess,
@@ -202,8 +202,10 @@ export function useAppServiceController({
             ? buildRuntimeDictionary(updates.dictionary, builtinDictionaryDomains)
             : undefined,
         });
+        return true;
       } catch (err) {
         console.error("热更新配置失败:", err);
+        return false;
       }
     },
     [builtinDictionaryDomains, status],
