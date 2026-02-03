@@ -9,7 +9,8 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message, tungstenite::http};
 
-const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
+// 双向流式模式（优化版本）
+const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 const TRANSCRIPTION_TIMEOUT_SECS: u64 = 6;
 
@@ -85,18 +86,40 @@ impl DoubaoRealtimeClient {
         let (mut write, mut read) = ws_stream.split();
 
         // 发送 Full Client Request
-        let mut request_obj = serde_json::json!({"model_name": "bigmodel", "enable_itn": true, "enable_punc": true});
+        let mut request_obj = serde_json::json!({
+            "model_name": "bigmodel",
+            "enable_nonstream":true, //开启二遍识别
+             "enable_itn": true, //文本规范化
+             "enable_punc": true, //启用标点
+             "enable_ddc": true, //语义顺滑
+            //  "show_speech_rate":true //语速
+            });
 
-        // 添加词库支持
-        if !self.dictionary.is_empty() {
-            let hotwords: Vec<serde_json::Value> = self.dictionary.iter()
-                .map(|w| serde_json::json!({"word": w}))
-                .collect();
-            let context = serde_json::json!({"hotwords": hotwords}).to_string();
-            tracing::info!("豆包流式 ASR 词库: {} 个词, context={}", self.dictionary.len(), context);
+        // 添加词库支持和对话上下文
+        {
+            let mut context_obj = serde_json::json!({
+                "context_type": "dialog_ctx",
+                "context_data": [
+                    // 大模型的约束，但是效果存疑
+                    {"text": "你好，请问有什么可以帮您的"},
+                    {"text": "豆包语音识别真的不错呀"},
+                    {"text": "当前聊天的场景是日常聊天，因此保留语气词，去除尾部句号"},
+                    ]
+            });
+
+            if !self.dictionary.is_empty() {
+                let hotwords: Vec<serde_json::Value> = self.dictionary.iter()
+                    .map(|w| serde_json::json!({"word": w}))
+                    .collect();
+                context_obj["hotwords"] = serde_json::json!(hotwords);
+                tracing::info!("豆包流式 ASR 词库: {} 个词", self.dictionary.len());
+            } else {
+                tracing::info!("豆包流式 ASR 词库: 未配置");
+            }
+
+            let context = context_obj.to_string();
+            tracing::debug!("豆包流式 ASR context={}", context);
             request_obj["corpus"] = serde_json::json!({"context": context});
-        } else {
-            tracing::info!("豆包流式 ASR 词库: 未配置");
         }
 
         let config = serde_json::json!({
