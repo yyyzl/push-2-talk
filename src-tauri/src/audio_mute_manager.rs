@@ -8,16 +8,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
+use windows::core::Interface;
+#[cfg(target_os = "windows")]
 use windows::Win32::Media::Audio::{
-    eMultimedia, eRender, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
+    eMultimedia, eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+    ISimpleAudioVolume, MMDeviceEnumerator,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
-#[cfg(target_os = "windows")]
-use windows::core::Interface;
 
 /// RAII Guard for COM initialization
 /// 确保 CoUninitialize 在作用域结束时被调用
@@ -216,11 +216,15 @@ impl AudioMuteManager {
     /// 使用 fetch_update (CAS) 防止下溢，确保计数器不会变成 u32::MAX
     /// 计数器归零时清除开始时间
     pub fn end_session(&self) {
-        let result = self.active_sessions.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |x| if x > 0 { Some(x - 1) } else { None },
-        );
+        let result = self
+            .active_sessions
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+                if x > 0 {
+                    Some(x - 1)
+                } else {
+                    None
+                }
+            });
 
         match result {
             Ok(prev) => {
@@ -236,7 +240,6 @@ impl AudioMuteManager {
             }
         }
     }
-
 
     /// 静音所有其他音频应用
     /// 返回成功静音的应用数量
@@ -336,7 +339,11 @@ impl AudioMuteManager {
                 }
             }
 
-            tracing::info!("Muted {} audio applications (total tracked: {})", muted_count, muted_map.len());
+            tracing::info!(
+                "Muted {} audio applications (total tracked: {})",
+                muted_count,
+                muted_map.len()
+            );
             Ok(muted_count)
         }
     }
@@ -402,7 +409,9 @@ impl AudioMuteManager {
                 // 如果在恢复过程中用户又按下了录音键，立即停止恢复
                 // 这样残留的 muted_pids 会在 mute_other_apps 中被跳过，保持静音（正确行为）
                 if active_sessions.load(Ordering::Relaxed) > 0 {
-                    tracing::info!("New session started during restore, aborting restore operation");
+                    tracing::info!(
+                        "New session started during restore, aborting restore operation"
+                    );
                     return Ok(restored_count);
                 }
 
@@ -442,7 +451,10 @@ impl AudioMuteManager {
                 let mut muted_map = muted_pids.lock().unwrap();
                 for zombie_pid in &pending_pids {
                     muted_map.remove(zombie_pid);
-                    tracing::debug!("Removed zombie process (pid: {}) from muted list", zombie_pid);
+                    tracing::debug!(
+                        "Removed zombie process (pid: {}) from muted list",
+                        zombie_pid
+                    );
                 }
                 tracing::info!("Cleaned up {} zombie processes", pending_pids.len());
             }

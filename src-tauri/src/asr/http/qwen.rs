@@ -1,9 +1,11 @@
-use std::time::Duration;
-use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
 use crate::asr::utils;
+use crate::dictionary_utils::entries_to_words;
+use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
+use std::time::Duration;
 
-const QWEN_API_URL: &str = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+const QWEN_API_URL: &str =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 const MODEL: &str = "qwen3-asr-flash";
 const MAX_RETRIES: u32 = 2;
 
@@ -41,7 +43,12 @@ impl QwenASRClient {
             match self.transcribe_from_memory(audio_data).await {
                 Ok(text) => return Ok(text),
                 Err(e) => {
-                    tracing::error!("转录失败 (尝试 {}/{}): {}", attempt + 1, self.max_retries + 1, e);
+                    tracing::error!(
+                        "转录失败 (尝试 {}/{}): {}",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        e
+                    );
                     last_error = Some(e);
 
                     if attempt < self.max_retries {
@@ -58,10 +65,15 @@ impl QwenASRClient {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("音频数据大小: {} bytes", audio_data.len());
 
-        // 词库用顿号分隔
-        let corpus_text = self.dictionary.join("、");
+        // 词库提纯（去除 |auto 后缀）后用顿号分隔
+        let purified_words = entries_to_words(&self.dictionary);
+        let corpus_text = purified_words.join("、");
         if !corpus_text.is_empty() {
-            tracing::info!("Qwen HTTP ASR 词库: {} 个词, corpus={}", self.dictionary.len(), corpus_text);
+            tracing::info!(
+                "Qwen HTTP ASR 词库: {} 个词（已提纯）, corpus={}",
+                purified_words.len(),
+                corpus_text
+            );
         } else {
             tracing::info!("Qwen HTTP ASR 词库: 未配置");
         }

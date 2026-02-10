@@ -153,7 +153,8 @@ export function useTauriEventListeners({
 
         if (!(await registerListener<TranscriptionResult>("transcription_complete", (result) => {
           setTranscript(result.text);
-          setOriginalTranscript(result.original_text);
+          // 只要有 original_text 就显示双栏（原始转写 + 润色结果）
+          setOriginalTranscript(result.original_text || null);
           setCurrentMode(result.mode || null);
           setAsrTime(result.asr_time_ms);
           setLlmTime(result.llm_time_ms);
@@ -167,10 +168,18 @@ export function useTauriEventListeners({
           const mode = (result.mode as "normal" | "assistant") || null;
           const enablePostProcess = enablePostProcessRef?.current ?? false;
           const enableDictionaryEnhancement = enableDictionaryEnhancementRef?.current ?? false;
-          const presetName = result.original_text && mode !== "assistant"
+
+          // presetName 逻辑：
+          // 1. 如果没有 original_text（未启用润色），不显示任何润色标签
+          // 2. 如果是 assistant 模式，不显示润色标签
+          // 3. 如果开启了润色，显示预设名称
+          // 4. 如果开启了词库增强，显示"词库增强"
+          // 5. 其他情况（仅 TNL 处理），显示"文本规范化"
+          const hasPolishing = !!result.original_text;
+          const presetName = hasPolishing && mode !== "assistant"
             ? enablePostProcess
               ? llmConfig?.presets.find((p) => p.id === llmConfig.active_preset_id)?.name || null
-              : (enableDictionaryEnhancement ? "词库增强" : null)
+              : (enableDictionaryEnhancement ? "词库增强" : "文本规范化")
             : null;
 
           setActivePresetName?.(presetName);
@@ -179,7 +188,8 @@ export function useTauriEventListeners({
             id: nanoid(8),
             timestamp: Date.now(),
             originalText: result.original_text || result.text,
-            polishedText: result.original_text ? result.text : null,
+            // 只要有 original_text 就设置 polishedText
+            polishedText: hasPolishing ? result.text : null,
             presetName,
             mode,
             asrTimeMs: result.asr_time_ms,

@@ -1,13 +1,14 @@
 // 豆包流式 ASR WebSocket 客户端（二进制协议）
+use crate::dictionary_utils::entries_to_words;
 use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
-use flate2::{write::GzEncoder, read::GzDecoder, Compression};
+use base64::{engine::general_purpose, Engine as _};
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use futures_util::{SinkExt, StreamExt};
-use std::io::{Write, Read};
+use std::io::{Read, Write};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message, tungstenite::http};
+use tokio_tungstenite::{connect_async, tungstenite::http, tungstenite::Message};
 
 // 双向流式模式（优化版本）
 const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
@@ -33,20 +34,27 @@ enum SessionCommand {
 
 impl DoubaoRealtimeSession {
     pub async fn send_audio_chunk(&mut self, pcm_data: &[i16]) -> Result<()> {
-        let bytes: Vec<u8> = pcm_data.iter()
-            .flat_map(|&s| s.to_le_bytes())
-            .collect();
-        self.sender.send(SessionCommand::SendAudio(bytes)).await
+        let bytes: Vec<u8> = pcm_data.iter().flat_map(|&s| s.to_le_bytes()).collect();
+        self.sender
+            .send(SessionCommand::SendAudio(bytes))
+            .await
             .map_err(|_| anyhow::anyhow!("发送音频块失败"))
     }
 
     pub async fn finish_audio(&mut self) -> Result<()> {
-        self.sender.send(SessionCommand::Finish).await
+        self.sender
+            .send(SessionCommand::Finish)
+            .await
             .map_err(|_| anyhow::anyhow!("发送结束标志失败"))
     }
 
     pub async fn wait_for_result(&mut self) -> Result<String> {
-        match timeout(Duration::from_secs(TRANSCRIPTION_TIMEOUT_SECS), self.result_receiver.recv()).await {
+        match timeout(
+            Duration::from_secs(TRANSCRIPTION_TIMEOUT_SECS),
+            self.result_receiver.recv(),
+        )
+        .await
+        {
             Ok(Some(result)) => result,
             Ok(None) => Err(anyhow::anyhow!("通道已关闭")),
             Err(_) => Err(anyhow::anyhow!("转录超时")),
@@ -62,7 +70,11 @@ pub struct DoubaoRealtimeClient {
 
 impl DoubaoRealtimeClient {
     pub fn new(app_id: String, access_key: String, dictionary: Vec<String>) -> Self {
-        Self { app_id, access_key, dictionary }
+        Self {
+            app_id,
+            access_key,
+            dictionary,
+        }
     }
 
     pub async fn start_session(&self) -> Result<DoubaoRealtimeSession> {
@@ -87,13 +99,13 @@ impl DoubaoRealtimeClient {
 
         // 发送 Full Client Request
         let mut request_obj = serde_json::json!({
-            "model_name": "bigmodel",
-            "enable_nonstream":true, //开启二遍识别
-             "enable_itn": true, //文本规范化
-             "enable_punc": true, //启用标点
-             "enable_ddc": true, //语义顺滑
-            //  "show_speech_rate":true //语速
-            });
+        "model_name": "bigmodel",
+        "enable_nonstream":true, //开启二遍识别
+         "enable_itn": true, //文本规范化
+         "enable_punc": true, //启用标点
+         "enable_ddc": true, //语义顺滑
+        //  "show_speech_rate":true //语速
+        });
 
         // 添加词库支持和对话上下文
         {
@@ -108,11 +120,13 @@ impl DoubaoRealtimeClient {
             });
 
             if !self.dictionary.is_empty() {
-                let hotwords: Vec<serde_json::Value> = self.dictionary.iter()
+                let purified_words = entries_to_words(&self.dictionary);
+                let hotwords: Vec<serde_json::Value> = purified_words
+                    .iter()
                     .map(|w| serde_json::json!({"word": w}))
                     .collect();
                 context_obj["hotwords"] = serde_json::json!(hotwords);
-                tracing::info!("豆包流式 ASR 词库: {} 个词", self.dictionary.len());
+                tracing::info!("豆包流式 ASR 词库: {} 个词（已提纯）", purified_words.len());
             } else {
                 tracing::info!("豆包流式 ASR 词库: 未配置");
             }
@@ -127,8 +141,11 @@ impl DoubaoRealtimeClient {
             "audio": {"format": "pcm", "rate": 16000, "bits": 16, "channel": 1},
             "request": request_obj
         });
-        tracing::debug!("豆包 Full Client Request: {}", serde_json::to_string_pretty(&config)?);
-        let msg = build_message(0x1, 0x1, 1, &serde_json::to_vec(&config)?, 0x1)?;  // Gzip 压缩
+        tracing::debug!(
+            "豆包 Full Client Request: {}",
+            serde_json::to_string_pretty(&config)?
+        );
+        let msg = build_message(0x1, 0x1, 1, &serde_json::to_vec(&config)?, 0x1)?; // Gzip 压缩
         write.send(Message::Binary(msg.clone().into())).await?;
         tracing::debug!("豆包 Full Client Request 已发送: {} bytes", msg.len());
 
@@ -202,7 +219,7 @@ impl DoubaoRealtimeClient {
                         match parse_response(&data) {
                             Ok((text, is_final)) => {
                                 if !text.is_empty() {
-                                    accumulated_text = text;  // 更新为最新文本
+                                    accumulated_text = text; // 更新为最新文本
                                     tracing::debug!("豆包累积文本: {}", accumulated_text);
                                 }
                                 if is_final {
@@ -232,7 +249,9 @@ impl DoubaoRealtimeClient {
                             result_sent = true;
                         } else {
                             tracing::warn!("豆包连接关闭，无转录结果");
-                            let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 连接被关闭"))).await;
+                            let _ = result_tx
+                                .send(Err(anyhow::anyhow!("WebSocket 连接被关闭")))
+                                .await;
                             result_sent = true;
                         }
                         break;
@@ -242,7 +261,9 @@ impl DoubaoRealtimeClient {
                     }
                     Err(e) => {
                         tracing::error!("豆包 WebSocket 接收错误: {}", e);
-                        let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 错误: {}", e))).await;
+                        let _ = result_tx
+                            .send(Err(anyhow::anyhow!("WebSocket 错误: {}", e)))
+                            .await;
                         result_sent = true;
                         break;
                     }
@@ -256,13 +277,18 @@ impl DoubaoRealtimeClient {
                     let _ = result_tx.send(Ok(accumulated_text)).await;
                 } else {
                     tracing::warn!("豆包连接结束，无转录结果");
-                    let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 连接结束，无转录结果"))).await;
+                    let _ = result_tx
+                        .send(Err(anyhow::anyhow!("WebSocket 连接结束，无转录结果")))
+                        .await;
                 }
             }
             tracing::debug!("豆包 WebSocket 接收任务结束");
         });
 
-        Ok(DoubaoRealtimeSession { sender: cmd_tx, result_receiver: result_rx })
+        Ok(DoubaoRealtimeSession {
+            sender: cmd_tx,
+            result_receiver: result_rx,
+        })
     }
 }
 
@@ -271,7 +297,7 @@ fn build_message(
     flags: u8,
     sequence: i32,
     payload: &[u8],
-    compression_type: u8,  // 0x0=无压缩, 0x1=Gzip
+    compression_type: u8, // 0x0=无压缩, 0x1=Gzip
 ) -> Result<Vec<u8>> {
     // 根据压缩类型处理 payload
     let final_payload = if compression_type == 0x1 {
@@ -279,17 +305,17 @@ fn build_message(
         encoder.write_all(payload)?;
         encoder.finish()?
     } else {
-        payload.to_vec()  // 不压缩
+        payload.to_vec() // 不压缩
     };
 
     // 序列化方法：full client request (0x1) 用 JSON，audio only (0x2) 用 none
     let serialization = if msg_type == 0x1 { 0x1 } else { 0x0 };
 
     let mut msg = vec![
-        0x11,                                   // Protocol version 1, header size 1 (4 bytes)
-        (msg_type << 4) | flags,                // Message type + flags
+        0x11,                                    // Protocol version 1, header size 1 (4 bytes)
+        (msg_type << 4) | flags,                 // Message type + flags
         (serialization << 4) | compression_type, // Serialization + compression
-        0x00,                                   // Reserved
+        0x00,                                    // Reserved
     ];
     msg.extend_from_slice(&sequence.to_be_bytes());
     msg.extend_from_slice(&(final_payload.len() as u32).to_be_bytes());
@@ -311,7 +337,10 @@ fn parse_response(data: &[u8]) -> Result<(String, bool)> {
 
     tracing::debug!(
         "豆包响应 header: size={}, type={:#x}, flags={:#x}, compression={}",
-        header_size, message_type, message_flags, compression
+        header_size,
+        message_type,
+        message_flags,
+        compression
     );
 
     // 检查是否是错误响应

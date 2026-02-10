@@ -56,6 +56,9 @@ function App() {
       sensevoice_api_key: '',
       doubao_app_id: '',
       doubao_access_token: '',
+      doubao_ime_device_id: '',
+      doubao_ime_token: '',
+      doubao_ime_cdid: '',
     },
     selection: {
       active_provider: 'qwen',
@@ -66,7 +69,7 @@ function App() {
 
   const [useRealtime, setUseRealtime] = useState(false);
   const [enablePostProcess, setEnablePostProcess] = useState(false);
-  const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(true);
+  const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(false);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
@@ -165,7 +168,9 @@ function App() {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const hasCheckedUpdateOnStartup = useRef(false);
   const hasLoadedConfigRef = useRef(false);
-  const skipNextAutoSaveRef = useRef(true);
+  // 配置加载纪元：每次 loadConfig 后递增，用于跳过 loadConfig 触发的自动保存
+  const configLoadEpochRef = useRef(0);
+  const lastSeenConfigEpochRef = useRef(0);
   const autoSaveTimerRef = useRef<number | null>(null);
   const handleExternalConfigUpdated = useCallback(() => {
     if (autoSaveTimerRef.current) {
@@ -247,7 +252,7 @@ function App() {
       window.clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
-    skipNextAutoSaveRef.current = true;
+    // timer 已清除，用户后续操作正常触发自动保存
   }, []);
 
   // 全局配置保存状态管理
@@ -362,7 +367,7 @@ function App() {
         await new Promise(resolve => setTimeout(resolve, 100));
         await loadConfig();
         hasLoadedConfigRef.current = true;
-        skipNextAutoSaveRef.current = true;
+        configLoadEpochRef.current += 1;
         // 启动时自动检查更新（只执行一次）
         if (!hasCheckedUpdateOnStartup.current) {
           hasCheckedUpdateOnStartup.current = true;
@@ -459,12 +464,13 @@ function App() {
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
   useEffect(() => {
-    console.log("[App.tsx] 自动保存 useEffect 触发, theme=", theme, "hasLoaded=", hasLoadedConfigRef.current, "skip=", skipNextAutoSaveRef.current);
+    console.log("[App.tsx] 自动保存 useEffect 触发, theme=", theme, "hasLoaded=", hasLoadedConfigRef.current, "epoch=", configLoadEpochRef.current, "lastSeen=", lastSeenConfigEpochRef.current);
     if (!hasLoadedConfigRef.current) return;
     if (status === "recording" || status === "transcribing") return;
-    if (skipNextAutoSaveRef.current) {
-      skipNextAutoSaveRef.current = false;
-      console.log("[App.tsx] 跳过本次自动保存 (skipNextAutoSaveRef)");
+    // 配置加载后的首次变化由 loadConfig 触发，跳过保存
+    if (configLoadEpochRef.current !== lastSeenConfigEpochRef.current) {
+      lastSeenConfigEpochRef.current = configLoadEpochRef.current;
+      console.log("[App.tsx] 跳过配置加载后的首次保存 (epoch 变化)");
       return;
     }
 
@@ -475,9 +481,6 @@ function App() {
     }
 
     autoSaveTimerRef.current = window.setTimeout(() => {
-      // handleSaveConfig may normalize some state (e.g. dictionary trim) and/or trigger backend restarts.
-      // Skip one follow-up auto-save to avoid save loops.
-      skipNextAutoSaveRef.current = true;
       if (statusRef.current === "recording" || statusRef.current === "transcribing") return;
       console.log("[App.tsx] debounce 到期，执行 handleSaveConfig");
       void handleSaveConfigRef.current();

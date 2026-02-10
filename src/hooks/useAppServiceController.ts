@@ -244,6 +244,10 @@ export function useAppServiceController({
                 sensevoice_api_key: parsedCache.siliconflow?.api_key || '',
                 doubao_app_id: parsedCache.doubao?.app_id || '',
                 doubao_access_token: parsedCache.doubao?.access_token || '',
+                // 豆包输入法 ASR 凭据 (自动注册获取，迁移时留空)
+                doubao_ime_device_id: '',
+                doubao_ime_token: '',
+                doubao_ime_cdid: '',
               },
               selection: {
                 active_provider: activeProvider,
@@ -306,9 +310,9 @@ export function useAppServiceController({
         setAsrConfig(config.asr_config);
       }
 
-      setUseRealtime(config.use_realtime_asr ?? true);
+      setUseRealtime(config.use_realtime_asr ?? false);
       setEnablePostProcess(config.enable_llm_post_process ?? false);
-      setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? true);
+      setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? false);
 
       // 智能补齐 llm_config
       const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
@@ -502,6 +506,7 @@ export function useAppServiceController({
     enableMuteOtherApps,
     dictionary,
     builtinDictionaryDomains,
+    theme,
     status,
     flashSuccessToast,
     setError,
@@ -616,9 +621,11 @@ export function useAppServiceController({
     enableMuteOtherApps,
     dictionary,
     builtinDictionaryDomains,
+    theme,
     status,
     setDictionary,
     setBuiltinDictionaryDomains,
+    setTheme,
     setError,
     startApp,
     stopApp,

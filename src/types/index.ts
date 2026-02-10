@@ -26,13 +26,17 @@ export interface DualHotkeyConfig {
 }
 
 // ASR 配置
-export type AsrProvider = 'qwen' | 'doubao' | 'siliconflow';
+export type AsrProvider = 'qwen' | 'doubao' | 'doubao_ime' | 'siliconflow';
 
 export interface AsrCredentials {
   qwen_api_key: string;
   sensevoice_api_key: string;
   doubao_app_id: string;
   doubao_access_token: string;
+  // 豆包输入法 ASR 凭据 (自动注册获取，无需用户配置)
+  doubao_ime_device_id: string;
+  doubao_ime_token: string;
+  doubao_ime_cdid: string;
 }
 
 export interface AsrSelection {

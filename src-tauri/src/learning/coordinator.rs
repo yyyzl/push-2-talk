@@ -133,7 +133,9 @@ pub fn start_learning_observation(
             duration,
             target_hwnd,
             cancel_flag_clone.clone(),
-        ).await {
+        )
+        .await
+        {
             Some(text) => text,
             None => {
                 tracing::info!(
@@ -216,11 +218,7 @@ pub fn start_learning_observation(
         let app_config = match AppConfig::load() {
             Ok((cfg, _)) => cfg,
             Err(e) => {
-                tracing::warn!(
-                    "Learning [{}]: 加载配置失败: {}",
-                    &observation_id[..8],
-                    e
-                );
+                tracing::warn!("Learning [{}]: 加载配置失败: {}", &observation_id[..8], e);
                 return;
             }
         };
@@ -236,17 +234,17 @@ pub fn start_learning_observation(
             return;
         }
 
-        let judge = LlmJudge::new(
-            &resolved.endpoint,
-            &resolved.api_key,
-            &resolved.model,
-        );
+        let judge = LlmJudge::new(&resolved.endpoint, &resolved.api_key, &resolved.model);
 
         // 预计算词库集合（规范化比对），避免在 diff 循环内反复线性扫描
         let dictionary_word_set: HashSet<String> = app_config
             .dictionary
             .iter()
-            .map(|entry| crate::learning::store::extract_word(entry).trim().to_string())
+            .map(|entry| {
+                crate::dictionary_utils::extract_word(entry)
+                    .trim()
+                    .to_string()
+            })
             .filter(|w| !w.is_empty())
             .collect();
 
@@ -303,16 +301,16 @@ pub fn start_learning_observation(
             );
 
             let result = match judge
-                .judge(&diff.original_segment, &diff.corrected_segment, &extended_context)
+                .judge(
+                    &diff.original_segment,
+                    &diff.corrected_segment,
+                    &extended_context,
+                )
                 .await
             {
                 Ok(result) => result,
                 Err(e) => {
-                    tracing::warn!(
-                        "Learning [{}]: LLM 判断失败: {}",
-                        &observation_id[..8],
-                        e
-                    );
+                    tracing::warn!("Learning [{}]: LLM 判断失败: {}", &observation_id[..8], e);
                     continue;
                 }
             };
@@ -346,7 +344,7 @@ pub fn start_learning_observation(
             }
 
             // 检查词库是否已存在该词（使用预计算的 HashSet 进行 O(1) 查找）
-            let normalized_word = crate::learning::store::normalize_word(&word);
+            let normalized_word = crate::dictionary_utils::normalize_word(&word);
             if dictionary_word_set.contains(&normalized_word) {
                 tracing::info!(
                     "Learning [{}]: 词汇 \"{}\" 已存在于词库，跳过通知",
@@ -376,15 +374,10 @@ pub fn start_learning_observation(
                 suggestion.reason
             );
             match app.emit("vocabulary_learning_suggestion", suggestion.clone()) {
-                Ok(_) => tracing::info!(
-                    "Learning [{}]: 事件发送成功",
-                    &observation_id[..8]
-                ),
-                Err(e) => tracing::error!(
-                    "Learning [{}]: 事件发送失败: {:?}",
-                    &observation_id[..8],
-                    e
-                ),
+                Ok(_) => tracing::info!("Learning [{}]: 事件发送成功", &observation_id[..8]),
+                Err(e) => {
+                    tracing::error!("Learning [{}]: 事件发送失败: {:?}", &observation_id[..8], e)
+                }
             }
         }
 
@@ -655,7 +648,9 @@ fn is_single_letter_noise(original: &str, corrected: &str) -> bool {
     // 如果修正后是单个 ASCII 字母（且原文也是单个 ASCII 字母或为空），则视为噪声
     // 使用 is_ascii_alphabetic() 而非 is_alphabetic()，避免错误过滤中文单字修正
     if corr_char_count == 1 && corr_trimmed.chars().next().unwrap().is_ascii_alphabetic() {
-        if orig_trimmed.is_empty() || (orig_char_count == 1 && orig_trimmed.chars().next().unwrap().is_ascii_alphabetic()) {
+        if orig_trimmed.is_empty()
+            || (orig_char_count == 1 && orig_trimmed.chars().next().unwrap().is_ascii_alphabetic())
+        {
             return true;
         }
     }
@@ -683,10 +678,7 @@ fn get_text_via_uia(target_hwnd: isize) -> Option<String> {
     // 使用 UI Automation 读取文本（无干扰方案）
     match crate::uia_text_reader::get_focused_window_text(target_hwnd) {
         Ok(text) if !text.trim().is_empty() => {
-            tracing::debug!(
-                "Learning: UIA 成功读取文本（长度: {}）",
-                text.len()
-            );
+            tracing::debug!("Learning: UIA 成功读取文本（长度: {}）", text.len());
             Some(text)
         }
         Ok(_) => {
@@ -745,7 +737,9 @@ fn extract_extended_context(
     if diff_start >= total_len || diff_end > total_len || diff_start >= diff_end {
         tracing::warn!(
             "Learning: diff 索引异常 (start={}, end={}, len={}), 退化到短上下文",
-            diff_start, diff_end, total_len
+            diff_start,
+            diff_end,
+            total_len
         );
         // 退化到更保守的短上下文（前后各 50 字符）
         let safe_start = diff_start.min(total_len).saturating_sub(50);

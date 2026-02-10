@@ -86,6 +86,9 @@ export const isAsrConfigValid = (config: AsrConfig): boolean => {
   } else if (provider === 'doubao') {
     return config.credentials.doubao_app_id.trim() !== '' &&
            config.credentials.doubao_access_token.trim() !== '';
+  } else if (provider === 'doubao_ime') {
+    // 豆包输入法 ASR 无需用户配置，首次使用时自动注册
+    return true;
   } else if (provider === 'siliconflow') {
     return config.credentials.sensevoice_api_key.trim() !== '';
   }

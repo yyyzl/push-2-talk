@@ -1,7 +1,7 @@
 {
   "name": "push-to-talk",
   "private": true,
-  "version": "1.5.4",
+  "version": "1.5.6",
   "type": "module",
   "scripts": {
     "dev": "vite",

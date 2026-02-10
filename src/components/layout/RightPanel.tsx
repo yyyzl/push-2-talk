@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import { ArrowRight, Plus, HelpCircle } from "lucide-react";
+import { ArrowRight, Plus, HelpCircle, Sparkles } from "lucide-react";
 import type {
   AsrConfig,
   AsrProvider,
@@ -11,7 +11,7 @@ import type {
 import type { AppPage } from "../../pages/types";
 import { ASR_PROVIDERS } from "../../constants";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../../utils";
-import { Toggle, ConfigSelect, ConfigToggle, Tooltip } from "../common";
+import { ConfigSelect, ConfigToggle, Tooltip } from "../common";
 import { useConfigSave } from "../../contexts/ConfigSaveContext";
 
 // 首页词库最多显示的词条数（约两行）
@@ -66,7 +66,7 @@ export function RightPanel({
       ? dualHotkeyConfig.dictation.release_mode_keys
       : (["f2"] as HotkeyKey[]);
 
-  const { saveImmediately, syncStatus } = useConfigSave();
+  const { saveImmediately } = useConfigSave();
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
@@ -93,7 +93,6 @@ export function RightPanel({
               },
             });
           }}
-          syncStatus={syncStatus}
           disabled={isRunning}
           options={[
             {
@@ -103,6 +102,10 @@ export function RightPanel({
             {
               value: "doubao" as AsrProvider,
               label: `${ASR_PROVIDERS.doubao.name} · ${ASR_PROVIDERS.doubao.model}`,
+            },
+            {
+              value: "doubao_ime" as AsrProvider,
+              label: `${ASR_PROVIDERS.doubao_ime.name} · ${ASR_PROVIDERS.doubao_ime.model}`,
             },
           ]}
         />
@@ -145,9 +148,12 @@ export function RightPanel({
                 <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
               </Tooltip>
             </div>
-            <Toggle
+            <ConfigToggle
               checked={enablePostProcess}
               onCheckedChange={setEnablePostProcess}
+              onCommit={async (checked) => {
+                await saveImmediately({ enablePostProcess: checked });
+              }}
               disabled={isRunning}
               size="sm"
               variant="orange"
@@ -177,9 +183,12 @@ export function RightPanel({
                 <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
               </Tooltip>
             </div>
-            <Toggle
+            <ConfigToggle
               checked={enableDictionaryEnhancement}
               onCheckedChange={setEnableDictionaryEnhancement}
+              onCommit={async (checked) => {
+                await saveImmediately({ enableDictionaryEnhancement: checked });
+              }}
               disabled={isRunning}
               size="sm"
               variant="orange"
@@ -195,37 +204,48 @@ export function RightPanel({
 
       {/* 实时/HTTP 模式切换（需要重启服务） */}
       <div className="space-y-3">
-        <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-1.5">
-              <div className="text-xs font-bold text-stone-700">
-                {useRealtime ? "实时流式模式" : "HTTP模式"}
+        {asrConfig.selection.active_provider === "doubao_ime" ? (
+          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-emerald-700">
+              <Sparkles size={14} className="flex-shrink-0" />
+              <div>
+                <div className="text-xs font-bold">豆包输入法专属模式</div>
+                <div className="text-[10px] text-emerald-600 font-medium mt-0.5">
+                  自动使用流式模式，无需配置
+                </div>
               </div>
-              <Tooltip content="HTTP模式: 录完后一次性上传音频文件，网络不稳定时更可靠。语音较长时，识别较慢
-              实时流式模式: 边录制边上传，网络不稳定时可能会丢失部分结果。语音较长时，识别较快">
-                <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
-              </Tooltip>
-            </div>
-            <div className="text-[10px] text-stone-400 font-semibold">
-              {useRealtime ? "边录边传，延迟更低" : "录完再传，更稳定"}
             </div>
           </div>
-          <ConfigToggle
-            checked={useRealtime}
-            onCheckedChange={(checked) => {
-              // onChange 只负责乐观更新 UI
-              setUseRealtime(checked);
-            }}
-            onCommit={async (checked) => {
-              // onCommit 只负责保存，不重复触发 setState
-              await saveImmediately({ useRealtime: checked });
-            }}
-            syncStatus={syncStatus}
-            disabled={isRunning}
-            size="sm"
-            variant="amber"
-          />
-        </div>
+        ) : (
+          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <div className="text-xs font-bold text-stone-700">
+                  {useRealtime ? "实时流式模式" : "HTTP模式"}
+                </div>
+                <Tooltip content="HTTP模式: 录完后一次性上传音频文件，网络不稳定时更可靠。语音较长时，识别较慢
+                实时流式模式: 边录制边上传，网络不稳定时可能会丢失部分结果。语音较长时，识别较快">
+                  <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+                </Tooltip>
+              </div>
+              <div className="text-[10px] text-stone-400 font-semibold">
+                {useRealtime ? "边录边传，延迟更低" : "录完再传，更稳定"}
+              </div>
+            </div>
+            <ConfigToggle
+              checked={useRealtime}
+              onCheckedChange={(checked) => {
+                setUseRealtime(checked);
+              }}
+              onCommit={async (checked) => {
+                await saveImmediately({ useRealtime: checked });
+              }}
+              disabled={isRunning}
+              size="sm"
+              variant="amber"
+            />
+          </div>
+        )}
       </div>
 
       {/* 个人词库 */}
@@ -235,7 +255,7 @@ export function RightPanel({
             个人词库
           </label>
           <Tooltip content="添加专业术语、人名、地名等自定义词汇，提高语音识别准确率
-          备注：豆包实时流式模式下不生效">
+          备注：豆包（含输入法模式）暂不支持词库增强">
             <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
           </Tooltip>
         </div>

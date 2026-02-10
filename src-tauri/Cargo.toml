@@ -1,6 +1,6 @@
 [package]
 name = "push-to-talk"
-version = "1.5.4"
+version = "1.5.6"
 description = "A push-to-talk speech-to-text application"
 authors = ["you"]
 license = ""
@@ -47,10 +47,23 @@ lazy_static = "1.4"
 md5 = "0.7"
 sha2 = "0.10"
 
+# TNL 技术规范化层
+aho-corasick = "1.1"      # 多模式匹配（词库保护）
+strsim = "0.11"           # 编辑距离（模糊匹配）
+pinyin = "0.10"           # 拼音转换（中文模糊匹配）
+unicode-normalization = "0.1"  # Unicode 归一化
+rphonetic = "3.0.6"       # 英文音标匹配（Double Metaphone）
+
 # WebSocket 实时 ASR 支持
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 futures-util = "0.3"
 crossbeam-channel = "0.5"
+
+# 豆包输入法 ASR 支持 (Protobuf + Opus)
+# 注意：需要安装 CMake 才能编译 Opus
+# Windows: choco install cmake
+# 或从 https://cmake.org/download/ 下载安装
+opus = { version = "0.3", optional = true }
 
 # 开机自启动
 tauri-plugin-autostart = "2"
@@ -81,3 +94,8 @@ windows = { version = "0.58", features = [
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+# 豆包输入法 ASR 支持（需要 CMake 编译 Opus）
+doubao-ime = ["dep:opus"]
+# 默认启用豆包输入法
+# 注意：如果 CMake 版本过新导致 opus 编译失败，可临时注释掉
+default = ["doubao-ime"]

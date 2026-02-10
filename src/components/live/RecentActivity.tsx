@@ -46,7 +46,7 @@ export function RecentActivity({ history, onCopyText, onOpenHistory }: RecentAct
                       // 润色后：白底+橙色边框，与原始转写视觉重量一致
                       bg: "bg-white border border-[rgba(217,119,87,0.5)]",
                       fg: "text-[var(--crail)]",
-                      text: r.presetName || "文本润色"
+                      text: r.presetName || "智能润色"
                     }
                   : r.success
                     ? {

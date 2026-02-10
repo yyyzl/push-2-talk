@@ -48,20 +48,21 @@ pub fn analyze_diff(baseline: &str, current: &str) -> Vec<DiffResult> {
 
     // 如果字节长度超过绝对上限的 4 倍（UTF-8 最多 4 字节/字符），需要截断
     let byte_limit = ABSOLUTE_MAX_CHARS * 4;
-    let (baseline_truncated, current_truncated) = if baseline_byte_len > byte_limit || current_byte_len > byte_limit {
-        tracing::warn!(
-            "Learning: 文本过长 (baseline_bytes={}, current_bytes={}), 截断到 {} 字符",
-            baseline_byte_len,
-            current_byte_len,
-            ABSOLUTE_MAX_CHARS
-        );
-        // 安全截断：按字符边界截断
-        let baseline_chars: String = baseline.chars().take(ABSOLUTE_MAX_CHARS).collect();
-        let current_chars: String = current.chars().take(ABSOLUTE_MAX_CHARS).collect();
-        (baseline_chars, current_chars)
-    } else {
-        (baseline.to_string(), current.to_string())
-    };
+    let (baseline_truncated, current_truncated) =
+        if baseline_byte_len > byte_limit || current_byte_len > byte_limit {
+            tracing::warn!(
+                "Learning: 文本过长 (baseline_bytes={}, current_bytes={}), 截断到 {} 字符",
+                baseline_byte_len,
+                current_byte_len,
+                ABSOLUTE_MAX_CHARS
+            );
+            // 安全截断：按字符边界截断
+            let baseline_chars: String = baseline.chars().take(ABSOLUTE_MAX_CHARS).collect();
+            let current_chars: String = current.chars().take(ABSOLUTE_MAX_CHARS).collect();
+            (baseline_chars, current_chars)
+        } else {
+            (baseline.to_string(), current.to_string())
+        };
 
     let baseline_chars: Vec<char> = baseline_truncated.chars().collect();
     let current_chars: Vec<char> = current_truncated.chars().collect();
@@ -73,8 +74,10 @@ pub fn analyze_diff(baseline: &str, current: &str) -> Vec<DiffResult> {
             baseline_chars.len(),
             current_chars.len()
         );
-        return quick_diff(&baseline_chars[..ABSOLUTE_MAX_CHARS.min(baseline_chars.len())],
-                          &current_chars[..ABSOLUTE_MAX_CHARS.min(current_chars.len())]);
+        return quick_diff(
+            &baseline_chars[..ABSOLUTE_MAX_CHARS.min(baseline_chars.len())],
+            &current_chars[..ABSOLUTE_MAX_CHARS.min(current_chars.len())],
+        );
     }
 
     tracing::debug!(
@@ -227,12 +230,12 @@ fn is_pure_punctuation(s: &str) -> bool {
 
     // 中文标点符号列表
     const PUNCTUATION_CHARS: [char; 20] = [
-        '。', '，', '！', '？', '、', '；', '：',
-        '"', '"', '\u{2018}', '\u{2019}',  // 中文单引号使用 Unicode 转义
-        '（', '）', '【', '】', '《', '》',
-        '—', '…', '·'
+        '。', '，', '！', '？', '、', '；', '：', '"', '"', '\u{2018}',
+        '\u{2019}', // 中文单引号使用 Unicode 转义
+        '（', '）', '【', '】', '《', '》', '—', '…', '·',
     ];
-    s.chars().all(|c| c.is_ascii_punctuation() || PUNCTUATION_CHARS.contains(&c))
+    s.chars()
+        .all(|c| c.is_ascii_punctuation() || PUNCTUATION_CHARS.contains(&c))
 }
 
 fn build_context(
@@ -421,7 +424,8 @@ pub fn merge_word_level_diffs(
             Some(prev) => {
                 // 检查是否应该合并（重叠或距离很近）
                 if should_merge(&prev, &diff, &baseline_chars, &current_chars) {
-                    current_diff = Some(merge_two_diffs(prev, diff, &baseline_chars, &current_chars));
+                    current_diff =
+                        Some(merge_two_diffs(prev, diff, &baseline_chars, &current_chars));
                 } else {
                     merged.push(prev);
                     current_diff = Some(diff);
@@ -448,12 +452,15 @@ fn expand_to_word_boundary(
     current_chars: &[char],
 ) -> DiffResult {
     // 向左扩展原文
-    while diff.orig_start > 0 && crate::learning::is_word_char(baseline_chars[diff.orig_start - 1]) {
+    while diff.orig_start > 0 && crate::learning::is_word_char(baseline_chars[diff.orig_start - 1])
+    {
         diff.orig_start -= 1;
     }
 
     // 向右扩展原文
-    while diff.orig_end < baseline_chars.len() && crate::learning::is_word_char(baseline_chars[diff.orig_end]) {
+    while diff.orig_end < baseline_chars.len()
+        && crate::learning::is_word_char(baseline_chars[diff.orig_end])
+    {
         diff.orig_end += 1;
     }
 
@@ -463,7 +470,9 @@ fn expand_to_word_boundary(
     }
 
     // 向右扩展修正文本
-    while diff.curr_end < current_chars.len() && crate::learning::is_word_char(current_chars[diff.curr_end]) {
+    while diff.curr_end < current_chars.len()
+        && crate::learning::is_word_char(current_chars[diff.curr_end])
+    {
         diff.curr_end += 1;
     }
 
@@ -703,8 +712,14 @@ mod tests {
 
         // 验证合并结果
         let diff = &word_diffs[0];
-        assert_eq!(diff.original_segment, "cloud code", "原文应该是 'cloud code'");
-        assert_eq!(diff.corrected_segment, "claude code", "修正应该是 'claude code'");
+        assert_eq!(
+            diff.original_segment, "cloud code",
+            "原文应该是 'cloud code'"
+        );
+        assert_eq!(
+            diff.corrected_segment, "claude code",
+            "修正应该是 'claude code'"
+        );
         assert!(
             diff.context.contains("我最近在学习"),
             "上下文应该包含完整句子"

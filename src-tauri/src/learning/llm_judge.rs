@@ -139,10 +139,7 @@ impl LlmJudge {
             original, corrected, context
         );
 
-        let messages = vec![
-            Message::system(system_prompt),
-            Message::user(user_prompt),
-        ];
+        let messages = vec![Message::system(system_prompt), Message::user(user_prompt)];
 
         let options = ChatOptions {
             max_tokens: 256,
@@ -183,7 +180,9 @@ fn parse_llm_response(text: &str) -> Result<LlmJudgeResult> {
     // 如果所有尝试都失败，返回最后一个错误
     Err(anyhow!(
         "LLM 响应解析失败: {}",
-        last_error.map(|e| e.to_string()).unwrap_or_else(|| "未找到有效 JSON".to_string())
+        last_error
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "未找到有效 JSON".to_string())
     ))
 }
 
@@ -230,7 +229,12 @@ fn sanitize_result(mut result: LlmJudgeResult) -> Result<LlmJudgeResult> {
     // 4. 限制 reason 长度（防止过长）
     const MAX_REASON_LEN: usize = 200;
     if result.reason.chars().count() > MAX_REASON_LEN {
-        result.reason = result.reason.chars().take(MAX_REASON_LEN).collect::<String>() + "...";
+        result.reason = result
+            .reason
+            .chars()
+            .take(MAX_REASON_LEN)
+            .collect::<String>()
+            + "...";
     }
 
     Ok(result)

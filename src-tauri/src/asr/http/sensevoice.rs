@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::asr::utils;
+use anyhow::Result;
 
 const SENSEVOICE_API_URL: &str = "https://api.siliconflow.cn/v1/audio/transcriptions";
 const MODEL: &str = "FunAudioLLM/SenseVoiceSmall";
@@ -19,16 +19,17 @@ impl SenseVoiceClient {
     }
 
     pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {
-        tracing::info!("开始使用 SenseVoice 转录音频数据: {} bytes", audio_data.len());
+        tracing::info!(
+            "开始使用 SenseVoice 转录音频数据: {} bytes",
+            audio_data.len()
+        );
 
-        let form = reqwest::multipart::Form::new()
-            .text("model", MODEL)
-            .part(
-                "file",
-                reqwest::multipart::Part::bytes(audio_data.to_vec())
-                    .file_name("audio.wav")
-                    .mime_str("audio/wav")?,
-            );
+        let form = reqwest::multipart::Form::new().text("model", MODEL).part(
+            "file",
+            reqwest::multipart::Part::bytes(audio_data.to_vec())
+                .file_name("audio.wav")
+                .mime_str("audio/wav")?,
+        );
 
         tracing::info!("发送请求到 SenseVoice: {}", SENSEVOICE_API_URL);
 
@@ -50,7 +51,10 @@ impl SenseVoiceClient {
         }
 
         let result: serde_json::Value = response.json().await?;
-        tracing::info!("SenseVoice API 响应: {}", serde_json::to_string_pretty(&result)?);
+        tracing::info!(
+            "SenseVoice API 响应: {}",
+            serde_json::to_string_pretty(&result)?
+        );
 
         let mut text = result["text"]
             .as_str()

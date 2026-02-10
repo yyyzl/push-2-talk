@@ -25,11 +25,8 @@ impl AssistantProcessor {
     /// 创建新的 AI 助手处理器实例
     pub fn new(config: AssistantConfig, shared: &SharedLlmConfig) -> Self {
         let resolved = config.resolve_llm(shared);
-        let client_config = OpenAiClientConfig::new(
-            &resolved.endpoint,
-            &resolved.api_key,
-            &resolved.model,
-        );
+        let client_config =
+            OpenAiClientConfig::new(&resolved.endpoint, &resolved.api_key, &resolved.model);
         let client = OpenAiClient::new(client_config);
 
         Self {
@@ -104,7 +101,10 @@ impl AssistantProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DEFAULT_ASSISTANT_QA_PROMPT, DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT, LlmFeatureConfig, SharedLlmConfig};
+    use crate::config::{
+        LlmFeatureConfig, SharedLlmConfig, DEFAULT_ASSISTANT_QA_PROMPT,
+        DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT,
+    };
 
     fn create_test_config() -> AssistantConfig {
         AssistantConfig {

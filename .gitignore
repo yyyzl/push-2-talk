@@ -42,3 +42,12 @@ src-tauri/Cargo.lock
 tmpclaude-*
 .claude/
 .ace-tool/
+
+# OpenSpec
+.openspec/
+
+# Docs (plans and drafts)
+docs/
+
+# Git worktrees
+.worktrees/

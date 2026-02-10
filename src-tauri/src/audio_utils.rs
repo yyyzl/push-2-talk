@@ -18,9 +18,7 @@ pub fn calculate_audio_level(samples: &[f32]) -> f32 {
     }
 
     // 计算 RMS (Root Mean Square)
-    let sum: f64 = samples.iter()
-        .map(|&s| (s as f64).powi(2))
-        .sum();
+    let sum: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
     let rms = (sum / samples.len() as f64).sqrt() as f32;
 
     // 将 RMS 值映射到 0.0-1.0 范围
@@ -39,7 +37,9 @@ pub fn emit_audio_level(app: &AppHandle, level: f32) {
 
 /// 计算原始 RMS（不带归一化）
 pub fn calculate_rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() { return 0.0; }
+    if samples.is_empty() {
+        return 0.0;
+    }
     let sum: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
     (sum / samples.len() as f64).sqrt() as f32
 }
@@ -47,9 +47,9 @@ pub fn calculate_rms(samples: &[f32]) -> f32 {
 /// AGC：自动增益控制（带平滑处理）
 /// current_gain: 当前增益状态，用于平滑过渡
 pub fn apply_agc(samples: &mut [f32], current_gain: &mut f32) {
-    const TARGET_RMS: f32 = 0.10;   // 目标 RMS，平衡小声音放大
-    const MAX_GAIN: f32 = 5.0;      // 最大增益，平衡微弱声音和抗噪能力
-    const MIN_GAIN: f32 = 0.1;      // 允许大幅衰减，压住大嗓门
+    const TARGET_RMS: f32 = 0.10; // 目标 RMS，平衡小声音放大
+    const MAX_GAIN: f32 = 5.0; // 最大增益，平衡微弱声音和抗噪能力
+    const MIN_GAIN: f32 = 0.1; // 允许大幅衰减，压住大嗓门
     const NOISE_FLOOR: f32 = 0.003; // 底噪阈值，平衡灵敏度和抗噪能力
 
     let rms = calculate_rms(samples);
@@ -62,7 +62,11 @@ pub fn apply_agc(samples: &mut [f32], current_gain: &mut f32) {
     };
 
     // 增益平滑：Attack 快（防爆音），Release 慢（防呼吸效应）
-    let alpha = if target_gain < *current_gain { 0.5 } else { 0.1 };
+    let alpha = if target_gain < *current_gain {
+        0.5
+    } else {
+        0.1
+    };
     *current_gain = *current_gain * (1.0 - alpha) + target_gain * alpha;
 
     for s in samples.iter_mut() {
@@ -120,10 +124,7 @@ pub fn validate_audio(audio_data: &[u8]) -> Result<()> {
         return Err(anyhow::anyhow!("音频数据为空"));
     }
 
-    let sum_squares: f64 = samples
-        .iter()
-        .map(|&s| (s as f64 / 32768.0).powi(2))
-        .sum();
+    let sum_squares: f64 = samples.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum();
     let rms = (sum_squares / samples.len() as f64).sqrt() as f32;
 
     if rms < MIN_AUDIO_RMS {

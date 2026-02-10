@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use windows::core::{Interface, HRESULT};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-    COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_DISABLE_OLE1DDE,
+    COINIT_MULTITHREADED,
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
@@ -102,10 +102,12 @@ fn is_blacklisted(hwnd: isize, now: Instant) -> bool {
     let mut state = blacklist_state().lock().unwrap();
 
     // 清理过期条目
-    state.by_hwnd.retain(|_, entry| match entry.blacklisted_until {
-        Some(until) => until > now,
-        None => now.duration_since(entry.first_failure_at) <= FAILURE_WINDOW,
-    });
+    state
+        .by_hwnd
+        .retain(|_, entry| match entry.blacklisted_until {
+            Some(until) => until > now,
+            None => now.duration_since(entry.first_failure_at) <= FAILURE_WINDOW,
+        });
 
     match state.by_hwnd.get(&hwnd).and_then(|e| e.blacklisted_until) {
         Some(until) if until > now => true,
@@ -170,8 +172,8 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
-    use std::sync::mpsc;
     use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
     use std::thread;
 
     // 防止无限创建线程（UIA 卡死时）
@@ -223,7 +225,9 @@ where
                 }
             }
         }
-        let _guard = WorkerGuard { timed_out: timed_out_clone };
+        let _guard = WorkerGuard {
+            timed_out: timed_out_clone,
+        };
         let _ = tx.send(f());
     });
 

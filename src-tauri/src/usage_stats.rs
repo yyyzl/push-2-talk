@@ -1,8 +1,8 @@
 // src-tauri/src/usage_stats.rs
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use anyhow::Result;
 
 /// 使用统计数据（前端使用 camelCase）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,8 +32,7 @@ impl Default for UsageStats {
 impl UsageStats {
     /// 获取统计数据文件路径
     pub fn stats_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
+        let config_dir = dirs::config_dir().ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
         let app_dir = config_dir.join("PushToTalk");
         std::fs::create_dir_all(&app_dir)?;
         Ok(app_dir.join("stats.json"))

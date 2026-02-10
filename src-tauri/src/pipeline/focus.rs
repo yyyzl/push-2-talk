@@ -3,8 +3,8 @@
 // 提供悬浮窗隐藏和目标窗口焦点恢复功能
 // 确保文本能正确粘贴到用户原本操作的窗口
 
-use tauri::{AppHandle, Manager};
 use crate::win32_input;
+use tauri::{AppHandle, Manager};
 
 /// 隐藏悬浮窗并恢复目标窗口焦点
 ///

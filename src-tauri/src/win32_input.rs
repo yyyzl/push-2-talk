@@ -8,13 +8,9 @@ use std::time::Duration;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, VIRTUAL_KEY,
-    VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
-    VK_SHIFT, VK_LSHIFT, VK_RSHIFT,
-    VK_MENU, VK_LMENU, VK_RMENU,
-    VK_LWIN, VK_RWIN,
-    VK_C, VK_V,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
 };
 
 /// 按键间延迟（毫秒）
@@ -127,17 +123,39 @@ pub fn release_all_modifiers() -> Result<()> {
     tracing::debug!("win32_input: 释放所有修饰键（仅释放被按下的键）");
 
     // 只释放真正被按下的修饰键，避免触发系统行为（如 Win 键释放触发开始菜单）
-    if is_vk_pressed(VK_CONTROL) { let _ = send_key_up(VK_CONTROL); }
-    if is_vk_pressed(VK_LCONTROL) { let _ = send_key_up(VK_LCONTROL); }
-    if is_vk_pressed(VK_RCONTROL) { let _ = send_key_up(VK_RCONTROL); }
-    if is_vk_pressed(VK_SHIFT) { let _ = send_key_up(VK_SHIFT); }
-    if is_vk_pressed(VK_LSHIFT) { let _ = send_key_up(VK_LSHIFT); }
-    if is_vk_pressed(VK_RSHIFT) { let _ = send_key_up(VK_RSHIFT); }
-    if is_vk_pressed(VK_MENU) { let _ = send_key_up(VK_MENU); }
-    if is_vk_pressed(VK_LMENU) { let _ = send_key_up(VK_LMENU); }
-    if is_vk_pressed(VK_RMENU) { let _ = send_key_up(VK_RMENU); }
-    if is_vk_pressed(VK_LWIN) { let _ = send_key_up(VK_LWIN); }
-    if is_vk_pressed(VK_RWIN) { let _ = send_key_up(VK_RWIN); }
+    if is_vk_pressed(VK_CONTROL) {
+        let _ = send_key_up(VK_CONTROL);
+    }
+    if is_vk_pressed(VK_LCONTROL) {
+        let _ = send_key_up(VK_LCONTROL);
+    }
+    if is_vk_pressed(VK_RCONTROL) {
+        let _ = send_key_up(VK_RCONTROL);
+    }
+    if is_vk_pressed(VK_SHIFT) {
+        let _ = send_key_up(VK_SHIFT);
+    }
+    if is_vk_pressed(VK_LSHIFT) {
+        let _ = send_key_up(VK_LSHIFT);
+    }
+    if is_vk_pressed(VK_RSHIFT) {
+        let _ = send_key_up(VK_RSHIFT);
+    }
+    if is_vk_pressed(VK_MENU) {
+        let _ = send_key_up(VK_MENU);
+    }
+    if is_vk_pressed(VK_LMENU) {
+        let _ = send_key_up(VK_LMENU);
+    }
+    if is_vk_pressed(VK_RMENU) {
+        let _ = send_key_up(VK_RMENU);
+    }
+    if is_vk_pressed(VK_LWIN) {
+        let _ = send_key_up(VK_LWIN);
+    }
+    if is_vk_pressed(VK_RWIN) {
+        let _ = send_key_up(VK_RWIN);
+    }
 
     Ok(())
 }
@@ -146,14 +164,13 @@ pub fn release_all_modifiers() -> Result<()> {
 // 用于在文本插入前确保目标窗口获得焦点
 
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, SetForegroundWindow, IsWindow,
-    GetWindowThreadProcessId,
-};
-#[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::{GetCurrentThreadId, AttachThreadInput};
-#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow,
+};
 
 /// 获取当前前台窗口句柄
 ///
@@ -286,11 +303,7 @@ pub fn restore_focus_with_verify(hwnd: isize, max_retries: u32) -> bool {
     for attempt in 0..max_retries {
         // 尝试恢复焦点
         if let Err(e) = force_foreground_window(hwnd) {
-            tracing::warn!(
-                "win32_input: 焦点恢复尝试 {} 失败: {}",
-                attempt + 1,
-                e
-            );
+            tracing::warn!("win32_input: 焦点恢复尝试 {} 失败: {}", attempt + 1, e);
             thread::sleep(Duration::from_millis(30));
             continue;
         }
@@ -300,10 +313,7 @@ pub fn restore_focus_with_verify(hwnd: isize, max_retries: u32) -> bool {
 
         // 验证焦点
         if verify_foreground_window(hwnd) {
-            tracing::info!(
-                "win32_input: 焦点恢复成功 (尝试 {})",
-                attempt + 1
-            );
+            tracing::info!("win32_input: 焦点恢复成功 (尝试 {})", attempt + 1);
             return true;
         }
 

@@ -16,8 +16,8 @@ pub fn create_http_client() -> Client {
 /// 去除转录结果末尾的标点符号
 pub fn strip_trailing_punctuation(text: &mut String) {
     const PUNCTUATION: &[char] = &[
-        '。', '，', '！', '？', '、', '；', '：', '"', '"',
-        '\'', '\'', '.', ',', '!', '?', ';', ':'
+        '。', '，', '！', '？', '、', '；', '：', '"', '"', '\'', '\'', '.', ',', '!', '?', ';',
+        ':',
     ];
 
     while let Some(last_char) = text.chars().last() {

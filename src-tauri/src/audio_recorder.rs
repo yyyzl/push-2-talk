@@ -1,29 +1,29 @@
 // 音频录制模块
-use hound::{WavSpec, WavWriter};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::io::Cursor;
 use anyhow::Result;
 use cpal::Stream;
+use hound::{WavSpec, WavWriter};
+use std::io::Cursor;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 
-use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc, validate_audio};
+use crate::audio_utils::{apply_agc, calculate_audio_level, emit_audio_level, validate_audio};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
 
 pub struct AudioRecorder {
-    device_sample_rate: u32,  // 设备实际采样率
+    device_sample_rate: u32, // 设备实际采样率
     channels: u16,
     audio_data: Arc<Mutex<Vec<f32>>>,
     is_recording: Arc<Mutex<bool>>,
-    stream: Option<Stream>,  // 保存 stream 引用
+    stream: Option<Stream>, // 保存 stream 引用
 }
 
 impl AudioRecorder {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            device_sample_rate: 48000,  // 默认值，会在 start_recording 时更新
+            device_sample_rate: 48000, // 默认值，会在 start_recording 时更新
             channels: 1,
             audio_data: Arc::new(Mutex::new(Vec::new())),
             is_recording: Arc::new(Mutex::new(false)),
@@ -104,8 +104,12 @@ impl AudioRecorder {
         self.device_sample_rate = config.sample_rate.0;
         self.channels = config.channels;
 
-        tracing::info!("设备配置: 采样率={}Hz, 声道={}, 目标采样率={}Hz",
-            self.device_sample_rate, self.channels, TARGET_SAMPLE_RATE);
+        tracing::info!(
+            "设备配置: 采样率={}Hz, 声道={}, 目标采样率={}Hz",
+            self.device_sample_rate,
+            self.channels,
+            TARGET_SAMPLE_RATE
+        );
 
         let audio_data = Arc::clone(&self.audio_data);
         let is_recording = Arc::clone(&self.is_recording);
@@ -141,7 +145,7 @@ impl AudioRecorder {
                     err_fn,
                     None,
                 )?
-            },
+            }
             cpal::SampleFormat::I16 => {
                 let audio_data_i16 = Arc::clone(&audio_data);
                 let is_recording_i16 = Arc::clone(&is_recording);
@@ -153,9 +157,8 @@ impl AudioRecorder {
                         if *is_recording_i16.lock().unwrap() {
                             let mut buffer = audio_data_i16.lock().unwrap();
                             // 转换 i16 到 f32
-                            let f32_data: Vec<f32> = data.iter()
-                                .map(|&s| s as f32 / i16::MAX as f32)
-                                .collect();
+                            let f32_data: Vec<f32> =
+                                data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                             buffer.extend(&f32_data);
 
                             // 基于时间的音频级别发送（目标 ~30Hz）
@@ -184,7 +187,8 @@ impl AudioRecorder {
                         if *is_recording_u16.lock().unwrap() {
                             let mut buffer = audio_data_u16.lock().unwrap();
                             // 转换 u16 到 f32
-                            let f32_data: Vec<f32> = data.iter()
+                            let f32_data: Vec<f32> = data
+                                .iter()
                                 .map(|&s| (s as f32 - 32768.0) / 32768.0)
                                 .collect();
                             buffer.extend(&f32_data);
@@ -236,9 +240,15 @@ impl AudioRecorder {
         tracing::info!("转单声道: {} -> {} 样本", original_len, mono_audio.len());
 
         // 2. 降采样到 16kHz
-        let mut resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
-        tracing::info!("降采样: {}Hz -> {}Hz, {} -> {} 样本",
-            self.device_sample_rate, TARGET_SAMPLE_RATE, mono_audio.len(), resampled_audio.len());
+        let mut resampled_audio =
+            self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
+        tracing::info!(
+            "降采样: {}Hz -> {}Hz, {} -> {} 样本",
+            self.device_sample_rate,
+            TARGET_SAMPLE_RATE,
+            mono_audio.len(),
+            resampled_audio.len()
+        );
 
         // 3. AGC 处理（按块处理以保持平滑）
         let mut current_gain = 1.0;
@@ -258,14 +268,19 @@ impl AudioRecorder {
         {
             let mut writer = WavWriter::new(&mut cursor, spec)?;
             for &sample in resampled_audio.iter() {
-                let amplitude = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                let amplitude =
+                    (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                 writer.write_sample(amplitude)?;
             }
             writer.finalize()?;
         }
 
         let wav_data = cursor.into_inner();
-        tracing::info!("音频已转换为内存 WAV: {} bytes, 采样率: {}Hz", wav_data.len(), TARGET_SAMPLE_RATE);
+        tracing::info!(
+            "音频已转换为内存 WAV: {} bytes, 采样率: {}Hz",
+            wav_data.len(),
+            TARGET_SAMPLE_RATE
+        );
 
         // 5. 验证音频有效性（过滤误触和静音）
         validate_audio(&wav_data)?;
@@ -293,7 +308,8 @@ impl AudioRecorder {
         let mono_audio = self.to_mono(&raw_audio, self.channels);
 
         // 2. 降采样到 16kHz
-        let mut resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
+        let mut resampled_audio =
+            self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
 
         // 3. AGC 处理（按块处理以保持平滑）
         let mut current_gain = 1.0;
@@ -318,12 +334,17 @@ impl AudioRecorder {
         let mut writer = WavWriter::create(&file_path, spec)?;
 
         for &sample in resampled_audio.iter() {
-            let amplitude = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            let amplitude =
+                (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
             writer.write_sample(amplitude)?;
         }
 
         writer.finalize()?;
-        tracing::info!("音频已保存到: {:?}, 采样率: {}Hz", file_path, TARGET_SAMPLE_RATE);
+        tracing::info!(
+            "音频已保存到: {:?}, 采样率: {}Hz",
+            file_path,
+            TARGET_SAMPLE_RATE
+        );
 
         Ok(file_path)
     }

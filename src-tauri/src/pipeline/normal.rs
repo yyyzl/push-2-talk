@@ -15,6 +15,7 @@ use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::text_inserter::TextInserter;
+use crate::tnl::TnlEngine;
 
 /// 普通模式处理管道
 ///
@@ -59,14 +60,41 @@ impl NormalPipeline {
         target_hwnd: Option<isize>,     // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果
-        let text = asr_result?;
+        let asr_text = asr_result?;
         tracing::info!(
             "NormalPipeline: 收到 ASR 结果: {} (耗时: {}ms)",
-            text,
+            asr_text,
             asr_time_ms
         );
 
-        // 2. 可选 LLM 后处理
+        // 2. TNL 技术规范化（如果启用）
+        let (text, tnl_changed) = {
+            // 从配置加载 TNL 开关
+            let tnl_enabled = AppConfig::load()
+                .map(|(c, _)| c.tnl_config.enabled)
+                .unwrap_or(true);
+
+            if tnl_enabled {
+                let engine = TnlEngine::new(dictionary.clone());
+                let tnl_result = engine.normalize(&asr_text);
+                if tnl_result.changed {
+                    tracing::info!(
+                        "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
+                        asr_text,
+                        tnl_result.text,
+                        tnl_result.elapsed_us,
+                        tnl_result.applied.len()
+                    );
+                }
+                (tnl_result.text, tnl_result.changed)
+            } else {
+                (asr_text.clone(), false)
+            }
+        };
+
+        // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL 后文本（text）
+
+        // 3. 可选 LLM 后处理
         let (final_text, original_text, llm_time_ms) = Self::maybe_polish(
             app,
             post_processor,
@@ -77,14 +105,14 @@ impl NormalPipeline {
         )
         .await;
 
-        // 3. 插入前隐藏窗口并主动恢复焦点到目标应用
+        // 4. 插入前隐藏窗口并主动恢复焦点到目标应用
         // 使用新的焦点恢复机制，确保文本插入到正确的窗口
         super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
 
-        // 4. 插入文本
+        // 5. 插入文本
         let inserted = Self::insert_text(text_inserter, &final_text);
 
-        // 5. 触发学习观察（如果启用且插入成功）
+        // 6. 触发学习观察（如果启用且插入成功）
         if inserted {
             if let Some(hwnd) = target_hwnd {
                 if let Ok((config, _)) = AppConfig::load() {
@@ -100,10 +128,23 @@ impl NormalPipeline {
             }
         }
 
-        // 6. 返回结果
+        // 7. 返回结果
+        // 历史记录存储 ASR 原文（约束 C14）
+        // 决定是否显示双栏：
+        // - 有 LLM 处理 → 使用 LLM 返回的 original_text
+        // - 无 LLM 处理但 TNL 改变了文本 → 设置原文以便前端显示双栏
+        // - 无 LLM 处理且 TNL 未改变文本 → 不显示双栏（original_text = None）
+        let history_original = if original_text.is_some() {
+            original_text
+        } else if tnl_changed {
+            Some(asr_text)
+        } else {
+            None
+        };
+
         Ok(PipelineResult::success(
             final_text,
-            original_text,
+            history_original,
             asr_time_ms,
             llm_time_ms,
             TranscriptionMode::Normal,

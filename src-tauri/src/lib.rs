@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod asr;
+pub mod asr;
 mod assistant_processor;
 mod audio_mute_manager;
 mod audio_recorder;
@@ -9,6 +9,7 @@ mod audio_utils;
 mod beep_player;
 mod clipboard_manager;
 mod config;
+mod dictionary_utils;
 mod hotkey_service;
 mod learning;
 mod llm_post_processor;
@@ -16,13 +17,15 @@ mod openai_client;
 mod pipeline;
 mod streaming_recorder;
 mod text_inserter;
+mod tnl;
 mod uia_text_reader;
 mod usage_stats;
 mod win32_input;
 
 use asr::{
-    DoubaoASRClient, DoubaoRealtimeClient, DoubaoRealtimeSession, QwenASRClient,
-    QwenRealtimeClient, RealtimeSession, SenseVoiceClient,
+    DoubaoASRClient, DoubaoImeCredentials, DoubaoImeRealtimeClient, DoubaoImeRealtimeSession,
+    DoubaoRealtimeClient, DoubaoRealtimeSession, QwenASRClient, QwenRealtimeClient,
+    RealtimeSession, SenseVoiceClient,
 };
 use assistant_processor::AssistantProcessor;
 use audio_mute_manager::AudioMuteManager;
@@ -108,6 +111,7 @@ struct AppState {
     // 活跃的实时转录会话（用于真正的流式传输）
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
+    doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
     fallback_provider: Arc<Mutex<Option<config::AsrProvider>>>,
     // 音频发送任务句柄
@@ -130,6 +134,8 @@ struct AppState {
     target_window: Arc<Mutex<Option<isize>>>,
     /// 词库（用于 Realtime 模式热更新）
     dictionary: Arc<Mutex<Vec<String>>>,
+    /// 豆包输入法凭据（自动注册获取，跨会话复用）
+    doubao_ime_credentials: Arc<Mutex<Option<DoubaoImeCredentials>>>,
     /// 使用统计数据
     usage_stats: Arc<Mutex<UsageStats>>,
     /// 录音开始时间（用于计算录音时长）
@@ -498,6 +504,9 @@ async fn save_config(
                 sensevoice_api_key: fallback_api_key,
                 doubao_app_id: String::new(),
                 doubao_access_token: String::new(),
+                doubao_ime_device_id: String::new(),
+                doubao_ime_token: String::new(),
+                doubao_ime_cdid: String::new(),
             },
             selection: config::AsrSelection {
                 active_provider: config::AsrProvider::Qwen,
@@ -517,6 +526,7 @@ async fn save_config(
         smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
         assistant_config: final_assistant_config,
         learning_config: learning_config.unwrap_or(existing.learning_config),
+        tnl_config: existing.tnl_config,
         close_action: close_action.or(existing.close_action),
         hotkey_config,
         dual_hotkey_config: final_dual_hotkey_config,
@@ -573,6 +583,8 @@ async fn handle_recording_start(
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
+    doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
+    doubao_ime_credentials: Arc<Mutex<Option<DoubaoImeCredentials>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     use_realtime: bool,
@@ -626,6 +638,17 @@ async fn handle_recording_start(
                     audio_sender_handle,
                     doubao_app_id,
                     doubao_access_token,
+                    dictionary,
+                )
+                .await;
+            }
+            Some(config::AsrProvider::DoubaoIme) => {
+                handle_doubao_ime_realtime_start(
+                    app,
+                    streaming_recorder,
+                    doubao_ime_session,
+                    audio_sender_handle,
+                    doubao_ime_credentials,
                     dictionary,
                 )
                 .await;
@@ -756,6 +779,202 @@ async fn handle_doubao_realtime_start(
             tracing::error!("豆包凭证缺失：需要 app_id 和 access_token");
         }
     }
+}
+
+async fn handle_doubao_ime_realtime_start(
+    app: AppHandle,
+    streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
+    doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
+    audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    doubao_ime_credentials: Arc<Mutex<Option<DoubaoImeCredentials>>>,
+    _dictionary: Vec<String>,
+) {
+    tracing::info!("启动豆包输入法实时流式转录...");
+
+    let chunk_rx = {
+        let mut streaming_guard = streaming_recorder.lock().unwrap();
+        if let Some(ref mut rec) = *streaming_guard {
+            if rec.is_recording() {
+                tracing::warn!("发现正在进行中的流式录音，先停止它");
+                let _ = rec.stop_streaming();
+            }
+            match rec.start_streaming(Some(app.clone())) {
+                Ok(rx) => Some(rx),
+                Err(e) => {
+                    emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
+                    None
+                }
+            }
+        } else {
+            emit_error_and_hide_overlay(&app, "流式录音器未初始化".to_string());
+            None
+        }
+    };
+
+    if let Some(chunk_rx) = chunk_rx {
+        // 检查是否有已保存的凭据
+        let saved_credentials = doubao_ime_credentials.lock().unwrap().clone();
+        let had_credentials = saved_credentials.is_some();
+
+        let mut realtime_client = if let Some(creds) = saved_credentials {
+            tracing::info!(
+                "豆包输入法 ASR: 使用已保存的凭据 (device_id={})",
+                creds.device_id
+            );
+            DoubaoImeRealtimeClient::with_credentials(
+                reqwest::Client::new(),
+                asr::DoubaoImeClientConfig::default(),
+                creds,
+            )
+        } else {
+            tracing::info!("豆包输入法 ASR: 无已保存凭据，将自动注册");
+            DoubaoImeRealtimeClient::new(
+                reqwest::Client::new(),
+                asr::DoubaoImeClientConfig::default(),
+            )
+        };
+
+        {
+            let mut session_guard = doubao_ime_session.lock().await;
+            if let Some(mut old_session) = session_guard.take() {
+                tracing::warn!("发现旧的豆包输入法会话，先关闭它");
+                let _ = old_session.finish_audio().await;
+            }
+        }
+        {
+            if let Some(old_handle) = audio_sender_handle.lock().unwrap().take() {
+                tracing::warn!("发现旧的音频发送任务，先取消它");
+                old_handle.abort();
+            }
+        }
+
+        let mut session_result = realtime_client.start_session().await;
+        if session_result.is_err() && had_credentials {
+            if let Some(err_text) = session_result.as_ref().err().map(|e| e.to_string()) {
+                let normalized = err_text.to_lowercase();
+                let should_refresh_credentials = normalized.contains("taskfailed")
+                    || normalized.contains("sessionfailed")
+                    || normalized.contains("token")
+                    || normalized.contains("auth")
+                    || normalized.contains("401")
+                    || normalized.contains("403");
+
+                if should_refresh_credentials {
+                    tracing::warn!(
+                        "豆包输入法 ASR: 现有凭据可能失效，清除后重试。原始错误: {}",
+                        err_text
+                    );
+                    *doubao_ime_credentials.lock().unwrap() = None;
+                    if let Err(e) = clear_doubao_ime_credentials_from_config().await {
+                        tracing::error!("清除豆包输入法配置凭据失败: {}", e);
+                    }
+
+                    realtime_client = DoubaoImeRealtimeClient::new(
+                        reqwest::Client::new(),
+                        asr::DoubaoImeClientConfig::default(),
+                    );
+                    session_result = realtime_client.start_session().await;
+                }
+            }
+        }
+
+        match session_result {
+            Ok(session) => {
+                tracing::info!("豆包输入法 WebSocket 连接已建立");
+
+                if let Some(new_creds) = realtime_client.credentials() {
+                    let should_save = !had_credentials
+                        || doubao_ime_credentials
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|old| {
+                                old.device_id != new_creds.device_id
+                                    || old.token != new_creds.token
+                                    || old.cdid != new_creds.cdid
+                            })
+                            .unwrap_or(true);
+
+                    if should_save {
+                        tracing::info!(
+                            "豆包输入法 ASR: 更新凭据缓存 (device_id={})",
+                            new_creds.device_id
+                        );
+                        *doubao_ime_credentials.lock().unwrap() = Some(new_creds.clone());
+                        if let Err(e) = save_doubao_ime_credentials_to_config(new_creds.clone()).await {
+                            tracing::error!("保存豆包输入法凭据到配置文件失败: {}", e);
+                        }
+                    }
+                }
+
+                *doubao_ime_session.lock().await = Some(session);
+
+                let session_for_sender = Arc::clone(&doubao_ime_session);
+                let sender_handle = tokio::spawn(async move {
+                    tracing::info!("豆包输入法音频发送任务启动");
+                    let mut chunk_count = 0;
+
+                    while let Ok(chunk) = chunk_rx.recv() {
+                        let mut session_guard = session_for_sender.lock().await;
+                        if let Some(ref mut session) = *session_guard {
+                            if let Err(e) = session.send_audio_chunk(&chunk).await {
+                                tracing::error!("发送音频块失败: {}", e);
+                                break;
+                            }
+                            chunk_count += 1;
+                            if chunk_count % 10 == 0 {
+                                tracing::debug!("已发送 {} 个音频块", chunk_count);
+                            }
+                        } else {
+                            break;
+                        }
+                        drop(session_guard);
+                    }
+
+                    tracing::info!("豆包输入法音频发送任务结束，共发送 {} 个块", chunk_count);
+                });
+
+                *audio_sender_handle.lock().unwrap() = Some(sender_handle);
+            }
+            Err(e) => {
+                tracing::error!(
+                    "建立豆包输入法 WebSocket 连接失败: {}，录音已启动，将使用备用方案",
+                    e
+                );
+            }
+        }
+    }
+}
+
+/// 保存豆包输入法凭据到配置文件
+async fn save_doubao_ime_credentials_to_config(creds: DoubaoImeCredentials) -> anyhow::Result<()> {
+    use config::CONFIG_LOCK;
+
+    let _guard = CONFIG_LOCK.lock().unwrap();
+    let (mut config, _) = config::AppConfig::load()?;
+
+    config.asr_config.credentials.doubao_ime_device_id = creds.device_id;
+    config.asr_config.credentials.doubao_ime_token = creds.token;
+    config.asr_config.credentials.doubao_ime_cdid = creds.cdid;
+
+    config.save()?;
+    tracing::info!("豆包输入法凭据已保存到配置文件");
+    Ok(())
+}
+
+async fn clear_doubao_ime_credentials_from_config() -> anyhow::Result<()> {
+    use config::CONFIG_LOCK;
+
+    let _guard = CONFIG_LOCK.lock().unwrap();
+    let (mut config, _) = config::AppConfig::load()?;
+
+    config.asr_config.credentials.doubao_ime_device_id.clear();
+    config.asr_config.credentials.doubao_ime_token.clear();
+    config.asr_config.credentials.doubao_ime_cdid.clear();
+
+    config.save()?;
+    tracing::info!("已清除豆包输入法凭据缓存");
+    Ok(())
 }
 
 /// 处理千问实时模式启动
@@ -905,7 +1124,21 @@ async fn start_app(
     tracing::info!("[DEBUG] 开始初始化...");
 
     // 确定是否使用实时模式
-    let use_realtime_mode = use_realtime.unwrap_or(true);
+    let mut use_realtime_mode = use_realtime.unwrap_or(true);
+
+    // 强制覆盖：DoubaoIme 只支持流式模式
+    if let Some(ref cfg) = asr_config {
+        if matches!(
+            cfg.selection.active_provider,
+            config::AsrProvider::DoubaoIme
+        ) {
+            if !use_realtime_mode {
+                tracing::info!("豆包输入法只支持流式模式，已自动切换");
+            }
+            use_realtime_mode = true;
+        }
+    }
+
     *state.use_realtime_asr.lock().unwrap() = use_realtime_mode;
 
     // 确定是否启用 LLM 后处理
@@ -1111,6 +1344,8 @@ async fn start_app(
     let streaming_recorder_start = Arc::clone(&state.streaming_recorder);
     let active_session_start = Arc::clone(&state.active_session);
     let doubao_session_start = Arc::clone(&state.doubao_session);
+    let doubao_ime_session_start = Arc::clone(&state.doubao_ime_session);
+    let doubao_ime_credentials_start = Arc::clone(&state.doubao_ime_credentials);
     let realtime_provider_start = Arc::clone(&state.realtime_provider);
     let audio_sender_handle_start = Arc::clone(&state.audio_sender_handle);
     let use_realtime_start = use_realtime_mode;
@@ -1132,6 +1367,22 @@ async fn start_app(
                 Some(cfg.credentials.doubao_app_id.clone()),
                 Some(cfg.credentials.doubao_access_token.clone()),
             ),
+            config::AsrProvider::DoubaoIme => {
+                // 豆包输入法模式：加载已保存的凭据（如果有的话）
+                if !cfg.credentials.doubao_ime_device_id.is_empty()
+                    && !cfg.credentials.doubao_ime_token.is_empty()
+                {
+                    let saved_creds = DoubaoImeCredentials {
+                        device_id: cfg.credentials.doubao_ime_device_id.clone(),
+                        token: cfg.credentials.doubao_ime_token.clone(),
+                        cdid: cfg.credentials.doubao_ime_cdid.clone(),
+                        ..Default::default()
+                    };
+                    *state.doubao_ime_credentials.lock().unwrap() = Some(saved_creds);
+                    tracing::info!("已加载保存的豆包输入法凭据");
+                }
+                (String::new(), None, None)
+            }
             config::AsrProvider::SiliconFlow => {
                 (cfg.credentials.sensevoice_api_key.clone(), None, None)
             }
@@ -1155,6 +1406,7 @@ async fn start_app(
     let sensevoice_client_stop = Arc::clone(&state.sensevoice_client);
     let doubao_client_stop = Arc::clone(&state.doubao_client);
     let doubao_session_stop = Arc::clone(&state.doubao_session);
+    let doubao_ime_session_stop = Arc::clone(&state.doubao_ime_session);
     let realtime_provider_stop = Arc::clone(&state.realtime_provider);
     let use_realtime_stop = use_realtime_mode;
     let is_running_stop = Arc::clone(&state.is_running);
@@ -1227,6 +1479,8 @@ async fn start_app(
         let streaming_recorder = Arc::clone(&streaming_recorder_start);
         let active_session = Arc::clone(&active_session_start);
         let doubao_session = Arc::clone(&doubao_session_start);
+        let doubao_ime_session = Arc::clone(&doubao_ime_session_start);
+        let doubao_ime_credentials = Arc::clone(&doubao_ime_credentials_start);
         let realtime_provider = Arc::clone(&realtime_provider_start);
         let audio_sender_handle = Arc::clone(&audio_sender_handle_start);
         let use_realtime = use_realtime_start;
@@ -1252,6 +1506,8 @@ async fn start_app(
                 streaming_recorder,
                 active_session,
                 doubao_session,
+                doubao_ime_session,
+                doubao_ime_credentials,
                 realtime_provider,
                 audio_sender_handle,
                 use_realtime,
@@ -1332,6 +1588,7 @@ async fn start_app(
         let sensevoice_client_state = Arc::clone(&sensevoice_client_stop);
         let doubao_client_state = Arc::clone(&doubao_client_stop);
         let doubao_session_state = Arc::clone(&doubao_session_stop);
+        let doubao_ime_session_state = Arc::clone(&doubao_ime_session_stop);
         let realtime_provider_state = Arc::clone(&realtime_provider_stop);
         let enable_fallback_state = Arc::clone(&enable_fallback_stop);
         let use_realtime = use_realtime_stop;
@@ -1364,6 +1621,7 @@ async fn start_app(
                             streaming_recorder,
                             active_session,
                             doubao_session_state,
+                            doubao_ime_session_state,
                             realtime_provider_state,
                             audio_sender_handle,
                             post_processor,
@@ -1426,6 +1684,7 @@ async fn start_app(
                         streaming_recorder,
                         active_session,
                         doubao_session_state,
+                        doubao_ime_session_state,
                         realtime_provider_state,
                         audio_sender_handle,
                         assistant_processor,
@@ -1477,6 +1736,7 @@ async fn handle_assistant_mode(
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
+    doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     assistant_processor: Arc<Mutex<Option<AssistantProcessor>>>,
@@ -1534,6 +1794,18 @@ async fn handle_assistant_mode(
                     res
                 } else {
                     Err(anyhow::anyhow!("没有活跃的豆包会话"))
+                }
+            }
+            Some(config::AsrProvider::DoubaoIme) => {
+                let mut session_guard = doubao_ime_session.lock().await;
+                if let Some(ref mut session) = *session_guard {
+                    let _ = session.finish_audio().await;
+                    let res = session.wait_for_result().await;
+                    drop(session_guard);
+                    *doubao_ime_session.lock().await = None;
+                    res
+                } else {
+                    Err(anyhow::anyhow!("没有活跃的豆包输入法会话"))
                 }
             }
             _ => {
@@ -1624,13 +1896,21 @@ async fn handle_assistant_mode(
             .unwrap()
             .clone();
 
+        // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
+        let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
+            tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
+            fallback_prov.clone()
+        } else {
+            active_prov
+        };
+
         transcribe_with_available_clients(
             qwen,
             doubao,
             sensevoice,
             &data,
             enable_fb,
-            active_prov,
+            effective_active_prov,
             fallback_prov,
             "(AI助手备用) ",
         )
@@ -1765,6 +2045,10 @@ async fn transcribe_with_available_clients(
                             Err(anyhow::anyhow!("SenseVoice 客户端未初始化"))
                         }
                     }
+                    Some(config::AsrProvider::DoubaoIme) => {
+                        // 豆包输入法目前只支持实时流式模式，不支持 HTTP 模式
+                        Err(anyhow::anyhow!("豆包输入法 ASR 不支持 HTTP 模式"))
+                    }
                     None => {
                         tracing::error!("{}未配置 ASR 提供商", log_prefix);
                         Err(anyhow::anyhow!("ASR 提供商未配置"))
@@ -1798,6 +2082,10 @@ async fn transcribe_with_available_clients(
                 } else {
                     Err(anyhow::anyhow!("SenseVoice 客户端未初始化"))
                 }
+            }
+            Some(config::AsrProvider::DoubaoIme) => {
+                // 豆包输入法目前只支持实时流式模式，不支持 HTTP 模式
+                Err(anyhow::anyhow!("豆包输入法 ASR 不支持 HTTP 模式"))
             }
             None => {
                 tracing::error!("{}未配置 ASR 提供商", log_prefix);
@@ -1896,6 +2184,7 @@ async fn handle_realtime_stop(
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
+    doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
@@ -2020,6 +2309,104 @@ async fn handle_realtime_stop(
                 // 没有活跃的豆包会话，使用备用方案
                 tracing::warn!("没有活跃的豆包 WebSocket 会话，使用备用方案");
                 drop(doubao_session_guard);
+
+                if let Some(audio_data) = audio_data {
+                    fallback_transcription(
+                        app,
+                        post_processor,
+                        text_inserter,
+                        Arc::clone(&qwen_client_state),
+                        Arc::clone(&sensevoice_client_state),
+                        Arc::clone(&doubao_client_state),
+                        audio_data,
+                        enable_fb,
+                        target_hwnd,
+                        Arc::clone(&usage_stats),
+                        Arc::clone(&recording_start_instant),
+                    )
+                    .await;
+                } else {
+                    emit_error_and_hide_overlay(&app, "没有录制到音频数据".to_string());
+                }
+            }
+        }
+        Some(config::AsrProvider::DoubaoIme) => {
+            let mut doubao_ime_session_guard = doubao_ime_session.lock().await;
+            if let Some(ref mut session) = *doubao_ime_session_guard {
+                tracing::info!("豆包输入法：发送 finish 并等待转录结果...");
+
+                if let Err(e) = session.finish_audio().await {
+                    tracing::error!("豆包输入法发送 finish 失败: {}", e);
+                    drop(doubao_ime_session_guard);
+                    if let Some(audio_data) = audio_data {
+                        fallback_transcription(
+                            app,
+                            post_processor,
+                            text_inserter,
+                            Arc::clone(&qwen_client_state),
+                            Arc::clone(&sensevoice_client_state),
+                            Arc::clone(&doubao_client_state),
+                            audio_data,
+                            enable_fb,
+                            target_hwnd,
+                            Arc::clone(&usage_stats),
+                            Arc::clone(&recording_start_instant),
+                        )
+                        .await;
+                    }
+                    return;
+                }
+
+                match session.wait_for_result().await {
+                    Ok(text) => {
+                        let asr_time_ms = asr_start.elapsed().as_millis() as u64;
+                        tracing::info!(
+                            "豆包输入法实时转录成功: {} (ASR 耗时: {}ms)",
+                            text,
+                            asr_time_ms
+                        );
+                        drop(doubao_ime_session_guard);
+                        *doubao_ime_session.lock().await = None;
+                        handle_transcription_result(
+                            app,
+                            post_processor,
+                            text_inserter,
+                            Ok(text),
+                            asr_time_ms,
+                            target_hwnd,
+                            usage_stats,
+                            recording_start_instant,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("豆包输入法等待转录结果失败: {}，尝试备用方案", e);
+                        drop(doubao_ime_session_guard);
+                        *doubao_ime_session.lock().await = None;
+
+                        if let Some(audio_data) = audio_data {
+                            fallback_transcription(
+                                app,
+                                post_processor,
+                                text_inserter,
+                                Arc::clone(&qwen_client_state),
+                                Arc::clone(&sensevoice_client_state),
+                                Arc::clone(&doubao_client_state),
+                                audio_data,
+                                enable_fb,
+                                target_hwnd,
+                                Arc::clone(&usage_stats),
+                                Arc::clone(&recording_start_instant),
+                            )
+                            .await;
+                        } else {
+                            emit_error_and_hide_overlay(&app, format!("转录失败: {}", e));
+                        }
+                    }
+                }
+            } else {
+                tracing::warn!("没有活跃的豆包输入法 WebSocket 会话，使用备用方案");
+                drop(doubao_ime_session_guard);
 
                 if let Some(audio_data) = audio_data {
                     fallback_transcription(
@@ -2176,6 +2563,14 @@ async fn fallback_transcription(
         .unwrap()
         .clone();
 
+    // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
+    let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
+        tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
+        fallback_prov.clone()
+    } else {
+        active_prov
+    };
+
     let asr_start = std::time::Instant::now();
     let result = transcribe_with_available_clients(
         qwen,
@@ -2183,7 +2578,7 @@ async fn fallback_transcription(
         sensevoice,
         &audio_data,
         enable_fallback,
-        active_prov,
+        effective_active_prov,
         fallback_prov,
         "(备用) ",
     )
@@ -2381,6 +2776,13 @@ async fn stop_app(app_handle: AppHandle) -> Result<String, String> {
             tracing::info!("已关闭豆包 WebSocket 会话");
         }
     }
+    {
+        let mut session_guard = state.doubao_ime_session.lock().await;
+        if let Some(mut session) = session_guard.take() {
+            let _ = session.finish_audio().await;
+            tracing::info!("已关闭豆包输入法 WebSocket 会话");
+        }
+    }
 
     *state.audio_recorder.lock().unwrap() = None;
     *state.streaming_recorder.lock().unwrap() = None;
@@ -2466,6 +2868,20 @@ async fn cancel_transcription(app_handle: AppHandle) -> Result<String, String> {
         }
         *session_guard = None;
     }
+    {
+        let mut session_guard = state.doubao_session.lock().await;
+        if let Some(mut session) = session_guard.take() {
+            let _ = session.finish_audio().await;
+            tracing::info!("已关闭豆包 WebSocket 会话");
+        }
+    }
+    {
+        let mut session_guard = state.doubao_ime_session.lock().await;
+        if let Some(mut session) = session_guard.take() {
+            let _ = session.finish_audio().await;
+            tracing::info!("已关闭豆包输入法 WebSocket 会话");
+        }
+    }
 
     // 5. 隐藏录音悬浮窗（带重试机制）
     if let Some(overlay) = app_handle.get_webview_window("overlay") {
@@ -2546,6 +2962,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
     let audio_recorder = Arc::clone(&state.audio_recorder);
     let active_session = Arc::clone(&state.active_session);
     let doubao_session = Arc::clone(&state.doubao_session);
+    let doubao_ime_session = Arc::clone(&state.doubao_ime_session);
     let realtime_provider = Arc::clone(&state.realtime_provider);
     let audio_sender_handle = Arc::clone(&state.audio_sender_handle);
     let post_processor = Arc::clone(&state.post_processor);
@@ -2568,6 +2985,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
                     streaming_recorder,
                     active_session,
                     doubao_session,
+                    doubao_ime_session,
                     realtime_provider,
                     audio_sender_handle,
                     post_processor,
@@ -2930,7 +3348,7 @@ async fn add_learned_word(
     source: String,
 ) -> Result<(), String> {
     use crate::config::CONFIG_LOCK;
-    use crate::learning::store::{entries_to_words, upsert_entry};
+    use crate::dictionary_utils::{entries_to_words, upsert_entry};
 
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
 
@@ -2986,7 +3404,7 @@ async fn delete_dictionary_entries(
     words: Vec<String>,
 ) -> Result<(), String> {
     use crate::config::CONFIG_LOCK;
-    use crate::learning::store::{entries_to_words, remove_entries};
+    use crate::dictionary_utils::{entries_to_words, remove_entries};
 
     tracing::info!("删除词典条目: {:?}", words);
 
@@ -3185,6 +3603,7 @@ pub fn run() {
                 doubao_client: Arc::new(Mutex::new(None)),
                 active_session: Arc::new(tokio::sync::Mutex::new(None)),
                 doubao_session: Arc::new(tokio::sync::Mutex::new(None)),
+                doubao_ime_session: Arc::new(tokio::sync::Mutex::new(None)),
                 realtime_provider: Arc::new(Mutex::new(None)),
                 fallback_provider: Arc::new(Mutex::new(None)),
                 audio_sender_handle: Arc::new(Mutex::new(None)),
@@ -3197,6 +3616,7 @@ pub fn run() {
                 audio_mute_manager: Arc::new(Mutex::new(None)),
                 target_window: Arc::new(Mutex::new(None)),
                 dictionary: Arc::new(Mutex::new(Vec::new())),
+                doubao_ime_credentials: Arc::new(Mutex::new(None)),
                 usage_stats: Arc::new(Mutex::new(usage_stats)),
                 recording_start_instant: Arc::new(Mutex::new(None)),
             };

@@ -5,10 +5,10 @@
 // 提供选中文本捕获和剪贴板恢复功能
 // 使用 Win32 SendInput API 替代 enigo 实现更低延迟
 
+use anyhow::Result;
 use arboard::Clipboard;
 use std::thread;
 use std::time::{Duration, Instant};
-use anyhow::Result;
 
 use crate::win32_input;
 
@@ -89,7 +89,10 @@ pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
     let selected_text = wait_for_clipboard_update(&mut clipboard, 3, 80)?;
 
     if let Some(ref text) = selected_text {
-        tracing::info!("clipboard_manager: 捕获到选中文本 (长度: {} 字符)", text.len());
+        tracing::info!(
+            "clipboard_manager: 捕获到选中文本 (长度: {} 字符)",
+            text.len()
+        );
     } else {
         tracing::debug!("clipboard_manager: 未检测到选中文本");
     }
@@ -127,10 +130,7 @@ fn wait_for_clipboard_update(
             Ok(text) if !text.is_empty() => {
                 let elapsed = start.elapsed().as_millis();
                 if elapsed > initial_delay_ms as u128 {
-                    tracing::debug!(
-                        "clipboard_manager: {}ms 后成功获取剪贴板内容",
-                        elapsed
-                    );
+                    tracing::debug!("clipboard_manager: {}ms 后成功获取剪贴板内容", elapsed);
                 }
                 return Ok(Some(text));
             }

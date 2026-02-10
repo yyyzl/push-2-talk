@@ -1,9 +1,9 @@
 // 文本插入模块
 // 使用 Win32 SendInput API 替代 enigo 实现更低延迟的键盘模拟
+use anyhow::Result;
 use arboard::Clipboard;
 use std::thread;
 use std::time::Duration;
-use anyhow::Result;
 
 use crate::win32_input;
 

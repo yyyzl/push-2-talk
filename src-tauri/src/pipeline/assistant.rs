@@ -10,11 +10,12 @@ use anyhow::Result;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
+use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::assistant_processor::AssistantProcessor;
-use crate::clipboard_manager::{ClipboardGuard, insert_text_with_context};
+use crate::clipboard_manager::{insert_text_with_context, ClipboardGuard};
 use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
-use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
+use crate::tnl::TnlEngine;
 
 /// AI 助手模式处理管道
 ///
@@ -54,33 +55,58 @@ impl AssistantPipeline {
         asr_result: Result<String>,
         asr_time_ms: u64,
         context: TranscriptionContext,
-        target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
+        target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果（用户指令）
-        let user_instruction = asr_result?;
+        let asr_instruction = asr_result?;
         tracing::info!(
             "AssistantPipeline: 收到用户指令: {} (ASR耗时: {}ms)",
-            user_instruction,
+            asr_instruction,
             asr_time_ms
         );
 
-        // 2. 检查 AssistantProcessor 是否可用
+        // 2. TNL 技术规范化（如果启用）
+        let user_instruction = {
+            let tnl_enabled = AppConfig::load()
+                .map(|(c, _)| c.tnl_config.enabled)
+                .unwrap_or(true);
+
+            if tnl_enabled {
+                let engine = TnlEngine::new_without_dictionary();
+                let tnl_result = engine.normalize(&asr_instruction);
+                if tnl_result.changed {
+                    tracing::info!(
+                        "AssistantPipeline: TNL 规范化: {} → {} (耗时: {}us)",
+                        asr_instruction,
+                        tnl_result.text,
+                        tnl_result.elapsed_us
+                    );
+                }
+                tnl_result.text
+            } else {
+                asr_instruction.clone()
+            }
+        };
+
+        // 3. 检查 AssistantProcessor 是否可用
         let Some(processor) = processor else {
             anyhow::bail!("AI 助手模式需要配置 LLM，请先在设置中配置 AI 助手 API");
         };
 
-        // 3. 发送处理中事件
+        // 4. 发送处理中事件
         let _ = app.emit("post_processing", "assistant");
         let llm_start = Instant::now();
 
-        // 4. 根据是否有选中文本选择处理方式
+        // 5. 根据是否有选中文本选择处理方式
         let result = if let Some(ref selected_text) = context.selected_text {
             // 有选中文本：使用文本处理模式
             tracing::info!(
                 "AssistantPipeline: 文本处理模式 (选中文本: {} 字符)",
                 selected_text.len()
             );
-            processor.process_with_context(&user_instruction, selected_text).await?
+            processor
+                .process_with_context(&user_instruction, selected_text)
+                .await?
         } else {
             // 无选中文本：使用问答模式
             tracing::info!("AssistantPipeline: 问答模式");
@@ -94,15 +120,15 @@ impl AssistantPipeline {
             llm_time_ms
         );
 
-        // 5. 插入前隐藏窗口并主动恢复焦点到目标应用
+        // 6. 插入前隐藏窗口并主动恢复焦点到目标应用
         // 使用新的焦点恢复机制，确保文本插入到正确的窗口
         super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
 
-        // 6. 插入结果（替换选中或插入at 光标）
+        // 7. 插入结果（替换选中或插入at 光标）
         let has_selection = context.selected_text.is_some();
         let inserted = Self::insert_result(&result, has_selection, clipboard_guard);
 
-        // 7. 触发学习观察（如果启用且插入成功）
+        // 8. 触发学习观察（如果启用且插入成功）
         if inserted {
             if let Some(hwnd) = target_hwnd {
                 if let Ok((config, _)) = AppConfig::load() {
@@ -118,10 +144,10 @@ impl AssistantPipeline {
             }
         }
 
-        // 8. 返回结果
+        // 9. 返回结果
         Ok(PipelineResult::success(
             result,
-            Some(user_instruction),
+            Some(asr_instruction), // 历史记录存储 ASR 原文
             asr_time_ms,
             Some(llm_time_ms),
             TranscriptionMode::Assistant,
@@ -142,7 +168,6 @@ impl AssistantPipeline {
             }
         }
     }
-
 }
 
 impl Default for AssistantPipeline {

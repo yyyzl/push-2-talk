@@ -3,11 +3,13 @@
 
 use anyhow::Result;
 use cpal::Stream;
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 
-use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc, is_voice_active, validate_audio};
+use crate::audio_utils::{
+    apply_agc, calculate_audio_level, emit_audio_level, is_voice_active, validate_audio,
+};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -88,7 +90,8 @@ impl StreamingRecorder {
 
     /// 将 f32 样本转换为 i16
     fn f32_to_i16(samples: &[f32]) -> Vec<i16> {
-        samples.iter()
+        samples
+            .iter()
             .map(|&s| (s * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
             .collect()
     }
@@ -121,8 +124,13 @@ impl StreamingRecorder {
         self.device_sample_rate = config.sample_rate.0;
         self.channels = config.channels;
 
-        tracing::info!("流式录音配置: 采样率={}Hz, 声道={}, 目标采样率={}Hz, 块大小={}样本",
-            self.device_sample_rate, self.channels, TARGET_SAMPLE_RATE, CHUNK_SAMPLES);
+        tracing::info!(
+            "流式录音配置: 采样率={}Hz, 声道={}, 目标采样率={}Hz, 块大小={}样本",
+            self.device_sample_rate,
+            self.channels,
+            TARGET_SAMPLE_RATE,
+            CHUNK_SAMPLES
+        );
 
         let is_recording = Arc::clone(&self.is_recording);
         let full_audio_data = Arc::clone(&self.full_audio_data);
@@ -245,16 +253,16 @@ impl StreamingRecorder {
                         }
 
                         // 转换为 f32
-                        let f32_data: Vec<f32> = data.iter()
-                            .map(|&s| s as f32 / i16::MAX as f32)
-                            .collect();
+                        let f32_data: Vec<f32> =
+                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
 
                         // 保存原始数据
                         full_audio_data_i16.lock().unwrap().extend(&f32_data);
 
                         // 处理数据
                         let mono = Self::to_mono(&f32_data, channels);
-                        let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
+                        let resampled =
+                            Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
 
                         // 基于时间的音频级别发送（目标 ~30Hz）
                         if let Some(ref app) = app_handle_i16 {
@@ -325,7 +333,8 @@ impl StreamingRecorder {
                         }
 
                         // 转换为 f32
-                        let f32_data: Vec<f32> = data.iter()
+                        let f32_data: Vec<f32> = data
+                            .iter()
                             .map(|&s| (s as f32 - 32768.0) / 32768.0)
                             .collect();
 
@@ -334,7 +343,8 @@ impl StreamingRecorder {
 
                         // 处理数据
                         let mono = Self::to_mono(&f32_data, channels);
-                        let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
+                        let resampled =
+                            Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
 
                         // 基于时间的音频级别发送（目标 ~30Hz）
                         if let Some(ref app) = app_handle_u16 {
@@ -428,7 +438,8 @@ impl StreamingRecorder {
         let mono_audio = Self::to_mono(&raw_audio, self.channels);
 
         // 降采样到 16kHz
-        let resampled_audio = Self::resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
+        let resampled_audio =
+            Self::resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
 
         // 写入 WAV 格式
         let spec = WavSpec {
@@ -442,7 +453,8 @@ impl StreamingRecorder {
         {
             let mut writer = WavWriter::new(&mut cursor, spec)?;
             for &sample in resampled_audio.iter() {
-                let amplitude = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                let amplitude =
+                    (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                 writer.write_sample(amplitude)?;
             }
             writer.finalize()?;

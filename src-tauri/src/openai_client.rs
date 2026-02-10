@@ -91,7 +91,7 @@ impl ChatOptions {
     /// 用于文本润色的参数（低温度，高确定性）
     pub fn for_polishing() -> Self {
         Self {
-            max_tokens: 2048,  // 使用与 Smart Command 相同的值，避免 API 兼容性问题
+            max_tokens: 2048, // 使用与 Smart Command 相同的值，避免 API 兼容性问题
             temperature: 0.7,
         }
     }
@@ -121,7 +121,11 @@ pub struct OpenAiClientConfig {
 }
 
 impl OpenAiClientConfig {
-    pub fn new(endpoint: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        endpoint: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
             endpoint: endpoint.into(),
             api_key: api_key.into(),
@@ -206,7 +210,10 @@ impl OpenAiClient {
             options.max_tokens,
             options.temperature
         );
-        tracing::info!("[DEBUG] 请求体: {}", serde_json::to_string_pretty(&request_body).unwrap_or_default());
+        tracing::info!(
+            "[DEBUG] 请求体: {}",
+            serde_json::to_string_pretty(&request_body).unwrap_or_default()
+        );
 
         let response = self
             .client
@@ -244,10 +251,7 @@ impl OpenAiClient {
         user_message: &str,
         options: ChatOptions,
     ) -> Result<String> {
-        let messages = vec![
-            Message::system(system_prompt),
-            Message::user(user_message),
-        ];
+        let messages = vec![Message::system(system_prompt), Message::user(user_message)];
         self.chat(&messages, options).await
     }
 }
@@ -279,7 +283,7 @@ mod tests {
 
         let polishing = ChatOptions::for_polishing();
         assert_eq!(polishing.max_tokens, 2048);
-        assert_eq!(polishing.temperature, 0.3);
+        assert_eq!(polishing.temperature, 0.7);
 
         let smart = ChatOptions::for_smart_command();
         assert_eq!(smart.max_tokens, 2048);
@@ -293,7 +297,10 @@ mod tests {
             "sk-xxx",
             "gpt-4",
         );
-        assert_eq!(config.endpoint, "https://api.example.com/v1/chat/completions");
+        assert_eq!(
+            config.endpoint,
+            "https://api.example.com/v1/chat/completions"
+        );
         assert_eq!(config.api_key, "sk-xxx");
         assert_eq!(config.model, "gpt-4");
     }

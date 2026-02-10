@@ -1,15 +1,18 @@
 // qwen3-asr-flash-realtime WebSocket 客户端
 // 实时流式语音识别，边录音边发送
 
+use crate::dictionary_utils::entries_to_words;
 use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
-use futures_util::{SinkExt, StreamExt, stream::SplitSink};
+use base64::{engine::general_purpose, Engine as _};
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, mpsc};
-use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message, tungstenite::http, MaybeTlsStream, WebSocketStream};
 use tokio::net::TcpStream;
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::timeout;
+use tokio_tungstenite::{
+    connect_async, tungstenite::http, tungstenite::Message, MaybeTlsStream, WebSocketStream,
+};
 
 // WebSocket 写入端类型别名
 type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -26,26 +29,31 @@ pub struct RealtimeSession {
 }
 
 enum SessionCommand {
-    SendAudio(Vec<u8>),  // PCM 数据（已 Base64 编码）
-    Commit,              // 提交音频缓冲区
-    Close,               // 关闭连接
+    SendAudio(Vec<u8>), // PCM 数据（已 Base64 编码）
+    Commit,             // 提交音频缓冲区
+    Close,              // 关闭连接
 }
 
 impl RealtimeSession {
     /// 发送音频块（PCM 16-bit, 16kHz, 单声道）
     pub async fn send_audio_chunk(&self, pcm_data: &[i16]) -> Result<()> {
         // 转换为字节数组
-        let bytes: Vec<u8> = pcm_data.iter()
+        let bytes: Vec<u8> = pcm_data
+            .iter()
             .flat_map(|&sample| sample.to_le_bytes())
             .collect();
 
-        self.sender.send(SessionCommand::SendAudio(bytes)).await
+        self.sender
+            .send(SessionCommand::SendAudio(bytes))
+            .await
             .map_err(|_| anyhow::anyhow!("发送音频块失败：通道已关闭"))
     }
 
     /// 提交音频缓冲区（手动 commit 模式）
     pub async fn commit_audio(&self) -> Result<()> {
-        self.sender.send(SessionCommand::Commit).await
+        self.sender
+            .send(SessionCommand::Commit)
+            .await
             .map_err(|_| anyhow::anyhow!("提交音频失败：通道已关闭"))
     }
 
@@ -53,11 +61,16 @@ impl RealtimeSession {
     pub async fn wait_for_result(&mut self) -> Result<String> {
         match timeout(
             Duration::from_secs(TRANSCRIPTION_TIMEOUT_SECS),
-            self.result_receiver.recv()
-        ).await {
+            self.result_receiver.recv(),
+        )
+        .await
+        {
             Ok(Some(result)) => result,
             Ok(None) => Err(anyhow::anyhow!("等待结果失败：通道已关闭")),
-            Err(_) => Err(anyhow::anyhow!("转录超时：{}秒内未收到结果", TRANSCRIPTION_TIMEOUT_SECS)),
+            Err(_) => Err(anyhow::anyhow!(
+                "转录超时：{}秒内未收到结果",
+                TRANSCRIPTION_TIMEOUT_SECS
+            )),
         }
     }
 
@@ -121,10 +134,14 @@ impl ConnectionPool {
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
             .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Key", tokio_tungstenite::tungstenite::handshake::client::generate_key())
+            .header(
+                "Sec-WebSocket-Key",
+                tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+            )
             .body(())?;
 
-        let (ws_stream, _) = connect_async(request).await
+        let (ws_stream, _) = connect_async(request)
+            .await
             .map_err(|e| anyhow::anyhow!("WebSocket 连接失败: {}", e))?;
 
         tracing::info!("WebSocket 连接成功");
@@ -137,14 +154,19 @@ impl ConnectionPool {
         let (result_tx, result_rx) = mpsc::channel::<Result<String>>(1);
 
         // 发送 session.update 配置会话
-        // 词库用顿号分隔
-        let corpus_text = self.dictionary.join("、");
+        // 词库提纯（去除 |auto 后缀）后用顿号分隔
+        let purified_words = entries_to_words(&self.dictionary);
+        let corpus_text = purified_words.join("、");
 
         let mut input_audio_transcription = serde_json::json!({
             "language": "zh"
         });
         if !corpus_text.is_empty() {
-            tracing::info!("Qwen 流式 ASR 词库: {} 个词, corpus={}", self.dictionary.len(), corpus_text);
+            tracing::info!(
+                "Qwen 流式 ASR 词库: {} 个词（已提纯）, corpus={}",
+                purified_words.len(),
+                corpus_text
+            );
             input_audio_transcription["corpus"] = serde_json::json!({"text": corpus_text});
         } else {
             tracing::info!("Qwen 流式 ASR 词库: 未配置");
@@ -165,7 +187,9 @@ impl ConnectionPool {
             }
         });
 
-        write.send(Message::Text(session_update.to_string())).await
+        write
+            .send(Message::Text(session_update.to_string()))
+            .await
             .map_err(|e| anyhow::anyhow!("发送 session.update 失败: {}", e))?;
 
         tracing::info!("已发送 session.update 配置");
@@ -267,11 +291,12 @@ impl ConnectionPool {
                                         has_result = true;
                                     }
                                     "error" => {
-                                        let error_msg = data["error"]["message"]
-                                            .as_str()
-                                            .unwrap_or("未知错误");
+                                        let error_msg =
+                                            data["error"]["message"].as_str().unwrap_or("未知错误");
                                         tracing::error!("API 错误: {}", error_msg);
-                                        let _ = result_tx.send(Err(anyhow::anyhow!("API 错误: {}", error_msg))).await;
+                                        let _ = result_tx
+                                            .send(Err(anyhow::anyhow!("API 错误: {}", error_msg)))
+                                            .await;
                                         return;
                                     }
                                     _ => {
@@ -290,7 +315,9 @@ impl ConnectionPool {
                     }
                     Err(e) => {
                         tracing::error!("WebSocket 错误: {}", e);
-                        let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 错误: {}", e))).await;
+                        let _ = result_tx
+                            .send(Err(anyhow::anyhow!("WebSocket 错误: {}", e)))
+                            .await;
                         return;
                     }
                     _ => {}
@@ -302,17 +329,20 @@ impl ConnectionPool {
                     // 必须在过滤标点之前比较，因为词库用顿号分隔
                     if !corpus_for_check.is_empty() && final_text == corpus_for_check {
                         tracing::warn!("检测到词库回显，过滤无效结果");
-                        let _ = result_tx.send(Err(anyhow::anyhow!("录音无效，已跳过"))).await;
+                        let _ = result_tx
+                            .send(Err(anyhow::anyhow!("录音无效，已跳过")))
+                            .await;
                         break;
                     }
 
                     // 实时模式下删除所有标点符号
-                    let punctuation = ['。', '，', '！', '？', '、', '；', '：', '"', '"',
-                                       '.', ',', '!', '?', ';', ':', '"', '\'',
-                                       '（', '）', '(', ')', '【', '】', '[', ']',
-                                       '《', '》', '<', '>', '—', '…', '·',
-                                       '\u{2018}', '\u{2019}'];  // 中文单引号 ' '
-                    final_text = final_text.chars()
+                    let punctuation = [
+                        '。', '，', '！', '？', '、', '；', '：', '"', '"', '.', ',', '!', '?',
+                        ';', ':', '"', '\'', '（', '）', '(', ')', '【', '】', '[', ']', '《',
+                        '》', '<', '>', '—', '…', '·', '\u{2018}', '\u{2019}',
+                    ]; // 中文单引号 ' '
+                    final_text = final_text
+                        .chars()
                         .filter(|c| !punctuation.contains(c))
                         .collect();
 

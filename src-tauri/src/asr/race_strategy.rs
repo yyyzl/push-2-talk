@@ -1,14 +1,17 @@
+use super::{DoubaoASRClient, QwenASRClient, SenseVoiceClient};
+use anyhow::Result;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use anyhow::Result;
-use super::{QwenASRClient, SenseVoiceClient, DoubaoASRClient};
 
 pub async fn transcribe_with_fallback_clients(
     qwen_client: QwenASRClient,
     sensevoice_client: SenseVoiceClient,
     audio_data: Vec<u8>,
 ) -> Result<String> {
-    tracing::info!("启动主备并行转录 (内存模式), 音频大小: {} bytes", audio_data.len());
+    tracing::info!(
+        "启动主备并行转录 (内存模式), 音频大小: {} bytes",
+        audio_data.len()
+    );
 
     let audio_data_sensevoice = audio_data.clone();
     let sensevoice_result: Arc<Mutex<Option<Result<String>>>> = Arc::new(Mutex::new(None));
@@ -16,7 +19,9 @@ pub async fn transcribe_with_fallback_clients(
 
     let sensevoice_handle = tokio::spawn(async move {
         tracing::info!("🚀 SenseVoice 任务启动");
-        let result = sensevoice_client.transcribe_bytes(&audio_data_sensevoice).await;
+        let result = sensevoice_client
+            .transcribe_bytes(&audio_data_sensevoice)
+            .await;
         match &result {
             Ok(text) => tracing::info!("✅SenseVoice 转录成功: {}", text),
             Err(e) => tracing::error!("❌SenseVoice 转录失败: {}", e),
@@ -89,7 +94,10 @@ pub async fn transcribe_doubao_sensevoice_race(
     sensevoice_client: SenseVoiceClient,
     audio_data: Vec<u8>,
 ) -> Result<String> {
-    tracing::info!("启动豆包+SenseVoice并行转录, 音频大小: {} bytes", audio_data.len());
+    tracing::info!(
+        "启动豆包+SenseVoice并行转录, 音频大小: {} bytes",
+        audio_data.len()
+    );
 
     let audio_data_sensevoice = audio_data.clone();
     let sensevoice_result: Arc<Mutex<Option<Result<String>>>> = Arc::new(Mutex::new(None));
@@ -97,7 +105,9 @@ pub async fn transcribe_doubao_sensevoice_race(
 
     let sensevoice_handle = tokio::spawn(async move {
         tracing::info!("🚀 SenseVoice 任务启动");
-        let result = sensevoice_client.transcribe_bytes(&audio_data_sensevoice).await;
+        let result = sensevoice_client
+            .transcribe_bytes(&audio_data_sensevoice)
+            .await;
         match &result {
             Ok(text) => tracing::info!("✅SenseVoice 转录成功: {}", text),
             Err(e) => tracing::error!("❌SenseVoice 转录失败: {}", e),

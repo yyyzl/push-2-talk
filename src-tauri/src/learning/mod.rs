@@ -9,11 +9,11 @@
 // - llm_judge: LLM 词汇判断器
 // - coordinator: 学习流程协调器
 
-pub mod store;
-pub mod validator;
+pub mod coordinator;
 pub mod diff_analyzer;
 pub mod llm_judge;
-pub mod coordinator;
+pub mod store;
+pub mod validator;
 
 /// 统一的词字符判断函数
 ///

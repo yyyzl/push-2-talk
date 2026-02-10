@@ -39,12 +39,17 @@
 - Tailwind CSS is used in JSX; keep class ordering consistent with nearby files.
 
 ## Testing Guidelines
+- Development must follow TDD: write/adjust test methods first, then implement code.
+- Validate test feasibility before implementation by running targeted tests and confirming they execute meaningfully.
+- Implement only after test validation, then make tests pass and refactor within scope.
 - Backend: run `cargo test` in `src-tauri/` for Rust tests.
 - API checks: use `cargo run --bin test_api` when touching ASR integrations.
 - Frontend: no dedicated JS test runner yet; smoke-test via `npm run dev` and `npm run build`.
+- Final quality gate: ensure overall Cargo compilation passes in `src-tauri/` (at least `cargo check`; prefer `cargo build` for release readiness).
 
 ## Windows-Only & Architecture Notes
 - This repo targets Windows 10/11 only; avoid cross-platform abstractions and `#[cfg(target_os = ...)]` branches unless required.
+- All compile/build/package steps are Windows-only; always use Windows tooling/commands (PowerShell, `npm run tauri ...`, `cargo` on Windows) and avoid Linux/macOS build paths.
 - Prefer Win32 APIs for hotkeys/input (GetAsyncKeyState, SendInput) and registry for auto-start.
 - Global hotkeys require admin rights; preserve ghost-key detection and the 500ms watchdog when editing hotkey logic.
 - Keep clipboard/focus timing safeguards (100ms delay before capture, 150ms delay before insert) in assistant/overlay flows.

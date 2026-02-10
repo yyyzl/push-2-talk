@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Sparkles } from "lucide-react";
 import type { AsrConfig, AsrProvider } from "../types";
 import { ASR_PROVIDERS } from "../constants";
 import { ApiKeyInput, Toggle, ConfigSelect } from "../components/common";
@@ -62,11 +62,12 @@ export function AsrPage({
                 options={[
                   { value: "qwen" as AsrProvider, label: ASR_PROVIDERS.qwen.name },
                   { value: "doubao" as AsrProvider, label: ASR_PROVIDERS.doubao.name },
+                  { value: "doubao_ime" as AsrProvider, label: ASR_PROVIDERS.doubao_ime.name },
                 ]}
               />
             </div>
 
-            {asrConfig.selection.active_provider === "qwen" ? (
+            {asrConfig.selection.active_provider === "qwen" && (
               <div className="space-y-2">
                 <label className="text-xs font-bold text-stone-500">API Key</label>
                 <ApiKeyInput
@@ -82,7 +83,9 @@ export function AsrPage({
                   placeholder="sk-..."
                 />
               </div>
-            ) : (
+            )}
+
+            {asrConfig.selection.active_provider === "doubao" && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-stone-500">APP ID</label>
@@ -119,6 +122,13 @@ export function AsrPage({
               </div>
             )}
 
+            {asrConfig.selection.active_provider === "doubao_ime" && (
+              <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-700">
+                <Sparkles size={14} className="flex-shrink-0" />
+                <span>无需配置，首次使用时自动注册设备凭据。</span>
+              </div>
+            )}
+
             <div className="text-xs text-stone-400 font-semibold">
               模型：{ASR_PROVIDERS[asrConfig.selection.active_provider].model}
             </div>
@@ -140,13 +150,19 @@ export function AsrPage({
                   },
                 }))
               }
-              disabled={isRunning}
+              disabled={isRunning || asrConfig.selection.active_provider === 'doubao_ime'}
               size="xs"
               variant="orange"
             />
           </div>
 
-          {asrConfig.selection.enable_fallback && (
+          {asrConfig.selection.active_provider === 'doubao_ime' && (
+            <div className="flex items-center gap-2 p-3 bg-stone-50 border border-stone-200 rounded-xl text-xs text-stone-500">
+              <span>豆包输入法模式暂不支持备用模型配置</span>
+            </div>
+          )}
+
+          {asrConfig.selection.enable_fallback && asrConfig.selection.active_provider !== 'doubao_ime' && (
             <div className="space-y-3 p-4 bg-[var(--paper)] rounded-2xl border border-[var(--stone)]">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-stone-500">服务商</label>

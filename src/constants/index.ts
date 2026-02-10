@@ -117,6 +117,11 @@ export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {
     model: 'Doubao-Seed-ASR-2.0',
     docsUrl: 'https://www.volcengine.com/docs/6561',
   },
+  doubao_ime: {
+    name: '豆包输入法',
+    model: '免费 (自动注册)',
+    docsUrl: '',
+  },
   siliconflow: {
     name: '硅基移动',
     model: 'SenseVoiceSmall',
@@ -138,6 +143,7 @@ export const DEFAULT_ASR_CACHE = {
   active_provider: 'qwen' as AsrProvider,
   qwen: { api_key: '' },
   doubao: { app_id: '', access_token: '' },
+  doubao_ime: { device_id: '', token: '', cdid: '' },
   siliconflow: { api_key: '' }
 };
 
