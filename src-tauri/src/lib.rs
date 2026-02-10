@@ -39,7 +39,7 @@ use usage_stats::UsageStats;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
@@ -134,6 +134,277 @@ struct AppState {
     usage_stats: Arc<Mutex<UsageStats>>,
     /// 录音开始时间（用于计算录音时长）
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
+}
+
+struct TrayMenuState {
+    post_process_item: CheckMenuItem<tauri::Wry>,
+    dictionary_enhancement_item: CheckMenuItem<tauri::Wry>,
+    asr_qwen_item: CheckMenuItem<tauri::Wry>,
+    asr_doubao_item: CheckMenuItem<tauri::Wry>,
+}
+
+const TRAY_MENU_ID_SHOW: &str = "show";
+const TRAY_MENU_ID_QUIT: &str = "quit";
+const TRAY_MENU_ID_TOGGLE_POST_PROCESS: &str = "tray_toggle_post_process";
+const TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT: &str = "tray_toggle_dictionary_enhancement";
+const TRAY_MENU_ID_ASR_QWEN: &str = "tray_asr_qwen";
+const TRAY_MENU_ID_ASR_DOUBAO: &str = "tray_asr_doubao";
+
+fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
+    let Some(tray_state) = app_handle.try_state::<TrayMenuState>() else {
+        return;
+    };
+
+    if let Err(e) = tray_state
+        .post_process_item
+        .set_checked(config.enable_llm_post_process)
+    {
+        tracing::warn!("同步托盘语句润色状态失败: {}", e);
+    }
+    if let Err(e) = tray_state
+        .dictionary_enhancement_item
+        .set_checked(config.enable_dictionary_enhancement)
+    {
+        tracing::warn!("同步托盘词库增强状态失败: {}", e);
+    }
+
+    sync_asr_provider_checks(
+        &tray_state.asr_qwen_item,
+        &tray_state.asr_doubao_item,
+        &config.asr_config.selection.active_provider,
+    );
+}
+
+fn load_persisted_config() -> Result<AppConfig, String> {
+    match AppConfig::load() {
+        Ok((config, migrated)) => {
+            if migrated {
+                config
+                    .save()
+                    .map_err(|e| format!("保存迁移后的配置失败: {}", e))?;
+            }
+            Ok(config)
+        }
+        Err(e) => Err(format!("加载配置失败: {}", e)),
+    }
+}
+
+fn save_persisted_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
+    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+    sync_tray_menu_from_config(app, config);
+    let _ = app.emit("config_updated", config);
+    Ok(())
+}
+
+fn asr_provider_name(provider: &config::AsrProvider) -> &'static str {
+    match provider {
+        config::AsrProvider::Qwen => "千问",
+        config::AsrProvider::Doubao => "豆包",
+        config::AsrProvider::SiliconFlow => "硅基流动",
+    }
+}
+
+fn is_asr_provider_configured(config: &AppConfig, provider: &config::AsrProvider) -> bool {
+    match provider {
+        config::AsrProvider::Qwen => !config.asr_config.credentials.qwen_api_key.trim().is_empty(),
+        config::AsrProvider::Doubao => {
+            !config
+                .asr_config
+                .credentials
+                .doubao_app_id
+                .trim()
+                .is_empty()
+                && !config
+                    .asr_config
+                    .credentials
+                    .doubao_access_token
+                    .trim()
+                    .is_empty()
+        }
+        config::AsrProvider::SiliconFlow => !config
+            .asr_config
+            .credentials
+            .sensevoice_api_key
+            .trim()
+            .is_empty(),
+    }
+}
+
+fn sync_asr_provider_checks(
+    qwen_item: &CheckMenuItem<tauri::Wry>,
+    doubao_item: &CheckMenuItem<tauri::Wry>,
+    provider: &config::AsrProvider,
+) {
+    let qwen_checked = matches!(provider, config::AsrProvider::Qwen);
+    let doubao_checked = matches!(provider, config::AsrProvider::Doubao);
+
+    if let Err(e) = qwen_item.set_checked(qwen_checked) {
+        tracing::warn!("更新托盘千问勾选状态失败: {}", e);
+    }
+    if let Err(e) = doubao_item.set_checked(doubao_checked) {
+        tracing::warn!("更新托盘豆包勾选状态失败: {}", e);
+    }
+}
+
+async fn restart_service_with_config(
+    app_handle: AppHandle,
+    config: AppConfig,
+) -> Result<(), String> {
+    if let Err(e) = stop_app(app_handle.clone()).await {
+        tracing::warn!("切换 ASR 引擎时停止服务失败: {}", e);
+    }
+
+    let dictionary_words = learning::store::entries_to_words(&config.dictionary);
+
+    start_app(
+        app_handle,
+        config.dashscope_api_key.clone(),
+        config.siliconflow_api_key.clone(),
+        Some(config.use_realtime_asr),
+        Some(config.enable_llm_post_process),
+        Some(config.enable_dictionary_enhancement),
+        Some(config.llm_config.clone()),
+        Some(config.smart_command_config.clone()),
+        Some(config.asr_config.clone()),
+        config.hotkey_config.clone(),
+        Some(config.dual_hotkey_config.clone()),
+        Some(config.assistant_config.clone()),
+        Some(config.enable_mute_other_apps),
+        Some(dictionary_words),
+    )
+    .await
+    .map(|_| ())
+}
+
+fn refresh_post_processor_after_toggle(app_handle: &AppHandle) {
+    let state = app_handle.state::<AppState>();
+    let enable_post_process = *state.enable_post_process.lock().unwrap();
+    let enable_dictionary_enhancement = *state.enable_dictionary_enhancement.lock().unwrap();
+
+    let mut processor_guard = state.post_processor.lock().unwrap();
+    if enable_post_process || enable_dictionary_enhancement {
+        if processor_guard.is_none() {
+            match load_persisted_config() {
+                Ok(config) => {
+                    let resolved = config.llm_config.resolve_polishing();
+                    if !resolved.api_key.trim().is_empty() {
+                        *processor_guard = Some(LlmPostProcessor::new(config.llm_config));
+                    } else {
+                        tracing::warn!(
+                            "托盘开启语句润色/词库增强，但 polishing API Key 未配置，将跳过后处理"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("托盘刷新 LLM 后处理器失败: {}", e);
+                }
+            }
+        }
+    } else if processor_guard.is_some() {
+        *processor_guard = None;
+    }
+}
+
+fn toggle_post_process_from_tray(
+    app_handle: &AppHandle,
+    post_process_item: &CheckMenuItem<tauri::Wry>,
+) -> Result<(), String> {
+    let new_value = {
+        let state = app_handle.state::<AppState>();
+        let mut enabled = state.enable_post_process.lock().unwrap();
+        *enabled = !*enabled;
+        *enabled
+    };
+
+    post_process_item
+        .set_checked(new_value)
+        .map_err(|e| format!("更新托盘语句润色勾选状态失败: {}", e))?;
+
+    refresh_post_processor_after_toggle(app_handle);
+
+    let mut config = load_persisted_config()?;
+    config.enable_llm_post_process = new_value;
+    save_persisted_config(app_handle, &config)?;
+
+    tracing::info!("托盘已{}语句润色", if new_value { "开启" } else { "关闭" });
+    Ok(())
+}
+
+fn toggle_dictionary_enhancement_from_tray(
+    app_handle: &AppHandle,
+    dictionary_item: &CheckMenuItem<tauri::Wry>,
+) -> Result<(), String> {
+    let new_value = {
+        let state = app_handle.state::<AppState>();
+        let mut enabled = state.enable_dictionary_enhancement.lock().unwrap();
+        *enabled = !*enabled;
+        *enabled
+    };
+
+    dictionary_item
+        .set_checked(new_value)
+        .map_err(|e| format!("更新托盘词库增强勾选状态失败: {}", e))?;
+
+    refresh_post_processor_after_toggle(app_handle);
+
+    let mut config = load_persisted_config()?;
+    config.enable_dictionary_enhancement = new_value;
+    save_persisted_config(app_handle, &config)?;
+
+    tracing::info!("托盘已{}词库增强", if new_value { "开启" } else { "关闭" });
+    Ok(())
+}
+
+async fn switch_asr_provider_from_tray(
+    app_handle: AppHandle,
+    target_provider: config::AsrProvider,
+    qwen_item: CheckMenuItem<tauri::Wry>,
+    doubao_item: CheckMenuItem<tauri::Wry>,
+) -> Result<(), String> {
+    let mut config = load_persisted_config()?;
+
+    if !is_asr_provider_configured(&config, &target_provider) {
+        sync_asr_provider_checks(
+            &qwen_item,
+            &doubao_item,
+            &config.asr_config.selection.active_provider,
+        );
+        return Err(format!(
+            "{} 未配置凭证，无法切换",
+            asr_provider_name(&target_provider)
+        ));
+    }
+
+    if config.asr_config.selection.active_provider == target_provider {
+        sync_asr_provider_checks(&qwen_item, &doubao_item, &target_provider);
+        return Ok(());
+    }
+
+    config.asr_config.selection.active_provider = target_provider.clone();
+    save_persisted_config(&app_handle, &config)?;
+
+    {
+        let state = app_handle.state::<AppState>();
+        *state.realtime_provider.lock().unwrap() = Some(target_provider.clone());
+    }
+
+    sync_asr_provider_checks(&qwen_item, &doubao_item, &target_provider);
+
+    let is_running = {
+        let state = app_handle.state::<AppState>();
+        let running = *state.is_running.lock().unwrap();
+        running
+    };
+
+    if is_running {
+        restart_service_with_config(app_handle, config).await?;
+    }
+
+    tracing::info!(
+        "托盘切换 ASR 引擎为: {}",
+        asr_provider_name(&target_provider)
+    );
+    Ok(())
 }
 
 // Tauri Commands
@@ -258,6 +529,8 @@ async fn save_config(
     };
 
     config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+
+    sync_tray_menu_from_config(&app, &config);
 
     tracing::info!(
         "[save_config] 发送 config_updated 事件, theme={}",
@@ -2535,9 +2808,7 @@ async fn update_runtime_config(
                             tracing::info!("热更新: LLM 处理器已从配置文件初始化");
                             updated.push("LLM处理器");
                         } else {
-                            tracing::warn!(
-                                "热更新: 词库增强/后处理已启用但 API Key 未配置"
-                            );
+                            tracing::warn!("热更新: 词库增强/后处理已启用但 API Key 未配置");
                         }
                     }
                     Err(e) => {
@@ -2930,24 +3201,175 @@ pub fn run() {
                 recording_start_instant: Arc::new(Mutex::new(None)),
             };
 
-            // 创建托盘菜单
-            let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let initial_config = load_persisted_config().unwrap_or_else(|e| {
+                tracing::warn!("创建托盘菜单时加载配置失败，使用默认值: {}", e);
+                AppConfig::new()
+            });
+
+            let state_enable_post_process = *app_state.enable_post_process.lock().unwrap();
+            let state_enable_dictionary_enhancement =
+                *app_state.enable_dictionary_enhancement.lock().unwrap();
+
+            let initial_enable_post_process = initial_config.enable_llm_post_process;
+            let initial_enable_dictionary_enhancement =
+                initial_config.enable_dictionary_enhancement;
+            let initial_active_provider =
+                initial_config.asr_config.selection.active_provider.clone();
+
+            *app_state.enable_post_process.lock().unwrap() = initial_enable_post_process;
+            *app_state.enable_dictionary_enhancement.lock().unwrap() =
+                initial_enable_dictionary_enhancement;
+            *app_state.realtime_provider.lock().unwrap() = Some(initial_active_provider.clone());
+
+            if state_enable_post_process != initial_enable_post_process {
+                tracing::info!(
+                    "托盘初始化语句润色状态: {} -> {}",
+                    state_enable_post_process,
+                    initial_enable_post_process
+                );
+            }
+            if state_enable_dictionary_enhancement != initial_enable_dictionary_enhancement {
+                tracing::info!(
+                    "托盘初始化词库增强状态: {} -> {}",
+                    state_enable_dictionary_enhancement,
+                    initial_enable_dictionary_enhancement
+                );
+            }
+
+            let show_item =
+                MenuItem::with_id(app, TRAY_MENU_ID_SHOW, "显示窗口", true, None::<&str>)?;
+            let quit_item =
+                MenuItem::with_id(app, TRAY_MENU_ID_QUIT, "退出程序", true, None::<&str>)?;
+
+            let post_process_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_TOGGLE_POST_PROCESS,
+                "开启语句润色",
+                true,
+                initial_enable_post_process,
+                None::<&str>,
+            )?;
+            let dictionary_enhancement_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT,
+                "开启词库增强",
+                true,
+                initial_enable_dictionary_enhancement,
+                None::<&str>,
+            )?;
+
+            let asr_qwen_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_ASR_QWEN,
+                "千问",
+                true,
+                matches!(initial_active_provider, config::AsrProvider::Qwen),
+                None::<&str>,
+            )?;
+            let asr_doubao_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_ASR_DOUBAO,
+                "豆包",
+                true,
+                matches!(initial_active_provider, config::AsrProvider::Doubao),
+                None::<&str>,
+            )?;
+            let asr_switch_submenu = Submenu::with_items(
+                app,
+                "切换语音识别引擎",
+                true,
+                &[&asr_qwen_item, &asr_doubao_item],
+            )?;
+
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &post_process_item,
+                    &dictionary_enhancement_item,
+                    &asr_switch_submenu,
+                    &quit_item,
+                ],
+            )?;
+
+            let post_process_item_for_event = post_process_item.clone();
+            let dictionary_enhancement_item_for_event = dictionary_enhancement_item.clone();
+            let asr_qwen_item_for_event = asr_qwen_item.clone();
+            let asr_doubao_item_for_event = asr_doubao_item.clone();
+
+            app.manage(TrayMenuState {
+                post_process_item: post_process_item.clone(),
+                dictionary_enhancement_item: dictionary_enhancement_item.clone(),
+                asr_qwen_item: asr_qwen_item.clone(),
+                asr_doubao_item: asr_doubao_item.clone(),
+            });
 
             // 创建系统托盘图标
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .tooltip("PushToTalk - AI 语音转写助手")
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
+                    TRAY_MENU_ID_SHOW => {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
                     }
-                    "quit" => {
+                    TRAY_MENU_ID_TOGGLE_POST_PROCESS => {
+                        if let Err(e) =
+                            toggle_post_process_from_tray(app, &post_process_item_for_event)
+                        {
+                            tracing::error!("托盘切换语句润色失败: {}", e);
+                            let _ = app.emit("error", e);
+                        }
+                    }
+                    TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT => {
+                        if let Err(e) = toggle_dictionary_enhancement_from_tray(
+                            app,
+                            &dictionary_enhancement_item_for_event,
+                        ) {
+                            tracing::error!("托盘切换词库增强失败: {}", e);
+                            let _ = app.emit("error", e);
+                        }
+                    }
+                    TRAY_MENU_ID_ASR_QWEN => {
+                        let app_handle = app.clone();
+                        let asr_qwen_item = asr_qwen_item_for_event.clone();
+                        let asr_doubao_item = asr_doubao_item_for_event.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = switch_asr_provider_from_tray(
+                                app_handle.clone(),
+                                config::AsrProvider::Qwen,
+                                asr_qwen_item,
+                                asr_doubao_item,
+                            )
+                            .await
+                            {
+                                tracing::error!("托盘切换 ASR 到千问失败: {}", e);
+                                let _ = app_handle.emit("error", e);
+                            }
+                        });
+                    }
+                    TRAY_MENU_ID_ASR_DOUBAO => {
+                        let app_handle = app.clone();
+                        let asr_qwen_item = asr_qwen_item_for_event.clone();
+                        let asr_doubao_item = asr_doubao_item_for_event.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = switch_asr_provider_from_tray(
+                                app_handle.clone(),
+                                config::AsrProvider::Doubao,
+                                asr_qwen_item,
+                                asr_doubao_item,
+                            )
+                            .await
+                            {
+                                tracing::error!("托盘切换 ASR 到豆包失败: {}", e);
+                                let _ = app_handle.emit("error", e);
+                            }
+                        });
+                    }
+                    TRAY_MENU_ID_QUIT => {
                         app.exit(0);
                     }
                     _ => {}

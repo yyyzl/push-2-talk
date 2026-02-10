@@ -3,9 +3,21 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { nanoid } from "nanoid";
-import type { AppConfig, AppStatus, HistoryRecord, LlmConfig, TranscriptionResult, UsageStats } from "../types";
+import type {
+  AppConfig,
+  AppStatus,
+  AsrConfig,
+  AssistantConfig,
+  DictionaryEntry,
+  HistoryRecord,
+  LlmConfig,
+  TranscriptionResult,
+  UsageStats,
+} from "../types";
 import { MAX_HISTORY } from "../constants";
 import { saveHistory, loadUsageStats } from "../utils";
+import { parseEntry } from "../utils/dictionaryUtils";
+import { normalizeBuiltinDictionaryDomains } from "../utils/builtinDictionary";
 
 type UnlistenFn = () => void;
 
@@ -24,6 +36,21 @@ export type UseTauriEventListenersParams = {
   setLlmTime: React.Dispatch<React.SetStateAction<number | null>>;
   setTotalTime: React.Dispatch<React.SetStateAction<number | null>>;
   setShowCloseDialog: React.Dispatch<React.SetStateAction<boolean>>;
+
+  setApiKey?: React.Dispatch<React.SetStateAction<string>>;
+  setFallbackApiKey?: React.Dispatch<React.SetStateAction<string>>;
+  setAsrConfig?: React.Dispatch<React.SetStateAction<AsrConfig>>;
+  setUseRealtime?: React.Dispatch<React.SetStateAction<boolean>>;
+  setEnablePostProcess?: React.Dispatch<React.SetStateAction<boolean>>;
+  setEnableDictionaryEnhancement?: React.Dispatch<React.SetStateAction<boolean>>;
+  setLlmConfig?: React.Dispatch<React.SetStateAction<LlmConfig>>;
+  setAssistantConfig?: React.Dispatch<React.SetStateAction<AssistantConfig>>;
+  setEnableMuteOtherApps?: React.Dispatch<React.SetStateAction<boolean>>;
+  setTheme?: React.Dispatch<React.SetStateAction<string>>;
+  setCloseAction?: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
+  setDictionary?: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
+  setBuiltinDictionaryDomains?: React.Dispatch<React.SetStateAction<string[]>>;
+  onExternalConfigUpdated?: (config: AppConfig) => void;
 
   setHistory: React.Dispatch<React.SetStateAction<HistoryRecord[]>>;
   setUsageStats?: React.Dispatch<React.SetStateAction<UsageStats>>;
@@ -46,6 +73,20 @@ export function useTauriEventListeners({
   setLlmTime,
   setTotalTime,
   setShowCloseDialog,
+  setApiKey,
+  setFallbackApiKey,
+  setAsrConfig,
+  setUseRealtime,
+  setEnablePostProcess,
+  setEnableDictionaryEnhancement,
+  setLlmConfig,
+  setAssistantConfig,
+  setEnableMuteOtherApps,
+  setTheme,
+  setCloseAction,
+  setDictionary,
+  setBuiltinDictionaryDomains,
+  onExternalConfigUpdated,
   setHistory,
   setUsageStats,
   onPolishingFailed,
@@ -177,6 +218,40 @@ export function useTauriEventListeners({
           setError(null);
         }))) return;
 
+        if (!(await registerListener<AppConfig>("config_updated", (config) => {
+          onExternalConfigUpdated?.(config);
+
+          setApiKey?.(config.dashscope_api_key || "");
+          setFallbackApiKey?.(config.siliconflow_api_key || "");
+          if (config.asr_config) setAsrConfig?.(config.asr_config);
+          setUseRealtime?.(config.use_realtime_asr ?? true);
+          setEnablePostProcess?.(config.enable_llm_post_process ?? false);
+          setEnableDictionaryEnhancement?.(config.enable_dictionary_enhancement ?? true);
+          setLlmConfig?.(config.llm_config || llmConfigRef.current);
+          if (config.assistant_config) setAssistantConfig?.(config.assistant_config);
+          setEnableMuteOtherApps?.(config.enable_mute_other_apps ?? false);
+          setTheme?.(config.theme || "light");
+
+          const nextCloseAction = config.close_action === "close" || config.close_action === "minimize"
+            ? config.close_action
+            : null;
+          setCloseAction?.(nextCloseAction);
+
+          if (setDictionary) {
+            const configDictionary = Array.isArray(config.dictionary) ? config.dictionary : [];
+            const normalizedDictionary = configDictionary
+              .filter((entry) => typeof entry === "string" && entry.trim())
+              .map((entry) => parseEntry(entry));
+            setDictionary(normalizedDictionary);
+          }
+
+          if (setBuiltinDictionaryDomains) {
+            setBuiltinDictionaryDomains(
+              normalizeBuiltinDictionaryDomains(config.builtin_dictionary_domains || [])
+            );
+          }
+        }))) return;
+
         // 监听润色失败事件（让用户知道润色尝试过但失败了）
         if (!(await registerListener<string>("polishing_failed", (errorMessage) => {
           console.warn("润色失败:", errorMessage);
@@ -220,6 +295,20 @@ export function useTauriEventListeners({
     setHistory,
     setLlmTime,
     setOriginalTranscript,
+    setApiKey,
+    setFallbackApiKey,
+    setAsrConfig,
+    setUseRealtime,
+    setEnablePostProcess,
+    setEnableDictionaryEnhancement,
+    setLlmConfig,
+    setAssistantConfig,
+    setEnableMuteOtherApps,
+    setTheme,
+    setCloseAction,
+    setDictionary,
+    setBuiltinDictionaryDomains,
+    onExternalConfigUpdated,
     setShowCloseDialog,
     setStatus,
     setTotalTime,

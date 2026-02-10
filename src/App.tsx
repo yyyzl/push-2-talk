@@ -167,6 +167,13 @@ function App() {
   const hasLoadedConfigRef = useRef(false);
   const skipNextAutoSaveRef = useRef(true);
   const autoSaveTimerRef = useRef<number | null>(null);
+  const handleExternalConfigUpdated = useCallback(() => {
+    if (autoSaveTimerRef.current) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    skipNextAutoSaveRef.current = true;
+  }, []);
   const statusRef = useRef(status);
   useEffect(() => {
     statusRef.current = status;
@@ -209,6 +216,20 @@ function App() {
     setLlmTime,
     setTotalTime,
     setShowCloseDialog,
+    setApiKey,
+    setFallbackApiKey,
+    setAsrConfig,
+    setUseRealtime,
+    setEnablePostProcess,
+    setEnableDictionaryEnhancement,
+    setLlmConfig,
+    setAssistantConfig,
+    setEnableMuteOtherApps,
+    setTheme,
+    setCloseAction,
+    setDictionary,
+    setBuiltinDictionaryDomains,
+    onExternalConfigUpdated: handleExternalConfigUpdated,
     setHistory,
     setUsageStats,
     onPolishingFailed: (errorMessage) => {
