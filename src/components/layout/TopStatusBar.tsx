@@ -60,10 +60,10 @@ export function TopStatusBar({
         <span>
           {isRecording
             ? `正在录音 ${formatTime(recordingTime)}`
-            : isTranscribing
-              ? "语音识别中..."
+              : isTranscribing
+                ? "语音识别中..."
               : isPolishing
-                ? "文本润色中..."
+                ? "大模型增强中..."
                 : isAssistantProcessing
                   ? "AI 助手处理中..."
                   : status === "running"

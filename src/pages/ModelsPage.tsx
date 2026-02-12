@@ -229,14 +229,15 @@ export function ModelsPage({
             </p>
           </div>
 
-          {/* Polishing Provider Card - 同时绑定词库增强 */}
+          {/* 大模型增强 Provider Card - 同时绑定风格化润色/词库增强/智能纠错 */}
           <div className="relative group bg-[var(--paper)] rounded-2xl p-4 border border-[var(--stone)] hover:border-[var(--steel)] transition-all hover:shadow-md">
             <div className="flex items-center gap-2 mb-3">
-              <div className="flex items-center gap-1.5">
-                <Sparkles size={16} className="text-purple-500" />
-                <BookOpen size={14} className="text-pink-500" />
+              <div className="flex items-center gap-1">
+                <Sparkles size={16} className="text-[var(--crail)]" />
+                <BookOpen size={14} className="text-[var(--steel)]" />
+                <ShieldCheck size={14} className="text-emerald-600" />
               </div>
-              <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">语句润色 · 词库增强</label>
+              <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">大模型增强</label>
             </div>
             <ConfigSelect
               value={sharedConfig.polishing_provider_id || ""}
@@ -334,8 +335,9 @@ export function ModelsPage({
                               (!sharedConfig.learning_provider_id && isDefault);
 
                             if (isPolishingBound) {
-                              boundFeatures.push({ icon: Sparkles, color: "text-purple-500", name: "语句润色" });
-                              boundFeatures.push({ icon: BookOpen, color: "text-pink-500", name: "词库增强" });
+                              boundFeatures.push({ icon: Sparkles, color: "text-[var(--crail)]", name: "风格化润色" });
+                              boundFeatures.push({ icon: BookOpen, color: "text-[var(--steel)]", name: "词库增强" });
+                              boundFeatures.push({ icon: ShieldCheck, color: "text-emerald-600", name: "智能纠错" });
                             }
                             if (isAssistantBound) {
                               boundFeatures.push({ icon: MessageSquare, color: "text-sky-500", name: "AI 助手" });

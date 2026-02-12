@@ -24,6 +24,7 @@ export type ConfigOverrides = {
   useRealtime?: boolean;
   enablePostProcess?: boolean;
   enableDictionaryEnhancement?: boolean;
+  enableUserCorrectionEnhancement?: boolean;
   llmConfig?: LlmConfig;
   assistantConfig?: AssistantConfig;
   asrConfig?: AsrConfig;

@@ -191,6 +191,8 @@ pub struct HotkeyService {
     dictation_config: Arc<RwLock<HotkeyConfig>>,
     /// AI助手模式快捷键配置
     assistant_config: Arc<RwLock<HotkeyConfig>>,
+    /// 用户纠错模式快捷键配置
+    correction_config: Arc<RwLock<HotkeyConfig>>,
     /// 内部状态
     state: Arc<Mutex<HotkeyState>>,
     /// 监听线程是否已启动
@@ -210,6 +212,16 @@ impl HotkeyService {
                 mode: crate::config::HotkeyMode::Press,
                 enable_release_lock: false,
                 release_mode_keys: None, // AI助手模式不支持松手模式
+            })),
+            correction_config: Arc::new(RwLock::new(HotkeyConfig {
+                keys: vec![
+                    HotkeyKey::ControlLeft,
+                    HotkeyKey::ShiftLeft,
+                    HotkeyKey::Space,
+                ],
+                mode: crate::config::HotkeyMode::Press,
+                enable_release_lock: false,
+                release_mode_keys: None,
             })),
             state: Arc::new(Mutex::new(HotkeyState::default())),
             listener_started: Arc::new(AtomicBool::new(false)),
@@ -320,6 +332,7 @@ impl HotkeyService {
         let is_active = Arc::clone(&self.is_active);
         let dictation_config = Arc::clone(&self.dictation_config);
         let assistant_config = Arc::clone(&self.assistant_config);
+        let correction_config = Arc::clone(&self.correction_config);
         let state = Arc::clone(&self.state);
         let on_start = Arc::clone(&self.on_start);
         let on_stop = Arc::clone(&self.on_stop);
@@ -339,6 +352,7 @@ impl HotkeyService {
 
                 let mut prev_dictation_down = false;
                 let mut prev_assistant_down = false;
+                let mut prev_correction_down = false;
                 let mut prev_release_down = false;
 
                 loop {
@@ -346,9 +360,11 @@ impl HotkeyService {
 
                     let dictation_cfg = dictation_config.read().unwrap().clone();
                     let assistant_cfg = assistant_config.read().unwrap().clone();
+                    let correction_cfg = correction_config.read().unwrap().clone();
 
                     let dictation_down = is_hotkey_pressed_strict(&dictation_cfg.keys);
                     let assistant_down = is_hotkey_pressed_strict(&assistant_cfg.keys);
+                    let correction_down = is_hotkey_pressed_strict(&correction_cfg.keys);
                     let release_down = dictation_cfg
                         .release_mode_keys
                         .as_deref()
@@ -359,6 +375,7 @@ impl HotkeyService {
                     if !is_active.load(Ordering::Relaxed) {
                         prev_dictation_down = dictation_down;
                         prev_assistant_down = assistant_down;
+                        prev_correction_down = correction_down;
                         prev_release_down = release_down;
                         continue;
                     }
@@ -367,6 +384,7 @@ impl HotkeyService {
                     let dictation_fall = !dictation_down && prev_dictation_down;
                     let assistant_rise = assistant_down && !prev_assistant_down;
                     let assistant_fall = !assistant_down && prev_assistant_down;
+                    let correction_rise = correction_down && !prev_correction_down;
                     let release_rise = release_down && !prev_release_down;
 
                     // 更新 pressed_keys（仅用于调试信息）
@@ -380,6 +398,9 @@ impl HotkeyService {
                             keys_to_check.insert(key.clone());
                         }
                         for key in assistant_cfg.keys.iter() {
+                            keys_to_check.insert(key.clone());
+                        }
+                        for key in correction_cfg.keys.iter() {
                             keys_to_check.insert(key.clone());
                         }
                         if let Some(ref keys) = dictation_cfg.release_mode_keys {
@@ -410,7 +431,7 @@ impl HotkeyService {
                             s.is_release_mode_triggered = false;
                             stop_action = Some((TriggerMode::Dictation, true));
                         } else if !s.is_recording {
-                            // 确定触发模式（优先级：松手模式 > 普通听写 > AI助手）
+                            // 确定触发模式（优先级：松手模式 > 用户纠错 > 普通听写 > AI助手）
                             if release_rise {
                                 tracing::info!("检测到快捷键按下: 听写模式 (松手模式)");
                                 s.is_recording = true;
@@ -418,6 +439,10 @@ impl HotkeyService {
                                 s.is_release_mode_triggered = true;
                                 s.watchdog_running = false;
                                 start_action = Some((TriggerMode::Dictation, true));
+                            } else if correction_rise {
+                                tracing::info!("检测到快捷键按下: 用户纠错模式");
+                                // 用户纠错是一次性触发，不进入录音状态
+                                start_action = Some((TriggerMode::UserCorrection, false));
                             } else if dictation_rise {
                                 let mode_desc = match dictation_cfg.mode {
                                     crate::config::HotkeyMode::Press => "普通模式",
@@ -488,6 +513,7 @@ impl HotkeyService {
                                         }
                                     }
                                 },
+                                Some(TriggerMode::UserCorrection) => {}
                                 None => {}
                             }
                         }
@@ -506,6 +532,7 @@ impl HotkeyService {
 
                     prev_dictation_down = dictation_down;
                     prev_assistant_down = assistant_down;
+                    prev_correction_down = correction_down;
                     prev_release_down = release_down;
                 }
             }
@@ -519,6 +546,7 @@ impl HotkeyService {
                 let is_active_inner = Arc::clone(&is_active);
                 let dictation_config_inner = Arc::clone(&dictation_config);
                 let assistant_config_inner = Arc::clone(&assistant_config);
+                let correction_config_inner = Arc::clone(&correction_config);
                 let state_inner = Arc::clone(&state);
                 let on_start_inner = Arc::clone(&on_start);
                 let on_stop_inner = Arc::clone(&on_stop);
@@ -540,13 +568,18 @@ impl HotkeyService {
                             if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
                                 let dictation_cfg = dictation_config_inner.read().unwrap().clone();
                                 let assistant_cfg = assistant_config_inner.read().unwrap().clone();
+                                let correction_cfg =
+                                    correction_config_inner.read().unwrap().clone();
                                 let mut s = state_inner.lock().unwrap();
 
                                 s.pressed_keys.insert(hotkey_key);
 
                                 // 调试日志：检测按键数量异常（可能有键卡死）
-                                let max_keys =
-                                    dictation_cfg.keys.len().max(assistant_cfg.keys.len());
+                                let max_keys = dictation_cfg
+                                    .keys
+                                    .len()
+                                    .max(assistant_cfg.keys.len())
+                                    .max(correction_cfg.keys.len());
                                 if s.pressed_keys.len() > max_keys + 2 {
                                     // 仅在确实异常时输出，使用 debug 级别避免日志刷屏
                                     tracing::debug!(
@@ -557,7 +590,12 @@ impl HotkeyService {
                                 }
 
                                 // 严格匹配：检查是否匹配三种快捷键配置
-                                let (matches_dictation, matches_assistant, matches_release_mode) = {
+                                let (
+                                    matches_dictation,
+                                    matches_assistant,
+                                    matches_correction,
+                                    matches_release_mode,
+                                ) = {
                                     // 听写模式快捷键
                                     let contains_dictation = dictation_cfg
                                         .keys
@@ -573,6 +611,14 @@ impl HotkeyService {
                                         .all(|k| s.pressed_keys.contains(k));
                                     let count_assistant =
                                         s.pressed_keys.len() == assistant_cfg.keys.len();
+
+                                    // 用户纠错模式快捷键
+                                    let contains_correction = correction_cfg
+                                        .keys
+                                        .iter()
+                                        .all(|k| s.pressed_keys.contains(k));
+                                    let count_correction =
+                                        s.pressed_keys.len() == correction_cfg.keys.len();
 
                                     // 松手模式快捷键（仅听写模式支持）
                                     let matches_release = if let Some(ref release_keys) =
@@ -590,6 +636,7 @@ impl HotkeyService {
                                     (
                                         contains_dictation && count_dictation,
                                         contains_assistant && count_assistant,
+                                        contains_correction && count_correction,
                                         matches_release,
                                     )
                                 };
@@ -613,6 +660,16 @@ impl HotkeyService {
                                 }
 
                                 if !s.is_recording {
+                                    // 用户纠错模式是一次性触发，不进入录音态
+                                    if matches_correction {
+                                        tracing::info!("检测到快捷键按下: 用户纠错模式");
+                                        drop(s);
+                                        if let Some(cb) = on_start_inner.read().unwrap().as_ref() {
+                                            cb(TriggerMode::UserCorrection, false);
+                                        }
+                                        return;
+                                    }
+
                                     // 确定触发模式（优先级：松手模式 > 普通听写 > AI助手）
                                     let (trigger_mode, is_release_mode) = if matches_release_mode {
                                         (Some(TriggerMode::Dictation), true)
@@ -711,6 +768,9 @@ impl HotkeyService {
                                                             .all(|k| s.pressed_keys.contains(k));
                                                         (soft_pressed, cfg.keys.clone())
                                                     }
+                                                    Some(TriggerMode::UserCorrection) => {
+                                                        (false, vec![])
+                                                    }
                                                     None => (false, vec![]),
                                                 };
                                                 drop(s);
@@ -786,6 +846,8 @@ impl HotkeyService {
                             if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
                                 let dictation_cfg = dictation_config_inner.read().unwrap().clone();
                                 let assistant_cfg = assistant_config_inner.read().unwrap().clone();
+                                let correction_cfg =
+                                    correction_config_inner.read().unwrap().clone();
                                 let mut s = state_inner.lock().unwrap();
 
                                 s.pressed_keys.remove(&hotkey_key);
@@ -818,6 +880,10 @@ impl HotkeyService {
                                         .iter()
                                         .all(|k| s.pressed_keys.contains(k)),
                                     Some(TriggerMode::AiAssistant) => assistant_cfg
+                                        .keys
+                                        .iter()
+                                        .all(|k| s.pressed_keys.contains(k)),
+                                    Some(TriggerMode::UserCorrection) => correction_cfg
                                         .keys
                                         .iter()
                                         .all(|k| s.pressed_keys.contains(k)),
@@ -901,14 +967,16 @@ impl HotkeyService {
         config.validate()?;
 
         tracing::info!(
-            "激活双模式快捷键服务 (听写: {}, AI助手: {})",
+            "激活多模式快捷键服务 (听写: {}, AI助手: {}, 用户纠错: {})",
             config.dictation.format_display(),
-            config.assistant.format_display()
+            config.assistant.format_display(),
+            config.correction.format_display()
         );
 
         // 更新配置
         *self.dictation_config.write().unwrap() = config.dictation;
         *self.assistant_config.write().unwrap() = config.assistant;
+        *self.correction_config.write().unwrap() = config.correction;
 
         // 更新回调
         *self.on_start.write().unwrap() = Some(Arc::new(on_start));
@@ -964,14 +1032,16 @@ impl HotkeyService {
         let s = self.state.lock().unwrap();
         let dictation_cfg = self.dictation_config.read().unwrap();
         let assistant_cfg = self.assistant_config.read().unwrap();
+        let correction_cfg = self.correction_config.read().unwrap();
         format!(
-            "is_active: {}, is_recording: {}, pressed_keys: {:?}, trigger_mode: {:?}, dictation_hotkey: {}, assistant_hotkey: {}",
+            "is_active: {}, is_recording: {}, pressed_keys: {:?}, trigger_mode: {:?}, dictation_hotkey: {}, assistant_hotkey: {}, correction_hotkey: {}",
             self.is_active.load(Ordering::Relaxed),
             s.is_recording,
             s.pressed_keys,
             s.current_trigger_mode,
             dictation_cfg.format_display(),
-            assistant_cfg.format_display()
+            assistant_cfg.format_display(),
+            correction_cfg.format_display()
         )
     }
 }

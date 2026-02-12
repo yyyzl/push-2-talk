@@ -167,7 +167,11 @@ impl FuzzyMatcher {
                 }
                 c if c.is_ascii_uppercase() => {
                     // 大写字母：可能是驼峰边界
-                    if !current.is_empty() && current.chars().last().map_or(false, |p| p.is_ascii_lowercase())
+                    if !current.is_empty()
+                        && current
+                            .chars()
+                            .last()
+                            .map_or(false, |p| p.is_ascii_lowercase())
                     {
                         // 前一个是小写，当前是大写 → 驼峰边界
                         parts.push(current.clone());
@@ -235,7 +239,11 @@ impl FuzzyMatcher {
     }
 
     /// 按模式计算查询键
-    fn compute_query_key(encoder: &DoubleMetaphone, tokens: &[&str], use_alternate: bool) -> String {
+    fn compute_query_key(
+        encoder: &DoubleMetaphone,
+        tokens: &[&str],
+        use_alternate: bool,
+    ) -> String {
         let mut codes = Vec::with_capacity(tokens.len());
         for token in tokens {
             let dm = encoder.double_metaphone(token);

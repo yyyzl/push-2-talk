@@ -37,6 +37,21 @@
         "focusable": true
       },
       {
+        "title": "用户纠错",
+        "label": "correction",
+        "url": "correction.html",
+        "width": 420,
+        "height": 320,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "focusable": true
+      },
+      {
         "title": "Recording Overlay",
         "label": "overlay",
         "url": "overlay.html",

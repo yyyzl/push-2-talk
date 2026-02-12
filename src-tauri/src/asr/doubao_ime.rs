@@ -518,10 +518,7 @@ mod implementation {
         })
     }
 
-    async fn with_request_timeout<T, F>(
-        request_name: &'static str,
-        request_future: F,
-    ) -> Result<T>
+    async fn with_request_timeout<T, F>(request_name: &'static str, request_future: F) -> Result<T>
     where
         F: Future<Output = std::result::Result<T, reqwest::Error>>,
     {
@@ -1438,11 +1435,9 @@ mod implementation {
 
         #[tokio::test]
         async fn request_timeout_allows_fast_response() {
-            let result = with_request_timeout("fast-test", async {
-                Ok::<_, reqwest::Error>("ok")
-            })
-            .await
-            .expect("fast request should succeed");
+            let result = with_request_timeout("fast-test", async { Ok::<_, reqwest::Error>("ok") })
+                .await
+                .expect("fast request should succeed");
 
             assert_eq!(result, "ok");
         }

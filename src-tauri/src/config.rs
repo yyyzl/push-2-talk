@@ -1,5 +1,6 @@
 // src-tauri/src/config.rs
 
+use crate::manual_correction::UserCorrectionRecord;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -75,6 +76,19 @@ pub enum TriggerMode {
     Dictation,
     /// AI助手模式：(可选)选中文本 + 语音指令 → ASR → LLM处理 → 插入/替换文本
     AiAssistant,
+    /// 用户纠错模式：选中文本后手动输入纠错内容并替换
+    UserCorrection,
+}
+
+impl TriggerMode {
+    /// 获取显示名称（用于日志）
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            TriggerMode::Dictation => "听写",
+            TriggerMode::AiAssistant => "AI助手",
+            TriggerMode::UserCorrection => "用户纠错",
+        }
+    }
 }
 
 // ============================================================================
@@ -332,6 +346,9 @@ pub struct DualHotkeyConfig {
     /// AI助手模式快捷键（默认 Alt+Space）
     #[serde(default = "default_assistant_hotkey")]
     pub assistant: HotkeyConfig,
+    /// 用户纠错模式快捷键（默认 Ctrl+Shift+Space）
+    #[serde(default = "default_correction_hotkey")]
+    pub correction: HotkeyConfig,
 }
 
 fn default_dictation_hotkey() -> HotkeyConfig {
@@ -352,11 +369,25 @@ fn default_assistant_hotkey() -> HotkeyConfig {
     }
 }
 
+fn default_correction_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        keys: vec![
+            HotkeyKey::ControlLeft,
+            HotkeyKey::ShiftLeft,
+            HotkeyKey::Space,
+        ],
+        mode: HotkeyMode::Press,
+        enable_release_lock: false,
+        release_mode_keys: None,
+    }
+}
+
 impl Default for DualHotkeyConfig {
     fn default() -> Self {
         Self {
             dictation: default_dictation_hotkey(),
             assistant: default_assistant_hotkey(),
+            correction: default_correction_hotkey(),
         }
     }
 }
@@ -365,9 +396,9 @@ impl DualHotkeyConfig {
     /// 验证双快捷键配置
     ///
     /// 检查：
-    /// 1. 两个快捷键各自有效
-    /// 2. 两个快捷键不冲突（不完全相同）
-    /// 3. 两个快捷键不存在子集关系（避免按键冲突）
+    /// 1. 各快捷键各自有效
+    /// 2. 不冲突（不完全相同）
+    /// 3. 不存在子集关系（避免按键冲突）
     pub fn validate(&self) -> Result<()> {
         // 验证各自配置
         self.dictation
@@ -376,24 +407,57 @@ impl DualHotkeyConfig {
         self.assistant
             .validate()
             .map_err(|e| anyhow::anyhow!("AI助手模式快捷键配置无效: {}", e))?;
+        self.correction
+            .validate()
+            .map_err(|e| anyhow::anyhow!("用户纠错模式快捷键配置无效: {}", e))?;
 
-        // 检查冲突：两个快捷键的按键集合不能完全相同
+        // 检查冲突：各快捷键按键集合不能完全相同
         let dictation_set: HashSet<_> = self.dictation.keys.iter().collect();
         let assistant_set: HashSet<_> = self.assistant.keys.iter().collect();
+        let correction_set: HashSet<_> = self.correction.keys.iter().collect();
 
         if dictation_set == assistant_set {
             anyhow::bail!("听写模式和AI助手模式不能使用相同的快捷键");
+        }
+        if dictation_set == correction_set {
+            anyhow::bail!("听写模式和用户纠错模式不能使用相同的快捷键");
+        }
+        if assistant_set == correction_set {
+            anyhow::bail!("AI助手模式和用户纠错模式不能使用相同的快捷键");
         }
 
         // 检查子集关系：一组快捷键不能是另一组的子集
         // 例如：听写 Ctrl+Space，助手 Ctrl+Shift+Space 会导致冲突
         // 因为按下 Ctrl+Shift+Space 时必须先经过 Ctrl+Space 状态
-        if dictation_set.is_subset(&assistant_set) || assistant_set.is_subset(&dictation_set) {
+        if dictation_set.is_subset(&assistant_set)
+            || assistant_set.is_subset(&dictation_set)
+            || dictation_set.is_subset(&correction_set)
+            || correction_set.is_subset(&dictation_set)
+            || assistant_set.is_subset(&correction_set)
+            || correction_set.is_subset(&assistant_set)
+        {
             anyhow::bail!(
                 "一组快捷键不能包含另一组快捷键（这会导致按键冲突）。\n\
                  例如：Ctrl+Space 和 Ctrl+Shift+Space 会冲突，\n\
                  因为按下后者时会先触发前者。"
             );
+        }
+
+        // release_mode_keys 也不能与其他主快捷键冲突
+        if let Some(release_keys) = self.dictation.release_mode_keys.as_ref() {
+            let release_set: HashSet<_> = release_keys.iter().collect();
+            if release_set == assistant_set || release_set == correction_set {
+                anyhow::bail!("松手模式快捷键不能与 AI 助手/用户纠错快捷键相同");
+            }
+            if release_set.is_subset(&assistant_set)
+                || assistant_set.is_subset(&release_set)
+                || release_set.is_subset(&correction_set)
+                || correction_set.is_subset(&release_set)
+            {
+                anyhow::bail!(
+                    "松手模式快捷键不能与 AI 助手/用户纠错快捷键存在子集关系（会导致按键冲突）"
+                );
+            }
         }
 
         Ok(())
@@ -557,6 +621,9 @@ pub struct AppConfig {
     /// 语句润色：是否启用“词库增强”（将个人词库注入提示词用于同音词纠错）
     #[serde(default = "default_enable_dictionary_enhancement")]
     pub enable_dictionary_enhancement: bool,
+    /// 是否在 LLM 润色时启用“用户纠错记录增强”
+    #[serde(default)]
+    pub enable_user_correction_enhancement: bool,
     #[serde(default)]
     pub llm_config: LlmConfig,
     /// Smart Command 独立配置（保留以便向后兼容）
@@ -589,6 +656,9 @@ pub struct AppConfig {
     /// 个人词典（热词列表）- 简化格式："word" 或 "word|auto"
     #[serde(default)]
     pub dictionary: Vec<String>,
+    /// 用户手动纠错记录（origin_text -> corrected_text）
+    #[serde(default)]
+    pub user_correction_records: Vec<UserCorrectionRecord>,
     /// 内置词库领域（用于组合请求词库）
     #[serde(default)]
     pub builtin_dictionary_domains: Vec<String>,
@@ -1203,6 +1273,7 @@ impl AppConfig {
             use_realtime_asr: default_use_realtime_asr(),
             enable_llm_post_process: false,
             enable_dictionary_enhancement: default_enable_dictionary_enhancement(),
+            enable_user_correction_enhancement: false,
             llm_config: LlmConfig::default(),
             smart_command_config: SmartCommandConfig::default(),
             assistant_config: AssistantConfig::default(),
@@ -1214,6 +1285,7 @@ impl AppConfig {
             transcription_mode: TranscriptionMode::default(),
             enable_mute_other_apps: false,
             dictionary: Vec::new(),
+            user_correction_records: Vec::new(),
             builtin_dictionary_domains: Vec::new(),
             theme: default_theme(),
         }

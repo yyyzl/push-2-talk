@@ -1,6 +1,7 @@
 // src/App.tsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import {
   CheckCircle2,
   AlertCircle,
@@ -11,6 +12,7 @@ import type {
   AssistantConfig,
   DualHotkeyConfig,
   LlmConfig,
+  UserCorrectionRecord,
   UsageStats,
 } from "./types";
 import type { AppPage } from "./pages/types";
@@ -39,6 +41,7 @@ import { LlmPage } from "./pages/LlmPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
 import { HistoryPage } from "./pages/HistoryPage";
+import { UserCorrectionsPage } from "./pages/UserCorrectionsPage";
 import { HotkeysPage } from "./pages/HotkeysPage";
 import { PreferencesPage } from "./pages/PreferencesPage";
 import { HelpPage } from "./pages/HelpPage";
@@ -70,6 +73,7 @@ function App() {
   const [useRealtime, setUseRealtime] = useState(false);
   const [enablePostProcess, setEnablePostProcess] = useState(false);
   const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(false);
+  const [enableUserCorrectionEnhancement, setEnableUserCorrectionEnhancement] = useState(false);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
@@ -99,6 +103,7 @@ function App() {
     handleBatchDelete,
   } = useDictionary();
   const [builtinDictionaryDomains, setBuiltinDictionaryDomains] = useState<string[]>([]);
+  const [userCorrectionRecords, setUserCorrectionRecords] = useState<UserCorrectionRecord[]>([]);
   const {
     history,
     setHistory,
@@ -172,6 +177,7 @@ function App() {
   const configLoadEpochRef = useRef(0);
   const lastSeenConfigEpochRef = useRef(0);
   const autoSaveTimerRef = useRef<number | null>(null);
+  const skipNextAutoSaveRef = useRef(false);
   const handleExternalConfigUpdated = useCallback(() => {
     if (autoSaveTimerRef.current) {
       window.clearTimeout(autoSaveTimerRef.current);
@@ -207,10 +213,15 @@ function App() {
   useEffect(() => {
     enableDictionaryEnhancementRef.current = enableDictionaryEnhancement;
   }, [enableDictionaryEnhancement]);
+  const enableUserCorrectionEnhancementRef = useRef(enableUserCorrectionEnhancement);
+  useEffect(() => {
+    enableUserCorrectionEnhancementRef.current = enableUserCorrectionEnhancement;
+  }, [enableUserCorrectionEnhancement]);
   useTauriEventListeners({
     llmConfigRef,
     enablePostProcessRef,
     enableDictionaryEnhancementRef,
+    enableUserCorrectionEnhancementRef,
     setActivePresetName,
     setStatus,
     setError,
@@ -227,6 +238,7 @@ function App() {
     setUseRealtime,
     setEnablePostProcess,
     setEnableDictionaryEnhancement,
+    setEnableUserCorrectionEnhancement,
     setLlmConfig,
     setAssistantConfig,
     setEnableMuteOtherApps,
@@ -234,15 +246,16 @@ function App() {
     setCloseAction,
     setDictionary,
     setBuiltinDictionaryDomains,
+    setUserCorrectionRecords,
     onExternalConfigUpdated: handleExternalConfigUpdated,
     setHistory,
     setUsageStats,
     onPolishingFailed: (errorMessage) => {
-      // 显示润色失败提示（截断过长的错误信息）
+      // 显示增强失败提示（截断过长的错误信息）
       const shortMsg = errorMessage.length > 50
         ? errorMessage.slice(0, 50) + "..."
         : errorMessage;
-      showToast(`润色失败：${shortMsg}，已显示原文`);
+      showToast(`大模型增强失败：${shortMsg}，已显示原文`);
     },
   });
 
@@ -287,6 +300,8 @@ function App() {
     setEnablePostProcess,
     enableDictionaryEnhancement,
     setEnableDictionaryEnhancement,
+    enableUserCorrectionEnhancement,
+    setEnableUserCorrectionEnhancement,
     llmConfig,
     setLlmConfig,
     assistantConfig,
@@ -298,6 +313,7 @@ function App() {
     setDictionary,
     builtinDictionaryDomains,
     setBuiltinDictionaryDomains,
+    setUserCorrectionRecords,
     status,
     setStatus,
     setError,
@@ -426,6 +442,7 @@ function App() {
     const configHash = JSON.stringify({
       enablePostProcess,
       enableDictionaryEnhancement,
+      enableUserCorrectionEnhancement,
       llmConfig,
       assistantConfig,
       enableMuteOtherApps,
@@ -448,6 +465,7 @@ function App() {
     void applyRuntimeConfig({
       enablePostProcess,
       enableDictionaryEnhancement,
+      enableUserCorrectionEnhancement,
       llmConfig,
       assistantConfig,
       enableMuteOtherApps,
@@ -459,7 +477,7 @@ function App() {
       }
       // 失败时不更新基准，下次相同配置会重试
     });
-  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
+  }, [status, enablePostProcess, enableDictionaryEnhancement, enableUserCorrectionEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
 
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
@@ -471,6 +489,10 @@ function App() {
     if (configLoadEpochRef.current !== lastSeenConfigEpochRef.current) {
       lastSeenConfigEpochRef.current = configLoadEpochRef.current;
       console.log("[App.tsx] 跳过配置加载后的首次保存 (epoch 变化)");
+      return;
+    }
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false;
       return;
     }
 
@@ -494,6 +516,7 @@ function App() {
     useRealtime,
     enablePostProcess,
     enableDictionaryEnhancement,
+    enableUserCorrectionEnhancement,
     llmConfig,
     assistantConfig,
     dictionary,
@@ -515,6 +538,83 @@ function App() {
   const isAssistantProcessing = status === "assistant_processing";
   const isConfigLocked = isRecording || isTranscribing || isPolishing || isAssistantProcessing;
 
+  const persistUserCorrectionRecords = useCallback(
+    async (records: UserCorrectionRecord[]) => {
+      try {
+        await invoke<string>("save_config", {
+          apiKey,
+          fallbackApiKey,
+          userCorrectionRecords: records,
+        });
+        setError(null);
+        return true;
+      } catch (err) {
+        setError(`保存纠错记录失败: ${String(err)}`);
+        return false;
+      }
+    },
+    [apiKey, fallbackApiKey, setError],
+  );
+
+  const handleDeleteUserCorrectionRecord = useCallback(
+    (index: number) => {
+      setUserCorrectionRecords((prev) => {
+        if (index < 0 || index >= prev.length) return prev;
+        const next = prev.filter((_, i) => i !== index);
+        void persistUserCorrectionRecords(next).then((success) => {
+          if (success) {
+            showToast("已删除纠错记录");
+          }
+        });
+        return next;
+      });
+    },
+    [persistUserCorrectionRecords, showToast],
+  );
+
+  const handleUpdateUserCorrectionRecord = useCallback(
+    async (index: number, correctedText: string) => {
+      const target = userCorrectionRecords[index];
+      if (!target) return false;
+
+      const trimmed = correctedText.trim();
+      if (!trimmed) {
+        showToast("纠正文不能为空");
+        return false;
+      }
+
+      if (target.corrected_text === trimmed) {
+        return true;
+      }
+
+      const next = userCorrectionRecords.map((record, i) =>
+        i === index ? { ...record, corrected_text: trimmed } : record
+      );
+      setUserCorrectionRecords(next);
+
+      const success = await persistUserCorrectionRecords(next);
+      if (success) {
+        showToast("已更新纠正文");
+        return true;
+      }
+
+      setUserCorrectionRecords(userCorrectionRecords);
+      return false;
+    },
+    [persistUserCorrectionRecords, showToast, userCorrectionRecords],
+  );
+
+  const handleClearUserCorrectionRecords = useCallback(() => {
+    if (userCorrectionRecords.length === 0) return;
+
+    setUserCorrectionRecords([]);
+    void persistUserCorrectionRecords([]).then((success) => {
+      if (success) {
+        showToast("已清空纠错记录");
+      }
+    });
+  }, [persistUserCorrectionRecords, showToast, userCorrectionRecords.length]);
+
   const navigate = (page: AppPage) => setActivePage(page);
 
   const content = (() => {
@@ -535,6 +635,7 @@ function App() {
             onOpenHistory={() => navigate("history")}
             enablePostProcess={enablePostProcess}
             enableDictionaryEnhancement={enableDictionaryEnhancement}
+            enableUserCorrectionEnhancement={enableUserCorrectionEnhancement}
           />
         );
       case "asr":
@@ -611,6 +712,15 @@ function App() {
       case "history":
         return (
           <HistoryPage history={history} onCopyText={handleCopyText} onClear={handleClearHistory} />
+        );
+      case "user-corrections":
+        return (
+          <UserCorrectionsPage
+            records={userCorrectionRecords}
+            onUpdateAt={handleUpdateUserCorrectionRecord}
+            onDeleteAt={handleDeleteUserCorrectionRecord}
+            onClear={handleClearUserCorrectionRecords}
+          />
         );
       case "hotkeys":
         return (
@@ -709,6 +819,8 @@ function App() {
                 setEnablePostProcess={setEnablePostProcess}
                 enableDictionaryEnhancement={enableDictionaryEnhancement}
                 setEnableDictionaryEnhancement={setEnableDictionaryEnhancement}
+                enableUserCorrectionEnhancement={enableUserCorrectionEnhancement}
+                setEnableUserCorrectionEnhancement={setEnableUserCorrectionEnhancement}
                 llmConfig={llmConfig}
                 setLlmConfig={setLlmConfig}
                 dualHotkeyConfig={dualHotkeyConfig}

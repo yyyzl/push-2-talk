@@ -11,6 +11,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::config::LlmConfig;
 use crate::dictionary_utils::entries_to_words;
+use crate::manual_correction::UserCorrectionRecord;
 use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
 
 /// LLM 文本润色处理器
@@ -27,57 +28,33 @@ pub struct LlmPostProcessor {
 impl LlmPostProcessor {
     const MAX_DICTIONARY_ENTRIES: usize = 200;
     const MAX_DICTIONARY_CHARS: usize = 4000;
+    const MAX_USER_CORRECTION_ENTRIES: usize = 120;
+    const MAX_USER_CORRECTION_CHARS: usize = 4000;
     /// 词库增强追加指令（当语句润色和词库增强同时开启时追加到用户预设后）
     const DICTIONARY_ENHANCEMENT_SUFFIX: &'static str = "
 
 【词库增强规则】
 请参考 <dictionary> 标签中的词汇进行音似纠错：
 - 优先判断原文词语与词库词汇在发音上是否相同或极度相似
-- 仅当发音匹配且替换后语义更合理时才执行修改
-- 不确定时保留原文";
+- 不要过度纠错，仅当发音匹配且替换后语义更合理时才执行修改";
+    /// 用户纠错增强追加指令
+    const USER_CORRECTION_ENHANCEMENT_SUFFIX: &'static str = "
+
+【用户纠错记录增强规则】
+请参考 <user_corrections> 标签中的人工纠错记录：
+- 优先复用历史“原文 -> 纠错文”模式
+- 不要过度纠错，仅在语境一致或高度相似时应用";
 
     const DICTIONARY_ONLY_SYSTEM_PROMPT: &'static str = "
-    <role>
-你是一位精通中英双语的 ASR（语音转文字）校对专家。你具备极强的语音感知能力，擅长区分“发音错误”与“语义表达差异”。
-</role>
+你是 ASR 纠错助手。只修正明显的语音识别错误，不做风格润色。
 
-<task_logic>
-你的任务是根据语境修复源文本。请遵循以下判断逻辑：
-1. 语音匹配判定：优先判断原文词语与候选词（词库提供或语境推测）在发音上是否【相同】或【极度相似】。
-2. 语境适配判定：仅当替换后的词语能显著提升整句逻辑的合理性时，才执行修改。
-3. 保守执行策略：若原文逻辑通顺，或不确定是否为语音误识，请始终保留原文。
-</task_logic>
-
-<rules>
-- 优先参考 <dictionary> 标签中的词汇。
-- 允许自主纠正：若未命中词库但发音高度相似且符合语境，应予以纠正（如：专业术语、地名）。
-- 保持原样原则：如果两个词意思相近但发音差异大（如：赞赏 vs 点赞），请务必保留原文。
-- 格式规范：将数字、百分比、日期转换为阿拉伯数字格式（如：2024年5月3日，30%）。
-- 最终输出：仅展示修正后的纯文本，不包含任何解释。
-</rules>
-
-<few_shot_examples>
-    <example>
-        <input>增加一些 feel shoot 用力</input>
-        <output>增加一些 feel shoot 用力</output>
-        <reason>“feel shoot”与“claude code”发音差异过大，不符合音似判定。</reason>
-    </example>
-    <example>
-        <input>感谢你的赞赏</input>
-        <output>感谢你的赞赏</output>
-        <reason>“赞赏”与“点赞”意思接近但读音不同，应尊重原表达。</reason>
-    </example>
-    <example>
-        <input>我认为 Gemini 三 Flash 是目前最平衡的模型</input>
-        <output>我认为 Gemini-3-Flash 是目前最平衡的模型</output>
-        <reason>“三”与“3”同音，命中专业词库，应修正。</reason>
-    </example>
-    <example>
-        <input>我又回了，VS Code</input>
-        <output>我用回了VS Code</output>
-        <reason>“又”与“用”发音接近且“我用回了”更符合逻辑语境。</reason>
-    </example>
-</few_shot_examples>";
+规则（严格执行）：
+1) 只处理 <source_text>。
+2) 优先参考 <dictionary> 与 <user_corrections>。
+3) 仅当“发音相同或极相似”且“替换后语义更合理”时才替换。
+4) 不确定时保留原文；不要改写句式，不要扩写，不要删减信息。
+5) 仅做必要格式规范：数字、日期、百分比用阿拉伯数字（如 2024年5月3日、30%）。
+6) 输出只包含最终文本，不要解释。";
 
     /// 创建新的处理器实例
     pub fn new(config: LlmConfig) -> Self {
@@ -134,6 +111,8 @@ impl LlmPostProcessor {
         raw_text: &str,
         dictionary: &[String],
         enable_dictionary_enhancement: bool,
+        user_correction_records: &[UserCorrectionRecord],
+        enable_user_correction_enhancement: bool,
     ) -> String {
         let mut message = "".to_string();
 
@@ -183,6 +162,57 @@ impl LlmPostProcessor {
 
         message.push_str("\n</dictionary>\n\n");
 
+        // 参考用户纠错记录
+        message.push_str("<user_corrections>\n");
+
+        if enable_user_correction_enhancement {
+            let mut seen = HashSet::new();
+            let mut total_valid = 0usize;
+            let mut used = 0usize;
+            let mut used_chars = 0usize;
+            let mut lines: Vec<String> = Vec::new();
+
+            for record in user_correction_records {
+                let origin = record.origin_text.trim();
+                let corrected = record.corrected_text.trim();
+                if origin.is_empty() || corrected.is_empty() || origin == corrected {
+                    continue;
+                }
+
+                total_valid += 1;
+                let key = format!("{origin}\n{corrected}");
+                if !seen.insert(key) {
+                    continue;
+                }
+
+                if used >= Self::MAX_USER_CORRECTION_ENTRIES {
+                    continue;
+                }
+
+                let line = format!("{origin} => {corrected}");
+                let next_len = line.chars().count() + 1; // + '\n'
+                if used_chars + next_len > Self::MAX_USER_CORRECTION_CHARS {
+                    continue;
+                }
+
+                lines.push(line);
+                used += 1;
+                used_chars += next_len;
+            }
+
+            if !lines.is_empty() {
+                message.push_str(&lines.join("\n"));
+                if used < total_valid {
+                    message.push_str(&format!(
+                        "\n...(纠错记录过长，已截断；原始共 {} 条)",
+                        total_valid
+                    ));
+                }
+            }
+        }
+
+        message.push_str("\n</user_corrections>\n\n");
+
         // 待处理文本
         message.push_str("\n<source_text>\n");
         message.push_str(raw_text);
@@ -204,8 +234,10 @@ impl LlmPostProcessor {
         &self,
         raw_text: &str,
         dictionary: &[String],
+        user_correction_records: &[UserCorrectionRecord],
         enable_post_process: bool,
         enable_dictionary_enhancement: bool,
+        enable_user_correction_enhancement: bool,
     ) -> Result<String> {
         if raw_text.trim().is_empty() {
             return Ok(String::new());
@@ -213,24 +245,36 @@ impl LlmPostProcessor {
 
         let system_prompt = if enable_post_process {
             let base_prompt = self.get_active_system_prompt();
-            if enable_dictionary_enhancement {
-                // 两者都开：追加词库增强指令到用户预设后
+            if enable_dictionary_enhancement || enable_user_correction_enhancement {
+                // 语句润色开启时，按开关追加增强规则
                 tracing::info!(
-                    "LLM 后处理使用预设 ID: {} + 词库增强",
+                    "LLM 后处理使用预设 ID: {} + 增强规则",
                     self.config.active_preset_id
                 );
-                format!("{}{}", base_prompt, Self::DICTIONARY_ENHANCEMENT_SUFFIX)
+                let mut prompt = base_prompt;
+                if enable_dictionary_enhancement {
+                    prompt.push_str(Self::DICTIONARY_ENHANCEMENT_SUFFIX);
+                }
+                if enable_user_correction_enhancement {
+                    prompt.push_str(Self::USER_CORRECTION_ENHANCEMENT_SUFFIX);
+                }
+                prompt
             } else {
                 tracing::info!("LLM 后处理使用预设 ID: {}", self.config.active_preset_id);
                 base_prompt
             }
         } else {
-            tracing::info!("LLM 后处理: 仅词库增强（未启用语句润色）");
+            tracing::info!("LLM 后处理: 仅增强模式（未启用语句润色）");
             Self::DICTIONARY_ONLY_SYSTEM_PROMPT.to_string()
         };
 
-        let user_message =
-            Self::build_user_message(raw_text, dictionary, enable_dictionary_enhancement);
+        let user_message = Self::build_user_message(
+            raw_text,
+            dictionary,
+            enable_dictionary_enhancement,
+            user_correction_records,
+            enable_user_correction_enhancement,
+        );
 
         self.client
             .chat_simple(&system_prompt, &user_message, ChatOptions::for_polishing())
@@ -287,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_build_user_message_without_dictionary() {
-        let msg = LlmPostProcessor::build_user_message("hello", &[], true);
+        let msg = LlmPostProcessor::build_user_message("hello", &[], true, &[], false);
         assert!(msg.contains("<source_text>"));
         assert!(!msg.contains("<user_dictionary>"));
     }
@@ -299,7 +343,7 @@ mod tests {
             "  北京  ".to_string(),
             "张三".to_string(),
         ];
-        let msg = LlmPostProcessor::build_user_message("你好", &dict, true);
+        let msg = LlmPostProcessor::build_user_message("你好", &dict, true, &[], false);
         assert!(msg.contains("<dictionary>"));
         assert!(msg.contains("张三"));
         assert!(msg.contains("北京"));
@@ -309,7 +353,38 @@ mod tests {
     #[test]
     fn test_build_user_message_with_dictionary_disabled() {
         let dict = vec!["张三".to_string()];
-        let msg = LlmPostProcessor::build_user_message("你好", &dict, false);
+        let msg = LlmPostProcessor::build_user_message("你好", &dict, false, &[], false);
         assert!(!msg.contains("<user_dictionary>"));
+    }
+
+    #[test]
+    fn test_build_user_message_with_user_corrections_enabled() {
+        let records = vec![
+            UserCorrectionRecord {
+                origin_text: "阿里钉钉".to_string(),
+                corrected_text: "阿里 DingTalk".to_string(),
+            },
+            UserCorrectionRecord {
+                origin_text: "飞书会议".to_string(),
+                corrected_text: "Feishu 会议".to_string(),
+            },
+        ];
+
+        let msg = LlmPostProcessor::build_user_message("你好", &[], false, &records, true);
+        assert!(msg.contains("<user_corrections>"));
+        assert!(msg.contains("阿里钉钉 => 阿里 DingTalk"));
+        assert!(msg.contains("飞书会议 => Feishu 会议"));
+    }
+
+    #[test]
+    fn test_build_user_message_with_user_corrections_disabled() {
+        let records = vec![UserCorrectionRecord {
+            origin_text: "原文".to_string(),
+            corrected_text: "纠正文".to_string(),
+        }];
+
+        let msg = LlmPostProcessor::build_user_message("你好", &[], false, &records, false);
+        assert!(msg.contains("<user_corrections>"));
+        assert!(!msg.contains("原文 => 纠正文"));
     }
 }

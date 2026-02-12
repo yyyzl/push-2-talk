@@ -68,11 +68,15 @@ impl NormalPipeline {
         );
 
         // 2. TNL 技术规范化（如果启用）
+        let app_config = AppConfig::load()
+            .map(|(c, _)| c)
+            .unwrap_or_else(|_| AppConfig::new());
+        let enable_user_correction_enhancement = app_config.enable_user_correction_enhancement;
+        let user_correction_records = app_config.user_correction_records;
+
         let (text, tnl_changed) = {
             // 从配置加载 TNL 开关
-            let tnl_enabled = AppConfig::load()
-                .map(|(c, _)| c.tnl_config.enabled)
-                .unwrap_or(true);
+            let tnl_enabled = app_config.tnl_config.enabled;
 
             if tnl_enabled {
                 let engine = TnlEngine::new(dictionary.clone());
@@ -101,6 +105,8 @@ impl NormalPipeline {
             enable_post_process,
             &dictionary,
             enable_dictionary_enhancement,
+            enable_user_correction_enhancement,
+            &user_correction_records,
             &text,
         )
         .await;
@@ -162,14 +168,22 @@ impl NormalPipeline {
         enable_post_process: bool,
         dictionary: &[String],
         enable_dictionary_enhancement: bool,
+        enable_user_correction_enhancement: bool,
+        user_correction_records: &[crate::manual_correction::UserCorrectionRecord],
         text: &str,
     ) -> (String, Option<String>, Option<u64>) {
-        if !enable_post_process && !enable_dictionary_enhancement {
+        if !enable_post_process
+            && !enable_dictionary_enhancement
+            && !enable_user_correction_enhancement
+        {
             return (text.to_string(), None, None);
         }
 
-        // 仅开启词库增强且词库为空：无需调用 LLM
-        if !enable_post_process && enable_dictionary_enhancement && dictionary.is_empty() {
+        // 仅增强模式下，如果可用增强输入为空，则无需调用 LLM
+        let has_dictionary_input = enable_dictionary_enhancement && !dictionary.is_empty();
+        let has_user_correction_input =
+            enable_user_correction_enhancement && !user_correction_records.is_empty();
+        if !enable_post_process && !has_dictionary_input && !has_user_correction_input {
             return (text.to_string(), None, None);
         }
 
@@ -182,8 +196,10 @@ impl NormalPipeline {
                 .polish_transcript(
                     text,
                     dictionary,
+                    user_correction_records,
                     enable_post_process,
                     enable_dictionary_enhancement,
+                    enable_user_correction_enhancement,
                 )
                 .await
             {

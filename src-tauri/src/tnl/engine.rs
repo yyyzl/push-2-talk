@@ -82,8 +82,7 @@ fn merge_spaced_letters(text: &str) -> (String, Vec<Replacement>) {
             }
 
             if letters.len() >= 2 {
-                let merged: String =
-                    letters.iter().map(|c| c.to_ascii_uppercase()).collect();
+                let merged: String = letters.iter().map(|c| c.to_ascii_uppercase()).collect();
                 let original: String = chars[seq_start..end].iter().collect();
 
                 replacements.push(Replacement {

@@ -13,6 +13,7 @@ mod dictionary_utils;
 mod hotkey_service;
 mod learning;
 mod llm_post_processor;
+mod manual_correction;
 mod openai_client;
 mod pipeline;
 mod streaming_recorder;
@@ -33,6 +34,10 @@ use audio_recorder::AudioRecorder;
 use config::AppConfig;
 use hotkey_service::HotkeyService;
 use llm_post_processor::LlmPostProcessor;
+use manual_correction::{
+    choose_insert_mode, take_pending_correction_if_valid, upsert_user_correction,
+    ManualCorrectionInsertMode,
+};
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
 use pipeline::{AssistantPipeline, NormalPipeline, TranscriptionContext};
 use streaming_recorder::StreamingRecorder;
@@ -140,11 +145,26 @@ struct AppState {
     usage_stats: Arc<Mutex<UsageStats>>,
     /// 录音开始时间（用于计算录音时长）
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
+    /// 待提交的用户手动纠错上下文
+    pending_manual_correction: Arc<Mutex<Option<PendingManualCorrection>>>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingManualCorrection {
+    origin_text: String,
+    target_hwnd: Option<isize>,
+    selection_removed_on_trigger: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ManualCorrectionRequestPayload {
+    origin_text: String,
 }
 
 struct TrayMenuState {
     post_process_item: CheckMenuItem<tauri::Wry>,
     dictionary_enhancement_item: CheckMenuItem<tauri::Wry>,
+    user_correction_enhancement_item: CheckMenuItem<tauri::Wry>,
     asr_qwen_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_item: CheckMenuItem<tauri::Wry>,
 }
@@ -153,6 +173,8 @@ const TRAY_MENU_ID_SHOW: &str = "show";
 const TRAY_MENU_ID_QUIT: &str = "quit";
 const TRAY_MENU_ID_TOGGLE_POST_PROCESS: &str = "tray_toggle_post_process";
 const TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT: &str = "tray_toggle_dictionary_enhancement";
+const TRAY_MENU_ID_TOGGLE_USER_CORRECTION_ENHANCEMENT: &str =
+    "tray_toggle_user_correction_enhancement";
 const TRAY_MENU_ID_ASR_QWEN: &str = "tray_asr_qwen";
 const TRAY_MENU_ID_ASR_DOUBAO: &str = "tray_asr_doubao";
 
@@ -165,13 +187,19 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
         .post_process_item
         .set_checked(config.enable_llm_post_process)
     {
-        tracing::warn!("同步托盘语句润色状态失败: {}", e);
+        tracing::warn!("同步托盘风格化润色状态失败: {}", e);
     }
     if let Err(e) = tray_state
         .dictionary_enhancement_item
         .set_checked(config.enable_dictionary_enhancement)
     {
         tracing::warn!("同步托盘词库增强状态失败: {}", e);
+    }
+    if let Err(e) = tray_state
+        .user_correction_enhancement_item
+        .set_checked(config.enable_user_correction_enhancement)
+    {
+        tracing::warn!("同步托盘智能纠错状态失败: {}", e);
     }
 
     sync_asr_provider_checks(
@@ -206,6 +234,7 @@ fn asr_provider_name(provider: &config::AsrProvider) -> &'static str {
     match provider {
         config::AsrProvider::Qwen => "千问",
         config::AsrProvider::Doubao => "豆包",
+        config::AsrProvider::DoubaoIme => "豆包输入法",
         config::AsrProvider::SiliconFlow => "硅基流动",
     }
 }
@@ -227,6 +256,7 @@ fn is_asr_provider_configured(config: &AppConfig, provider: &config::AsrProvider
                     .trim()
                     .is_empty()
         }
+        config::AsrProvider::DoubaoIme => true,
         config::AsrProvider::SiliconFlow => !config
             .asr_config
             .credentials
@@ -269,6 +299,7 @@ async fn restart_service_with_config(
         Some(config.use_realtime_asr),
         Some(config.enable_llm_post_process),
         Some(config.enable_dictionary_enhancement),
+        Some(config.enable_user_correction_enhancement),
         Some(config.llm_config.clone()),
         Some(config.smart_command_config.clone()),
         Some(config.asr_config.clone()),
@@ -286,9 +317,12 @@ fn refresh_post_processor_after_toggle(app_handle: &AppHandle) {
     let state = app_handle.state::<AppState>();
     let enable_post_process = *state.enable_post_process.lock().unwrap();
     let enable_dictionary_enhancement = *state.enable_dictionary_enhancement.lock().unwrap();
+    let enable_user_correction_enhancement = load_persisted_config()
+        .map(|config| config.enable_user_correction_enhancement)
+        .unwrap_or(false);
 
     let mut processor_guard = state.post_processor.lock().unwrap();
-    if enable_post_process || enable_dictionary_enhancement {
+    if enable_post_process || enable_dictionary_enhancement || enable_user_correction_enhancement {
         if processor_guard.is_none() {
             match load_persisted_config() {
                 Ok(config) => {
@@ -297,7 +331,7 @@ fn refresh_post_processor_after_toggle(app_handle: &AppHandle) {
                         *processor_guard = Some(LlmPostProcessor::new(config.llm_config));
                     } else {
                         tracing::warn!(
-                            "托盘开启语句润色/词库增强，但 polishing API Key 未配置，将跳过后处理"
+                            "托盘开启大模型增强（风格化润色/词库增强/智能纠错），但 polishing API Key 未配置，将跳过后处理"
                         );
                     }
                 }
@@ -324,7 +358,7 @@ fn toggle_post_process_from_tray(
 
     post_process_item
         .set_checked(new_value)
-        .map_err(|e| format!("更新托盘语句润色勾选状态失败: {}", e))?;
+        .map_err(|e| format!("更新托盘风格化润色勾选状态失败: {}", e))?;
 
     refresh_post_processor_after_toggle(app_handle);
 
@@ -332,7 +366,10 @@ fn toggle_post_process_from_tray(
     config.enable_llm_post_process = new_value;
     save_persisted_config(app_handle, &config)?;
 
-    tracing::info!("托盘已{}语句润色", if new_value { "开启" } else { "关闭" });
+    tracing::info!(
+        "托盘已{}风格化润色",
+        if new_value { "开启" } else { "关闭" }
+    );
     Ok(())
 }
 
@@ -358,6 +395,26 @@ fn toggle_dictionary_enhancement_from_tray(
     save_persisted_config(app_handle, &config)?;
 
     tracing::info!("托盘已{}词库增强", if new_value { "开启" } else { "关闭" });
+    Ok(())
+}
+
+fn toggle_user_correction_enhancement_from_tray(
+    app_handle: &AppHandle,
+    user_correction_item: &CheckMenuItem<tauri::Wry>,
+) -> Result<(), String> {
+    let mut config = load_persisted_config()?;
+    let new_value = !config.enable_user_correction_enhancement;
+
+    config.enable_user_correction_enhancement = new_value;
+    save_persisted_config(app_handle, &config)?;
+
+    user_correction_item
+        .set_checked(new_value)
+        .map_err(|e| format!("更新托盘智能纠错勾选状态失败: {}", e))?;
+
+    refresh_post_processor_after_toggle(app_handle);
+
+    tracing::info!("托盘已{}智能纠错", if new_value { "开启" } else { "关闭" });
     Ok(())
 }
 
@@ -423,6 +480,7 @@ async fn save_config(
     use_realtime: Option<bool>,
     enable_post_process: Option<bool>,
     enable_dictionary_enhancement: Option<bool>,
+    enable_user_correction_enhancement: Option<bool>,
     llm_config: Option<config::LlmConfig>,
     smart_command_config: Option<config::SmartCommandConfig>,
     close_action: Option<String>,
@@ -433,6 +491,7 @@ async fn save_config(
     learning_config: Option<config::LearningConfig>,
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
+    user_correction_records: Option<Vec<manual_correction::UserCorrectionRecord>>,
     builtin_dictionary_domains: Option<Vec<String>>,
     theme: Option<String>,
 ) -> Result<String, String> {
@@ -522,6 +581,8 @@ async fn save_config(
         enable_llm_post_process: enable_post_process.unwrap_or(existing.enable_llm_post_process),
         enable_dictionary_enhancement: enable_dictionary_enhancement
             .unwrap_or(existing.enable_dictionary_enhancement),
+        enable_user_correction_enhancement: enable_user_correction_enhancement
+            .unwrap_or(existing.enable_user_correction_enhancement),
         llm_config: final_llm_config,
         smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
         assistant_config: final_assistant_config,
@@ -533,6 +594,8 @@ async fn save_config(
         transcription_mode: existing.transcription_mode,
         enable_mute_other_apps: enable_mute_other_apps.unwrap_or(existing.enable_mute_other_apps),
         dictionary: final_dictionary,
+        user_correction_records: user_correction_records
+            .unwrap_or(existing.user_correction_records),
         builtin_dictionary_domains: builtin_dictionary_domains
             .unwrap_or(existing.builtin_dictionary_domains),
         theme: theme.unwrap_or(existing.theme),
@@ -901,7 +964,9 @@ async fn handle_doubao_ime_realtime_start(
                             new_creds.device_id
                         );
                         *doubao_ime_credentials.lock().unwrap() = Some(new_creds.clone());
-                        if let Err(e) = save_doubao_ime_credentials_to_config(new_creds.clone()).await {
+                        if let Err(e) =
+                            save_doubao_ime_credentials_to_config(new_creds.clone()).await
+                        {
                             tracing::error!("保存豆包输入法凭据到配置文件失败: {}", e);
                         }
                     }
@@ -1088,6 +1153,7 @@ async fn start_app(
     use_realtime: Option<bool>,
     enable_post_process: Option<bool>,
     enable_dictionary_enhancement: Option<bool>,
+    enable_user_correction_enhancement: Option<bool>,
     llm_config: Option<config::LlmConfig>,
     _smart_command_config: Option<config::SmartCommandConfig>,
     asr_config: Option<config::AsrConfig>,
@@ -1148,6 +1214,14 @@ async fn start_app(
     // 确定是否启用词库增强（默认启用）
     let enable_dictionary_enhancement_mode = enable_dictionary_enhancement.unwrap_or(true);
     *state.enable_dictionary_enhancement.lock().unwrap() = enable_dictionary_enhancement_mode;
+    // 用户纠错增强由配置文件读取并在 Pipeline 中生效，这里仅用于决定是否初始化 LLM 处理器
+    let enable_user_correction_enhancement_mode = enable_user_correction_enhancement
+        .or_else(|| {
+            AppConfig::load()
+                .ok()
+                .map(|(config, _)| config.enable_user_correction_enhancement)
+        })
+        .unwrap_or(false);
 
     tracing::info!(
         "ASR 模式: {}",
@@ -1168,6 +1242,14 @@ async fn start_app(
     tracing::info!(
         "词库增强: {}",
         if enable_dictionary_enhancement_mode {
+            "启用"
+        } else {
+            "禁用"
+        }
+    );
+    tracing::info!(
+        "用户纠错增强: {}",
+        if enable_user_correction_enhancement_mode {
             "启用"
         } else {
             "禁用"
@@ -1240,12 +1322,14 @@ async fn start_app(
         let mut processor_guard = state.post_processor.lock().unwrap();
         let llm_cfg = llm_config.clone().unwrap_or_default();
         let resolved = llm_cfg.resolve_polishing();
-        let should_enable_post_processing =
-            enable_post_process_mode || enable_dictionary_enhancement_mode;
+        let should_enable_post_processing = enable_post_process_mode
+            || enable_dictionary_enhancement_mode
+            || enable_user_correction_enhancement_mode;
         tracing::info!(
-            "[DEBUG] LLM 后处理配置: post_process={}, dictionary_enhancement={}, api_key_len={}",
+            "[DEBUG] LLM 后处理配置: post_process={}, dictionary_enhancement={}, user_correction_enhancement={}, api_key_len={}",
             enable_post_process_mode,
             enable_dictionary_enhancement_mode,
+            enable_user_correction_enhancement_mode,
             resolved.api_key.len()
         );
         if should_enable_post_processing && !resolved.api_key.trim().is_empty() {
@@ -1431,6 +1515,7 @@ async fn start_app(
     // 目标窗口句柄（用于焦点恢复）
     let target_window_start = Arc::clone(&state.target_window);
     let target_window_stop = Arc::clone(&state.target_window);
+    let pending_manual_correction_start = Arc::clone(&state.pending_manual_correction);
 
     // 统计数据相关（用于 on_stop）
     let usage_stats_stop = Arc::clone(&state.usage_stats);
@@ -1458,6 +1543,73 @@ async fn start_app(
             tracing::info!("已保存目标窗口句柄: 0x{:X}", hwnd);
         } else {
             tracing::warn!("未能获取目标窗口句柄");
+        }
+
+        // 用户纠错模式：一次性触发，不进入录音流程
+        if trigger_mode == config::TriggerMode::UserCorrection {
+            let app = app_handle_start.clone();
+            let pending_state = Arc::clone(&pending_manual_correction_start);
+
+            tauri::async_runtime::spawn(async move {
+                // 等待物理按键释放，避免和模拟 Ctrl+C 冲突
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                let (selected_text, selection_removed_on_trigger) =
+                    match clipboard_manager::get_selected_text() {
+                        Ok((guard, text)) => {
+                            let has_selection =
+                                text.as_ref().map(|t| !t.trim().is_empty()).unwrap_or(false);
+
+                            let mut selection_removed = false;
+                            if has_selection {
+                                match clipboard_manager::cut_selected_text() {
+                                    Ok(_) => {
+                                        selection_removed = true;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "删除选中内容失败，回退到选区替换模式: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+
+                            // 纠错窗显示前恢复用户原剪贴板
+                            if let Err(e) = guard.restore() {
+                                tracing::warn!("恢复剪贴板失败: {}", e);
+                            }
+
+                            (text, selection_removed)
+                        }
+                        Err(e) => {
+                            tracing::warn!("捕获选中文本失败: {}", e);
+                            let _ = app.emit("error", "捕获选中文本失败，请重试".to_string());
+                            (None, false)
+                        }
+                    };
+
+                let Some(selected_text) = selected_text.filter(|t| !t.trim().is_empty()) else {
+                    let _ = app.emit("error", "请先选中文本后再触发用户纠错".to_string());
+                    return;
+                };
+
+                {
+                    let mut pending = pending_state.lock().unwrap();
+                    *pending = Some(PendingManualCorrection {
+                        origin_text: selected_text.clone(),
+                        target_hwnd,
+                        selection_removed_on_trigger,
+                    });
+                }
+
+                if let Err(e) = show_manual_correction_window(&app, &selected_text).await {
+                    tracing::error!("显示用户纠错窗口失败: {}", e);
+                    *pending_state.lock().unwrap() = None;
+                    let _ = app.emit("error", e);
+                }
+            });
+            return;
         }
 
         // 保存当前触发模式
@@ -1701,6 +1853,10 @@ async fn start_app(
                     )
                     .await;
                 }
+                config::TriggerMode::UserCorrection => {
+                    // 用户纠错模式是一次性触发，不走录音停止流程
+                    tracing::debug!("用户纠错模式收到 on_stop，忽略");
+                }
             }
         });
     };
@@ -1721,9 +1877,10 @@ async fn start_app(
     };
     let dictation_display = dual_hotkey_cfg.dictation.format_display();
     let assistant_display = dual_hotkey_cfg.assistant.format_display();
+    let correction_display = dual_hotkey_cfg.correction.format_display();
     Ok(format!(
-        "应用已启动 ({})，听写: {}，AI助手: {}",
-        mode_str, dictation_display, assistant_display
+        "应用已启动 ({})，听写: {}，AI助手: {}，用户纠错: {}",
+        mode_str, dictation_display, assistant_display, correction_display
     ))
 }
 
@@ -3020,6 +3177,10 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
             // 松手模式不支持 AI 助手模式，但为了安全性仍然处理
             tracing::warn!("松手模式不支持 AI 助手模式，跳过处理");
         }
+        config::TriggerMode::UserCorrection => {
+            // 松手模式不支持用户纠错模式，但为了安全性仍然处理
+            tracing::warn!("松手模式不支持用户纠错模式，跳过处理");
+        }
     }
 
     // 重置处理标志
@@ -3081,6 +3242,162 @@ async fn cancel_locked_recording(app_handle: AppHandle) -> Result<String, String
     is_processing_stop.store(false, Ordering::SeqCst);
 
     result
+}
+
+async fn show_manual_correction_window(app: &AppHandle, origin_text: &str) -> Result<(), String> {
+    let Some(correction) = app.get_webview_window("correction") else {
+        return Err("用户纠错窗口不存在".to_string());
+    };
+
+    let reference_window = app
+        .get_webview_window("overlay")
+        .or_else(|| app.get_webview_window("main"));
+
+    if let Some(ref_win) = reference_window {
+        if let Some(monitor) = find_monitor_at_cursor(&ref_win) {
+            let monitor_pos = monitor.position();
+            let screen_size = monitor.size();
+            let scale_factor = monitor.scale_factor();
+
+            let default_width = (420.0 * scale_factor) as u32;
+            let default_height = (320.0 * scale_factor) as u32;
+            let window_size = correction
+                .outer_size()
+                .unwrap_or(tauri::PhysicalSize::new(default_width, default_height));
+
+            let window_width = window_size.width as i32;
+            let window_height = window_size.height as i32;
+
+            // 悬浮窗底部边距约 100px + 悬浮窗高度 80px + 间隔 40px = 220px（逻辑像素）
+            let bottom_offset = (220.0 * scale_factor) as i32;
+            let x = monitor_pos.x + (screen_size.width as i32 - window_width) / 2;
+            let y = monitor_pos.y + screen_size.height as i32 - window_height - bottom_offset;
+            let top_margin = (40.0 * scale_factor) as i32;
+            let y = y.max(monitor_pos.y + top_margin);
+
+            correction
+                .set_position(tauri::PhysicalPosition::new(x, y))
+                .map_err(|e| format!("设置用户纠错窗口位置失败: {}", e))?;
+        }
+    }
+
+    correction
+        .emit(
+            "manual_correction_requested",
+            ManualCorrectionRequestPayload {
+                origin_text: origin_text.to_string(),
+            },
+        )
+        .map_err(|e| format!("发送用户纠错数据失败: {}", e))?;
+
+    correction
+        .show()
+        .map_err(|e| format!("显示用户纠错窗口失败: {}", e))?;
+    correction
+        .set_focus()
+        .map_err(|e| format!("聚焦用户纠错窗口失败: {}", e))?;
+
+    Ok(())
+}
+
+async fn hide_manual_correction_window(app: &AppHandle) -> Result<(), String> {
+    if let Some(correction) = app.get_webview_window("correction") {
+        if let Err(e) = correction.hide() {
+            tracing::warn!("隐藏用户纠错窗口失败，准备重试: {}", e);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            correction
+                .hide()
+                .map_err(|retry_err| format!("隐藏用户纠错窗口失败: {}", retry_err))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn submit_manual_correction(
+    app_handle: AppHandle,
+    corrected_text: String,
+) -> Result<String, String> {
+    let corrected_text = corrected_text.trim().to_string();
+
+    let state = app_handle.state::<AppState>();
+    let pending = {
+        let mut pending_guard = state.pending_manual_correction.lock().unwrap();
+        take_pending_correction_if_valid(&mut pending_guard, &corrected_text, |ctx| {
+            &ctx.origin_text
+        })?
+    };
+
+    let origin_text = pending.origin_text.trim().to_string();
+    let insert_mode = choose_insert_mode(pending.selection_removed_on_trigger);
+
+    hide_manual_correction_window(&app_handle).await?;
+    pipeline::focus::hide_overlay_and_restore_focus(&app_handle, pending.target_hwnd).await;
+
+    let clipboard_guard =
+        clipboard_manager::ClipboardGuard::new().map_err(|e| format!("准备剪贴板失败: {}", e))?;
+    let has_selection = matches!(insert_mode, ManualCorrectionInsertMode::ReplaceSelection);
+    clipboard_manager::insert_text_with_context(
+        &corrected_text,
+        has_selection,
+        Some(clipboard_guard),
+    )
+    .map_err(|e| {
+        if has_selection {
+            format!("替换选中文本失败: {}", e)
+        } else {
+            format!("插入纠正文失败: {}", e)
+        }
+    })?;
+
+    let updated_config = {
+        let _guard = config::CONFIG_LOCK
+            .lock()
+            .map_err(|e| format!("获取配置锁失败: {}", e))?;
+
+        let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
+        upsert_user_correction(
+            &mut config.user_correction_records,
+            &origin_text,
+            &corrected_text,
+        );
+        config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+        config
+    };
+
+    sync_tray_menu_from_config(&app_handle, &updated_config);
+    let _ = app_handle.emit("config_updated", &updated_config);
+
+    Ok("用户纠错已提交".to_string())
+}
+
+#[tauri::command]
+async fn cancel_manual_correction(app_handle: AppHandle) -> Result<String, String> {
+    let state = app_handle.state::<AppState>();
+    let pending = {
+        let mut pending_guard = state.pending_manual_correction.lock().unwrap();
+        pending_guard.take()
+    };
+
+    hide_manual_correction_window(&app_handle).await?;
+
+    if let Some(context) = pending {
+        let insert_mode = choose_insert_mode(context.selection_removed_on_trigger);
+        pipeline::focus::hide_overlay_and_restore_focus(&app_handle, context.target_hwnd).await;
+
+        if matches!(insert_mode, ManualCorrectionInsertMode::InsertAtCaret) {
+            let clipboard_guard = clipboard_manager::ClipboardGuard::new()
+                .map_err(|e| format!("准备剪贴板失败: {}", e))?;
+            clipboard_manager::insert_text_with_context(
+                context.origin_text.trim(),
+                false,
+                Some(clipboard_guard),
+            )
+            .map_err(|e| format!("取消纠错后回填原文失败: {}", e))?;
+        }
+    }
+
+    Ok("已取消用户纠错".to_string())
 }
 
 /// 显示录音悬浮窗
@@ -3178,6 +3495,7 @@ async fn update_runtime_config(
     app_handle: AppHandle,
     enable_post_process: Option<bool>,
     enable_dictionary_enhancement: Option<bool>,
+    enable_user_correction_enhancement: Option<bool>,
     llm_config: Option<config::LlmConfig>,
     assistant_config: Option<config::AssistantConfig>,
     enable_mute_other_apps: Option<bool>,
@@ -3207,15 +3525,46 @@ async fn update_runtime_config(
         updated.push("词库增强");
     }
 
-    // 1.2 检查是否需要初始化/销毁 LLM 处理器（当仅更新开关而未传入 llm_config 时）
+    // 1.2 更新用户纠错增强开关（影响普通模式 LLM 润色提示）
+    if let Some(enabled) = enable_user_correction_enhancement {
+        let config_changed = {
+            let _guard = config::CONFIG_LOCK
+                .lock()
+                .map_err(|e| format!("获取配置锁失败: {}", e))?;
+            let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
+
+            if config.enable_user_correction_enhancement != enabled {
+                config.enable_user_correction_enhancement = enabled;
+                config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+                Some(config)
+            } else {
+                None
+            }
+        };
+
+        if let Some(config) = config_changed {
+            sync_tray_menu_from_config(&app_handle, &config);
+            let _ = app_handle.emit("config_updated", &config);
+        }
+
+        tracing::info!("热更新: 用户纠错增强 = {}", enabled);
+        updated.push("用户纠错增强");
+    }
+
+    // 1.3 检查是否需要初始化/销毁 LLM 处理器（当仅更新开关而未传入 llm_config 时）
     if llm_config.is_none()
-        && (enable_post_process.is_some() || enable_dictionary_enhancement.is_some())
+        && (enable_post_process.is_some()
+            || enable_dictionary_enhancement.is_some()
+            || enable_user_correction_enhancement.is_some())
     {
         let enable_pp = *state.enable_post_process.lock().unwrap();
         let enable_dict = *state.enable_dictionary_enhancement.lock().unwrap();
+        let enable_user_correction = AppConfig::load()
+            .map(|(config, _)| config.enable_user_correction_enhancement)
+            .unwrap_or(false);
         let mut processor_guard = state.post_processor.lock().unwrap();
 
-        if enable_pp || enable_dict {
+        if enable_pp || enable_dict || enable_user_correction {
             // 需要处理器但当前为空，从配置文件加载
             if processor_guard.is_none() {
                 match config::AppConfig::load() {
@@ -3226,7 +3575,7 @@ async fn update_runtime_config(
                             tracing::info!("热更新: LLM 处理器已从配置文件初始化");
                             updated.push("LLM处理器");
                         } else {
-                            tracing::warn!("热更新: 词库增强/后处理已启用但 API Key 未配置");
+                            tracing::warn!("热更新: 后处理/增强功能已启用但 API Key 未配置");
                         }
                     }
                     Err(e) => {
@@ -3235,10 +3584,10 @@ async fn update_runtime_config(
                 }
             }
         } else {
-            // 两个开关都关闭，销毁处理器
+            // 所有增强开关都关闭，销毁处理器
             if processor_guard.is_some() {
                 *processor_guard = None;
-                tracing::info!("热更新: LLM 处理器已销毁（后处理和词库增强均已禁用）");
+                tracing::info!("热更新: LLM 处理器已销毁（后处理和增强均已禁用）");
                 updated.push("LLM处理器");
             }
         }
@@ -3248,10 +3597,15 @@ async fn update_runtime_config(
     if let Some(ref cfg) = llm_config {
         let enable_pp = *state.enable_post_process.lock().unwrap();
         let enable_dict = *state.enable_dictionary_enhancement.lock().unwrap();
+        let enable_user_correction = AppConfig::load()
+            .map(|(config, _)| config.enable_user_correction_enhancement)
+            .unwrap_or(false);
         let mut processor_guard = state.post_processor.lock().unwrap();
         let resolved = cfg.resolve_polishing();
 
-        if (enable_pp || enable_dict) && !resolved.api_key.trim().is_empty() {
+        if (enable_pp || enable_dict || enable_user_correction)
+            && !resolved.api_key.trim().is_empty()
+        {
             // 检查配置是否真的变了
             let needs_rebuild = match &*processor_guard {
                 Some(existing) => existing.config_changed(cfg),
@@ -3540,6 +3894,7 @@ async fn test_llm_provider(
             ChatOptions {
                 max_tokens: 4,
                 temperature: 0.0,
+                disable_thinking_for_speed: false,
             },
         )
         .await
@@ -3619,6 +3974,7 @@ pub fn run() {
                 doubao_ime_credentials: Arc::new(Mutex::new(None)),
                 usage_stats: Arc::new(Mutex::new(usage_stats)),
                 recording_start_instant: Arc::new(Mutex::new(None)),
+                pending_manual_correction: Arc::new(Mutex::new(None)),
             };
 
             let initial_config = load_persisted_config().unwrap_or_else(|e| {
@@ -3633,6 +3989,8 @@ pub fn run() {
             let initial_enable_post_process = initial_config.enable_llm_post_process;
             let initial_enable_dictionary_enhancement =
                 initial_config.enable_dictionary_enhancement;
+            let initial_enable_user_correction_enhancement =
+                initial_config.enable_user_correction_enhancement;
             let initial_active_provider =
                 initial_config.asr_config.selection.active_provider.clone();
 
@@ -3643,7 +4001,7 @@ pub fn run() {
 
             if state_enable_post_process != initial_enable_post_process {
                 tracing::info!(
-                    "托盘初始化语句润色状态: {} -> {}",
+                    "托盘初始化风格化润色状态: {} -> {}",
                     state_enable_post_process,
                     initial_enable_post_process
                 );
@@ -3664,7 +4022,7 @@ pub fn run() {
             let post_process_item = CheckMenuItem::with_id(
                 app,
                 TRAY_MENU_ID_TOGGLE_POST_PROCESS,
-                "开启语句润色",
+                "开启风格化润色",
                 true,
                 initial_enable_post_process,
                 None::<&str>,
@@ -3675,6 +4033,14 @@ pub fn run() {
                 "开启词库增强",
                 true,
                 initial_enable_dictionary_enhancement,
+                None::<&str>,
+            )?;
+            let user_correction_enhancement_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_TOGGLE_USER_CORRECTION_ENHANCEMENT,
+                "开启智能纠错",
+                true,
+                initial_enable_user_correction_enhancement,
                 None::<&str>,
             )?;
 
@@ -3707,6 +4073,7 @@ pub fn run() {
                     &show_item,
                     &post_process_item,
                     &dictionary_enhancement_item,
+                    &user_correction_enhancement_item,
                     &asr_switch_submenu,
                     &quit_item,
                 ],
@@ -3714,12 +4081,15 @@ pub fn run() {
 
             let post_process_item_for_event = post_process_item.clone();
             let dictionary_enhancement_item_for_event = dictionary_enhancement_item.clone();
+            let user_correction_enhancement_item_for_event =
+                user_correction_enhancement_item.clone();
             let asr_qwen_item_for_event = asr_qwen_item.clone();
             let asr_doubao_item_for_event = asr_doubao_item.clone();
 
             app.manage(TrayMenuState {
                 post_process_item: post_process_item.clone(),
                 dictionary_enhancement_item: dictionary_enhancement_item.clone(),
+                user_correction_enhancement_item: user_correction_enhancement_item.clone(),
                 asr_qwen_item: asr_qwen_item.clone(),
                 asr_doubao_item: asr_doubao_item.clone(),
             });
@@ -3740,7 +4110,7 @@ pub fn run() {
                         if let Err(e) =
                             toggle_post_process_from_tray(app, &post_process_item_for_event)
                         {
-                            tracing::error!("托盘切换语句润色失败: {}", e);
+                            tracing::error!("托盘切换风格化润色失败: {}", e);
                             let _ = app.emit("error", e);
                         }
                     }
@@ -3750,6 +4120,15 @@ pub fn run() {
                             &dictionary_enhancement_item_for_event,
                         ) {
                             tracing::error!("托盘切换词库增强失败: {}", e);
+                            let _ = app.emit("error", e);
+                        }
+                    }
+                    TRAY_MENU_ID_TOGGLE_USER_CORRECTION_ENHANCEMENT => {
+                        if let Err(e) = toggle_user_correction_enhancement_from_tray(
+                            app,
+                            &user_correction_enhancement_item_for_event,
+                        ) {
+                            tracing::error!("托盘切换智能纠错失败: {}", e);
                             let _ = app.emit("error", e);
                         }
                     }
@@ -3828,6 +4207,8 @@ pub fn run() {
             cancel_transcription,
             finish_locked_recording,
             cancel_locked_recording,
+            submit_manual_correction,
+            cancel_manual_correction,
             hide_to_tray,
             quit_app,
             show_overlay,

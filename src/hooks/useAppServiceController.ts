@@ -10,6 +10,7 @@ import type {
   DualHotkeyConfig,
   HotkeyKey,
   LlmConfig,
+  UserCorrectionRecord,
 } from "../types";
 import {
   DEFAULT_ASSISTANT_CONFIG,
@@ -65,6 +66,8 @@ export type UseAppServiceControllerParams = {
 
   enableDictionaryEnhancement: boolean;
   setEnableDictionaryEnhancement: React.Dispatch<React.SetStateAction<boolean>>;
+  enableUserCorrectionEnhancement: boolean;
+  setEnableUserCorrectionEnhancement: React.Dispatch<React.SetStateAction<boolean>>;
 
   llmConfig: LlmConfig;
   setLlmConfig: React.Dispatch<React.SetStateAction<LlmConfig>>;
@@ -82,6 +85,7 @@ export type UseAppServiceControllerParams = {
 
   builtinDictionaryDomains: string[];
   setBuiltinDictionaryDomains: React.Dispatch<React.SetStateAction<string[]>>;
+  setUserCorrectionRecords?: React.Dispatch<React.SetStateAction<UserCorrectionRecord[]>>;
 
   status: AppStatus;
   setStatus: React.Dispatch<React.SetStateAction<AppStatus>>;
@@ -122,6 +126,8 @@ export function useAppServiceController({
   setEnablePostProcess,
   enableDictionaryEnhancement,
   setEnableDictionaryEnhancement,
+  enableUserCorrectionEnhancement,
+  setEnableUserCorrectionEnhancement,
   llmConfig,
   setLlmConfig,
   assistantConfig,
@@ -133,6 +139,7 @@ export function useAppServiceController({
   setDictionary,
   builtinDictionaryDomains,
   setBuiltinDictionaryDomains,
+  setUserCorrectionRecords,
   status,
   setStatus,
   setError,
@@ -162,6 +169,7 @@ export function useAppServiceController({
       useRealtime: boolean;
       enablePostProcess: boolean;
       enableDictionaryEnhancement: boolean;
+      enableUserCorrectionEnhancement: boolean;
       llmConfig: LlmConfig;
       smartCommandConfig: null;
       assistantConfig: AssistantConfig;
@@ -185,6 +193,7 @@ export function useAppServiceController({
     async (updates: {
       enablePostProcess?: boolean;
       enableDictionaryEnhancement?: boolean;
+      enableUserCorrectionEnhancement?: boolean;
       llmConfig?: LlmConfig;
       assistantConfig?: AssistantConfig;
       enableMuteOtherApps?: boolean;
@@ -195,6 +204,7 @@ export function useAppServiceController({
         await invoke<string>("update_runtime_config", {
           enablePostProcess: updates.enablePostProcess,
           enableDictionaryEnhancement: updates.enableDictionaryEnhancement,
+          enableUserCorrectionEnhancement: updates.enableUserCorrectionEnhancement,
           llmConfig: updates.llmConfig,
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
@@ -279,6 +289,8 @@ export function useAppServiceController({
               useRealtime: config.use_realtime_asr ?? true,
               enablePostProcess: config.enable_llm_post_process ?? false,
               enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
+              enableUserCorrectionEnhancement:
+                config.enable_user_correction_enhancement ?? false,
               llmConfig: config.llm_config || DEFAULT_LLM_CONFIG,
               smartCommandConfig: null,
               assistantConfig: config.assistant_config || DEFAULT_ASSISTANT_CONFIG,
@@ -313,6 +325,9 @@ export function useAppServiceController({
       setUseRealtime(config.use_realtime_asr ?? false);
       setEnablePostProcess(config.enable_llm_post_process ?? false);
       setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? false);
+      setEnableUserCorrectionEnhancement(
+        config.enable_user_correction_enhancement ?? false,
+      );
 
       // 智能补齐 llm_config
       const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
@@ -344,6 +359,7 @@ export function useAppServiceController({
         setDualHotkeyConfig({
           dictation: config.hotkey_config,
           assistant: { keys: ["alt_left", "space"] },
+          correction: { keys: ["control_left", "shift_left", "space"] },
         });
       } else {
         setDualHotkeyConfig(DEFAULT_DUAL_HOTKEY_CONFIG);
@@ -385,12 +401,24 @@ export function useAppServiceController({
       );
       setBuiltinDictionaryDomains(loadedBuiltinDictionaryDomains);
 
+      const loadedUserCorrectionRecords = Array.isArray(config.user_correction_records)
+        ? config.user_correction_records.filter(
+          (record) =>
+            typeof record?.origin_text === "string"
+            && typeof record?.corrected_text === "string",
+        )
+        : [];
+      setUserCorrectionRecords?.(loadedUserCorrectionRecords);
+
       const loadedAsrConfig = config.asr_config || null;
       const loadedDualHotkeyConfig = config.dual_hotkey_config || {
         dictation:
           config.hotkey_config ||
           ({ keys: ["control_left", "meta_left"] as HotkeyKey[] } as const),
         assistant: { keys: ["alt_left", "space"] as HotkeyKey[] },
+        correction: {
+          keys: ["control_left", "shift_left", "space"] as HotkeyKey[],
+        },
       };
 
       if (loadedAsrConfig && isAsrConfigValid(loadedAsrConfig)) {
@@ -401,6 +429,8 @@ export function useAppServiceController({
           useRealtime: config.use_realtime_asr ?? true,
           enablePostProcess: config.enable_llm_post_process ?? false,
           enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
+          enableUserCorrectionEnhancement:
+            config.enable_user_correction_enhancement ?? false,
           llmConfig: loadedLlmConfig,
           smartCommandConfig: null,
           assistantConfig: loadedAssistantConfig,
@@ -426,11 +456,13 @@ export function useAppServiceController({
     setCloseAction,
     setDictionary,
     setBuiltinDictionaryDomains,
+    setUserCorrectionRecords,
     setDualHotkeyConfig,
     setEnableAutostart,
     setEnableMuteOtherApps,
     setEnablePostProcess,
     setEnableDictionaryEnhancement,
+    setEnableUserCorrectionEnhancement,
     setFallbackApiKey,
     setLlmConfig,
     setStatus,
@@ -454,6 +486,7 @@ export function useAppServiceController({
         useRealtime,
         enablePostProcess,
         enableDictionaryEnhancement,
+        enableUserCorrectionEnhancement,
         llmConfig,
         smartCommandConfig: null,
         assistantConfig,
@@ -477,6 +510,7 @@ export function useAppServiceController({
           useRealtime,
           enablePostProcess,
           enableDictionaryEnhancement,
+          enableUserCorrectionEnhancement,
           llmConfig,
           smartCommandConfig: null,
           assistantConfig,
@@ -499,6 +533,7 @@ export function useAppServiceController({
     useRealtime,
     enablePostProcess,
     enableDictionaryEnhancement,
+    enableUserCorrectionEnhancement,
     llmConfig,
     assistantConfig,
     asrConfig,
@@ -524,6 +559,7 @@ export function useAppServiceController({
     useRealtime?: boolean;
     enablePostProcess?: boolean;
     enableDictionaryEnhancement?: boolean;
+    enableUserCorrectionEnhancement?: boolean;
     llmConfig?: LlmConfig;
     assistantConfig?: AssistantConfig;
     asrConfig?: AsrConfig;
@@ -542,6 +578,8 @@ export function useAppServiceController({
       const finalEnablePostProcess = overrides?.enablePostProcess ?? enablePostProcess;
       const finalEnableDictionaryEnhancement =
         overrides?.enableDictionaryEnhancement ?? enableDictionaryEnhancement;
+      const finalEnableUserCorrectionEnhancement =
+        overrides?.enableUserCorrectionEnhancement ?? enableUserCorrectionEnhancement;
       const finalLlmConfig = overrides?.llmConfig ?? llmConfig;
       const finalAssistantConfig = overrides?.assistantConfig ?? assistantConfig;
       const finalAsrConfig = overrides?.asrConfig ?? asrConfig;
@@ -565,6 +603,7 @@ export function useAppServiceController({
         useRealtime: finalUseRealtime,
         enablePostProcess: finalEnablePostProcess,
         enableDictionaryEnhancement: finalEnableDictionaryEnhancement,
+        enableUserCorrectionEnhancement: finalEnableUserCorrectionEnhancement,
         llmConfig: finalLlmConfig,
         smartCommandConfig: null,
         assistantConfig: finalAssistantConfig,
@@ -590,6 +629,7 @@ export function useAppServiceController({
           useRealtime: finalUseRealtime,
           enablePostProcess: finalEnablePostProcess,
           enableDictionaryEnhancement: finalEnableDictionaryEnhancement,
+          enableUserCorrectionEnhancement: finalEnableUserCorrectionEnhancement,
           llmConfig: finalLlmConfig,
           smartCommandConfig: null,
           assistantConfig: finalAssistantConfig,
@@ -614,6 +654,7 @@ export function useAppServiceController({
     useRealtime,
     enablePostProcess,
     enableDictionaryEnhancement,
+    enableUserCorrectionEnhancement,
     llmConfig,
     assistantConfig,
     asrConfig,
@@ -661,6 +702,7 @@ export function useAppServiceController({
           useRealtime,
           enablePostProcess,
           enableDictionaryEnhancement,
+          enableUserCorrectionEnhancement,
           llmConfig,
           smartCommandConfig: null,
           assistantConfig,
@@ -679,6 +721,7 @@ export function useAppServiceController({
           useRealtime,
           enablePostProcess,
           enableDictionaryEnhancement,
+          enableUserCorrectionEnhancement,
           llmConfig,
           smartCommandConfig: null,
           assistantConfig,
@@ -710,6 +753,7 @@ export function useAppServiceController({
     enableMuteOtherApps,
     enablePostProcess,
     enableDictionaryEnhancement,
+    enableUserCorrectionEnhancement,
     fallbackApiKey,
     llmConfig,
     setError,
@@ -739,6 +783,7 @@ export function useAppServiceController({
             useRealtime,
             enablePostProcess,
             enableDictionaryEnhancement,
+            enableUserCorrectionEnhancement,
             llmConfig,
             smartCommandConfig: null,
             assistantConfig,
@@ -773,6 +818,7 @@ export function useAppServiceController({
       dualHotkeyConfig,
       enableMuteOtherApps,
       enablePostProcess,
+      enableUserCorrectionEnhancement,
       fallbackApiKey,
       llmConfig,
       rememberChoice,

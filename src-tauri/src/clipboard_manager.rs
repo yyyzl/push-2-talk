@@ -100,6 +100,21 @@ pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
     Ok((guard, selected_text))
 }
 
+/// 尝试删除当前选中内容（通过模拟 Ctrl+X）。
+///
+/// 主要用于用户纠错模式：
+/// - 在弹出纠错窗口前先建立“插入锚点”
+/// - 后续提交/取消时都按光标位置插入，避免依赖失焦后的选区保留行为
+pub fn cut_selected_text() -> Result<()> {
+    // 防御性释放修饰键，避免与全局热键残留状态冲突
+    win32_input::release_all_modifiers()?;
+    thread::sleep(Duration::from_millis(5));
+
+    win32_input::send_ctrl_x()?;
+    thread::sleep(Duration::from_millis(80));
+    Ok(())
+}
+
 /// 等待剪贴板更新的辅助函数（动态轮询检测）
 ///
 /// # 参数

@@ -19,6 +19,7 @@ export type DashboardPageProps = {
 
   enablePostProcess: boolean;
   enableDictionaryEnhancement: boolean;
+  enableUserCorrectionEnhancement: boolean;
 };
 
 export function DashboardPage({
@@ -35,6 +36,7 @@ export function DashboardPage({
   onOpenHistory,
   enablePostProcess,
   enableDictionaryEnhancement,
+  enableUserCorrectionEnhancement,
 }: DashboardPageProps) {
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -51,6 +53,7 @@ export function DashboardPage({
         variant="compact"
         enablePostProcess={enablePostProcess}
         enableDictionaryEnhancement={enableDictionaryEnhancement}
+        enableUserCorrectionEnhancement={enableUserCorrectionEnhancement}
       />
 
       <RecentActivity history={history} onCopyText={onCopyText} onOpenHistory={onOpenHistory} />

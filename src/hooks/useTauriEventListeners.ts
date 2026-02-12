@@ -12,6 +12,7 @@ import type {
   HistoryRecord,
   LlmConfig,
   TranscriptionResult,
+  UserCorrectionRecord,
   UsageStats,
 } from "../types";
 import { MAX_HISTORY } from "../constants";
@@ -25,6 +26,7 @@ export type UseTauriEventListenersParams = {
   llmConfigRef: React.RefObject<LlmConfig>;
   enablePostProcessRef?: React.RefObject<boolean>;
   enableDictionaryEnhancementRef?: React.RefObject<boolean>;
+  enableUserCorrectionEnhancementRef?: React.RefObject<boolean>;
   setActivePresetName?: React.Dispatch<React.SetStateAction<string | null>>;
 
   setStatus: React.Dispatch<React.SetStateAction<AppStatus>>;
@@ -43,6 +45,7 @@ export type UseTauriEventListenersParams = {
   setUseRealtime?: React.Dispatch<React.SetStateAction<boolean>>;
   setEnablePostProcess?: React.Dispatch<React.SetStateAction<boolean>>;
   setEnableDictionaryEnhancement?: React.Dispatch<React.SetStateAction<boolean>>;
+  setEnableUserCorrectionEnhancement?: React.Dispatch<React.SetStateAction<boolean>>;
   setLlmConfig?: React.Dispatch<React.SetStateAction<LlmConfig>>;
   setAssistantConfig?: React.Dispatch<React.SetStateAction<AssistantConfig>>;
   setEnableMuteOtherApps?: React.Dispatch<React.SetStateAction<boolean>>;
@@ -50,6 +53,7 @@ export type UseTauriEventListenersParams = {
   setCloseAction?: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
   setDictionary?: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
   setBuiltinDictionaryDomains?: React.Dispatch<React.SetStateAction<string[]>>;
+  setUserCorrectionRecords?: React.Dispatch<React.SetStateAction<UserCorrectionRecord[]>>;
   onExternalConfigUpdated?: (config: AppConfig) => void;
 
   setHistory: React.Dispatch<React.SetStateAction<HistoryRecord[]>>;
@@ -63,6 +67,7 @@ export function useTauriEventListeners({
   llmConfigRef,
   enablePostProcessRef,
   enableDictionaryEnhancementRef,
+  enableUserCorrectionEnhancementRef,
   setActivePresetName,
   setStatus,
   setError,
@@ -79,6 +84,7 @@ export function useTauriEventListeners({
   setUseRealtime,
   setEnablePostProcess,
   setEnableDictionaryEnhancement,
+  setEnableUserCorrectionEnhancement,
   setLlmConfig,
   setAssistantConfig,
   setEnableMuteOtherApps,
@@ -86,6 +92,7 @@ export function useTauriEventListeners({
   setCloseAction,
   setDictionary,
   setBuiltinDictionaryDomains,
+  setUserCorrectionRecords,
   onExternalConfigUpdated,
   setHistory,
   setUsageStats,
@@ -168,19 +175,32 @@ export function useTauriEventListeners({
           const mode = (result.mode as "normal" | "assistant") || null;
           const enablePostProcess = enablePostProcessRef?.current ?? false;
           const enableDictionaryEnhancement = enableDictionaryEnhancementRef?.current ?? false;
+          const enableUserCorrectionEnhancement = enableUserCorrectionEnhancementRef?.current ?? false;
 
           // presetName 逻辑：
-          // 1. 如果没有 original_text（未启用润色），不显示任何润色标签
-          // 2. 如果是 assistant 模式，不显示润色标签
-          // 3. 如果开启了润色，显示预设名称
-          // 4. 如果开启了词库增强，显示"词库增强"
+          // 1. 如果没有 original_text（未启用大模型增强），不显示增强标签
+          // 2. 如果是 assistant 模式，不显示增强标签
+          // 3. 单一子功能开启：显示对应标签
+          // 4. 多个子功能并行开启：显示"大模型增强"
           // 5. 其他情况（仅 TNL 处理），显示"文本规范化"
           const hasPolishing = !!result.original_text;
-          const presetName = hasPolishing && mode !== "assistant"
-            ? enablePostProcess
-              ? llmConfig?.presets.find((p) => p.id === llmConfig.active_preset_id)?.name || null
-              : (enableDictionaryEnhancement ? "词库增强" : "文本规范化")
-            : null;
+          let presetName: string | null = null;
+          if (hasPolishing && mode !== "assistant") {
+            const stylePolishName =
+              llmConfig?.presets.find((p) => p.id === llmConfig.active_preset_id)?.name || "风格化润色";
+            const enabledEnhancements: string[] = [];
+            if (enablePostProcess) enabledEnhancements.push(stylePolishName);
+            if (enableDictionaryEnhancement) enabledEnhancements.push("词库增强");
+            if (enableUserCorrectionEnhancement) enabledEnhancements.push("智能纠错");
+
+            if (enabledEnhancements.length === 0) {
+              presetName = "文本规范化";
+            } else if (enabledEnhancements.length === 1) {
+              presetName = enabledEnhancements[0];
+            } else {
+              presetName = "大模型增强";
+            }
+          }
 
           setActivePresetName?.(presetName);
 
@@ -237,6 +257,9 @@ export function useTauriEventListeners({
           setUseRealtime?.(config.use_realtime_asr ?? true);
           setEnablePostProcess?.(config.enable_llm_post_process ?? false);
           setEnableDictionaryEnhancement?.(config.enable_dictionary_enhancement ?? true);
+          setEnableUserCorrectionEnhancement?.(
+            config.enable_user_correction_enhancement ?? false,
+          );
           setLlmConfig?.(config.llm_config || llmConfigRef.current);
           if (config.assistant_config) setAssistantConfig?.(config.assistant_config);
           setEnableMuteOtherApps?.(config.enable_mute_other_apps ?? false);
@@ -259,6 +282,17 @@ export function useTauriEventListeners({
             setBuiltinDictionaryDomains(
               normalizeBuiltinDictionaryDomains(config.builtin_dictionary_domains || [])
             );
+          }
+
+          if (setUserCorrectionRecords) {
+            const normalizedRecords = Array.isArray(config.user_correction_records)
+              ? config.user_correction_records.filter(
+                (record) =>
+                  typeof record?.origin_text === "string"
+                  && typeof record?.corrected_text === "string",
+              )
+              : [];
+            setUserCorrectionRecords(normalizedRecords);
           }
         }))) return;
 
@@ -311,6 +345,7 @@ export function useTauriEventListeners({
     setUseRealtime,
     setEnablePostProcess,
     setEnableDictionaryEnhancement,
+    setEnableUserCorrectionEnhancement,
     setLlmConfig,
     setAssistantConfig,
     setEnableMuteOtherApps,
@@ -318,6 +353,7 @@ export function useTauriEventListeners({
     setCloseAction,
     setDictionary,
     setBuiltinDictionaryDomains,
+    setUserCorrectionRecords,
     onExternalConfigUpdated,
     setShowCloseDialog,
     setStatus,

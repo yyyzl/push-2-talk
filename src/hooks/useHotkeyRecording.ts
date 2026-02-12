@@ -41,7 +41,7 @@ export type UseHotkeyRecordingResult = {
   setRecordingMode: React.Dispatch<React.SetStateAction<HotkeyRecordingMode>>;
   recordingKeys: HotkeyKey[];
   hotkeyError: string | null;
-  resetHotkeyToDefault: (mode: "dictation" | "assistant" | "release") => void;
+  resetHotkeyToDefault: (mode: "dictation" | "assistant" | "correction" | "release") => void;
 };
 
 export function useHotkeyRecording({
@@ -144,9 +144,14 @@ export function useHotkeyRecording({
           ...nextDualHotkeyConfig.dictation,
           release_mode_keys: keysArray,
         };
-      } else {
+      } else if (recordingMode === "assistant") {
         nextDualHotkeyConfig.assistant = {
           ...nextDualHotkeyConfig.assistant,
+          keys: keysArray,
+        };
+      } else {
+        nextDualHotkeyConfig.correction = {
+          ...nextDualHotkeyConfig.correction,
           keys: keysArray,
         };
       }
@@ -209,9 +214,10 @@ export function useHotkeyRecording({
     setDualHotkeyConfig,
   ]);
 
-  const resetHotkeyToDefault = (mode: "dictation" | "assistant" | "release") => {
+  const resetHotkeyToDefault = (mode: "dictation" | "assistant" | "correction" | "release") => {
     const defaultDictationKeys = ["control_left", "meta_left"] as HotkeyKey[];
     const defaultAssistantKeys = ["alt_left", "space"] as HotkeyKey[];
+    const defaultCorrectionKeys = ["control_left", "shift_left", "space"] as HotkeyKey[];
     const defaultReleaseKeys = ["f2"] as HotkeyKey[];
 
     setDualHotkeyConfig((prev) => {
@@ -222,6 +228,14 @@ export function useHotkeyRecording({
           assistant: {
             ...prev.assistant,
             keys: defaultAssistantKeys,
+          },
+        };
+      } else if (mode === "correction") {
+        next = {
+          ...prev,
+          correction: {
+            ...prev.correction,
+            keys: defaultCorrectionKeys,
           },
         };
       } else if (mode === "release") {

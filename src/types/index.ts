@@ -23,6 +23,7 @@ export interface HotkeyConfig {
 export interface DualHotkeyConfig {
   dictation: HotkeyConfig;  // 听写模式（默认 Ctrl+Win）
   assistant: HotkeyConfig;  // AI助手模式（默认 Alt+Space）
+  correction: HotkeyConfig; // 用户纠错模式（默认 Ctrl+Shift+Space）
 }
 
 // ASR 配置
@@ -110,6 +111,11 @@ export interface AssistantConfig {
   text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
 }
 
+export interface UserCorrectionRecord {
+  origin_text: string;
+  corrected_text: string;
+}
+
 // 应用配置
 export interface AppConfig {
   dashscope_api_key: string;
@@ -118,6 +124,7 @@ export interface AppConfig {
   use_realtime_asr: boolean;
   enable_llm_post_process: boolean;
   enable_dictionary_enhancement: boolean;
+  enable_user_correction_enhancement: boolean;
   llm_config: LlmConfig;
   assistant_config: AssistantConfig;
   learning_config: LearningConfig;
@@ -126,6 +133,7 @@ export interface AppConfig {
   dual_hotkey_config: DualHotkeyConfig;
   enable_mute_other_apps: boolean;
   dictionary: string[];  // 简化格式："word" 或 "word|auto"
+  user_correction_records: UserCorrectionRecord[];
   builtin_dictionary_domains: string[];  // 内置词库领域列表
   theme: string;
 }
@@ -193,7 +201,7 @@ export interface UsageStats {
 }
 
 // 热键录制模式
-export type HotkeyRecordingMode = 'dictation' | 'assistant' | 'release';
+export type HotkeyRecordingMode = 'dictation' | 'assistant' | 'correction' | 'release';
 
 // ============================================================================
 // 自动词库学习相关类型

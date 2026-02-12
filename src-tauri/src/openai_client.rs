@@ -76,6 +76,8 @@ pub struct ChatOptions {
     /// 温度参数（0.0-1.0，越低越确定）
     /// 使用 f64 避免浮点精度问题（f32 的 0.3 会变成 0.30000001192092896）
     pub temperature: f64,
+    /// 是否优先追求低延迟（尝试关闭/最小化模型思考）
+    pub disable_thinking_for_speed: bool,
 }
 
 impl Default for ChatOptions {
@@ -83,6 +85,7 @@ impl Default for ChatOptions {
         Self {
             max_tokens: 1024,
             temperature: 0.3,
+            disable_thinking_for_speed: false,
         }
     }
 }
@@ -93,6 +96,7 @@ impl ChatOptions {
         Self {
             max_tokens: 2048, // 使用与 Smart Command 相同的值，避免 API 兼容性问题
             temperature: 0.7,
+            disable_thinking_for_speed: true,
         }
     }
 
@@ -101,8 +105,72 @@ impl ChatOptions {
         Self {
             max_tokens: 2048,
             temperature: 0.5,
+            disable_thinking_for_speed: false,
         }
     }
+}
+
+fn normalize_model_for_endpoint(endpoint: &str, model: &str) -> String {
+    let model_trimmed = model.trim();
+    if model_trimmed.is_empty() {
+        return String::new();
+    }
+
+    let endpoint_lc = endpoint.to_ascii_lowercase();
+    let model_lc = model_trimmed.to_ascii_lowercase();
+
+    // DeepSeek V3.2 官方推荐通过 deepseek-chat 访问。
+    if endpoint_lc.contains("api.deepseek.com")
+        && matches!(
+            model_lc.as_str(),
+            "deepseekv3.2" | "deepseek-v3.2" | "deepseek_v3.2" | "deepseek-v3-2" | "deepseek_v3_2"
+        )
+    {
+        return "deepseek-chat".to_string();
+    }
+
+    model_trimmed.to_string()
+}
+
+fn build_request_body(
+    endpoint: &str,
+    model: &str,
+    messages_json: &[Value],
+    options: &ChatOptions,
+) -> Value {
+    let resolved_model = normalize_model_for_endpoint(endpoint, model);
+    let endpoint_lc = endpoint.to_ascii_lowercase();
+    let resolved_model_lc = resolved_model.to_ascii_lowercase();
+
+    let mut request_body = serde_json::json!({
+        "model": resolved_model,
+        "messages": messages_json,
+        "max_tokens": options.max_tokens,
+        "temperature": options.temperature
+    });
+
+    if options.disable_thinking_for_speed {
+        // 豆包 Seed 1.8：显式关闭 thinking。
+        if resolved_model_lc.starts_with("doubao-seed")
+        {
+            request_body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+
+        // DeepSeek V3.2（deepseek-chat）：显式关闭 thinking，确保低延迟。
+        if resolved_model_lc.starts_with("deepseek") {
+            request_body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+
+        // Gemini 3 Flash（OpenAI 兼容）：最小化推理强度。似乎并没有用
+        if resolved_model_lc.starts_with("gemini-3-flash")
+        {
+            request_body["reasoning_effort"] = serde_json::json!("minimal");
+            request_body["thinking"] = serde_json::json!({ "type": "disabled" });
+            request_body["thinking"] = serde_json::json!({ "thinking_type": "disabled" });
+        }
+    }
+
+    request_body
 }
 
 // ============================================================================
@@ -194,21 +262,26 @@ impl OpenAiClient {
             })
             .collect();
 
-        let request_body = serde_json::json!({
-            "model": self.config.model,
-            "messages": messages_json,
-            "max_tokens": options.max_tokens,
-            "temperature": options.temperature
-        });
+        let request_body = build_request_body(
+            &self.config.endpoint,
+            &self.config.model,
+            &messages_json,
+            &options,
+        );
+        let request_model = request_body["model"]
+            .as_str()
+            .unwrap_or(self.config.model.as_str());
 
         // 打印完整请求信息用于调试
         tracing::info!(
-            "[DEBUG] OpenAI 请求: endpoint={}, model={}, api_key_len={}, max_tokens={}, temperature={}",
+            "[DEBUG] OpenAI 请求: endpoint={}, model={} -> {}, api_key_len={}, max_tokens={}, temperature={}, low_latency={}",
             self.config.endpoint,
             self.config.model,
+            request_model,
             self.config.api_key.len(),
             options.max_tokens,
-            options.temperature
+            options.temperature,
+            options.disable_thinking_for_speed
         );
         tracing::info!(
             "[DEBUG] 请求体: {}",
@@ -280,14 +353,17 @@ mod tests {
         let default = ChatOptions::default();
         assert_eq!(default.max_tokens, 1024);
         assert_eq!(default.temperature, 0.3);
+        assert!(!default.disable_thinking_for_speed);
 
         let polishing = ChatOptions::for_polishing();
         assert_eq!(polishing.max_tokens, 2048);
         assert_eq!(polishing.temperature, 0.7);
+        assert!(polishing.disable_thinking_for_speed);
 
         let smart = ChatOptions::for_smart_command();
         assert_eq!(smart.max_tokens, 2048);
         assert_eq!(smart.temperature, 0.5);
+        assert!(!smart.disable_thinking_for_speed);
     }
 
     #[test]
@@ -303,5 +379,66 @@ mod tests {
         );
         assert_eq!(config.api_key, "sk-xxx");
         assert_eq!(config.model, "gpt-4");
+    }
+
+    #[test]
+    fn test_normalize_deepseek_v32_alias() {
+        let normalized = normalize_model_for_endpoint(
+            "https://api.deepseek.com/chat/completions",
+            "deepseekv3.2",
+        );
+        assert_eq!(normalized, "deepseek-chat");
+    }
+
+    #[test]
+    fn test_polishing_adaptation_for_doubao_seed_18() {
+        let messages = vec![serde_json::json!({"role": "user", "content": "ping"})];
+        let options = ChatOptions::for_polishing();
+        let body = build_request_body(
+            "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+            "doubao-seed-1-8-251228",
+            &messages,
+            &options,
+        );
+
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({
+                "type": "disabled"
+            })
+        );
+    }
+
+    #[test]
+    fn test_polishing_adaptation_for_gemini3_flash() {
+        let messages = vec![serde_json::json!({"role": "user", "content": "ping"})];
+        let options = ChatOptions::for_polishing();
+        let body = build_request_body(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "gemini-3-flash-preview",
+            &messages,
+            &options,
+        );
+
+        assert_eq!(body["reasoning_effort"], serde_json::json!("minimal"));
+    }
+
+    #[test]
+    fn test_polishing_adaptation_for_deepseek_chat() {
+        let messages = vec![serde_json::json!({"role": "user", "content": "ping"})];
+        let options = ChatOptions::for_polishing();
+        let body = build_request_body(
+            "https://api.deepseek.com/chat/completions",
+            "deepseek-chat",
+            &messages,
+            &options,
+        );
+
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({
+                "type": "disabled"
+            })
+        );
     }
 }

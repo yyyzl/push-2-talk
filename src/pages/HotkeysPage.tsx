@@ -11,7 +11,7 @@ export type HotkeysPageProps = {
   recordingKeys: HotkeyKey[];
   hotkeyError: string | null;
   dualHotkeyConfig: DualHotkeyConfig;
-  resetHotkeyToDefault: (mode: "dictation" | "assistant" | "release") => void;
+  resetHotkeyToDefault: (mode: "dictation" | "assistant" | "correction" | "release") => void;
 };
 
 const RenderKeys = ({ text, isRecording }: { text: string; isRecording?: boolean }) => {
@@ -177,6 +177,62 @@ export function HotkeysPage({
                   </button>
                   <button
                     onClick={() => resetHotkeyToDefault("assistant")}
+                    disabled={!canRecord}
+                    className="p-1.5 rounded-lg text-stone-400 hover:text-[var(--ink)] hover:bg-stone-100 disabled:opacity-30 transition-colors"
+                    title="恢复默认"
+                  >
+                    <RotateCcw size={16} />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* User Correction */}
+          <div className="p-5 flex items-center justify-between group hover:bg-[var(--paper)] transition-colors">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center border border-emerald-100">
+                <Keyboard size={20} />
+              </div>
+              <div>
+                <div className="text-sm font-bold text-[var(--ink)]">用户纠错</div>
+                <div className="mt-1.5">
+                  <RenderKeys
+                    text={
+                      isRecordingHotkey && recordingMode === "correction"
+                        ? recordingKeys.join(" + ")
+                        : formatHotkeyDisplay(dualHotkeyConfig.correction)
+                    }
+                    isRecording={isRecordingHotkey && recordingMode === "correction"}
+                  />
+                </div>
+                <div className="text-[10px] text-stone-400 mt-1 font-medium">
+                  选中文本后触发手动替换
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {isRecordingHotkey && recordingMode === "correction" ? (
+                <button
+                  onClick={() => setIsRecordingHotkey(false)}
+                  className="px-3 py-1.5 rounded-lg border border-[var(--stone)] bg-white text-xs font-bold hover:bg-stone-50"
+                >
+                  取消
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => {
+                      setRecordingMode("correction");
+                      setIsRecordingHotkey(true);
+                    }}
+                    disabled={!canRecord}
+                    className="px-3 py-1.5 rounded-lg border border-[var(--stone)] bg-white text-[var(--ink)] text-xs font-bold hover:border-stone-400 disabled:opacity-50 transition-colors"
+                  >
+                    录制
+                  </button>
+                  <button
+                    onClick={() => resetHotkeyToDefault("correction")}
                     disabled={!canRecord}
                     className="p-1.5 rounded-lg text-stone-400 hover:text-[var(--ink)] hover:bg-stone-100 disabled:opacity-30 transition-colors"
                     title="恢复默认"

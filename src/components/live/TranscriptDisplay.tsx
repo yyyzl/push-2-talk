@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type MouseEvent, type RefObject } from "react";
-import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp, BookOpen } from "lucide-react";
+import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp, BookOpen, ShieldCheck } from "lucide-react";
 
 export type TranscriptDisplayProps = {
   transcript: string;
@@ -14,6 +14,7 @@ export type TranscriptDisplayProps = {
   variant?: "default" | "compact";
   enablePostProcess: boolean;
   enableDictionaryEnhancement: boolean;
+  enableUserCorrectionEnhancement: boolean;
 };
 
 export function TranscriptDisplay({
@@ -29,6 +30,7 @@ export function TranscriptDisplay({
   variant = "default",
   enablePostProcess,
   enableDictionaryEnhancement,
+  enableUserCorrectionEnhancement,
 }: TranscriptDisplayProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -48,15 +50,25 @@ export function TranscriptDisplay({
     if (currentMode === "assistant") {
       return { Icon: MessageSquare, label: "AI 助手" };
     }
-    // Priority: PostProcess (Polishing) > Dictionary Enhancement
-    if (enablePostProcess) {
-      return { Icon: Sparkles, label: `${activePresetName || "智能"}润色` };
+    const stylePolishLabel = activePresetName || "风格化润色";
+    const hasStylePolish = enablePostProcess;
+    const hasDictionaryEnhancement = enableDictionaryEnhancement;
+    const hasSmartCorrection = enableUserCorrectionEnhancement;
+    const enabledCount = [hasStylePolish, hasDictionaryEnhancement, hasSmartCorrection].filter(Boolean).length;
+
+    if (enabledCount === 0) {
+      return { Icon: Sparkles, label: stylePolishLabel };
     }
-    if (enableDictionaryEnhancement) {
+    if (enabledCount > 1) {
+      return { Icon: Sparkles, label: "大模型增强" };
+    }
+    if (hasStylePolish) {
+      return { Icon: Sparkles, label: stylePolishLabel };
+    }
+    if (hasDictionaryEnhancement) {
       return { Icon: BookOpen, label: "词库增强" };
     }
-    // Fallback
-    return { Icon: Sparkles, label: `${activePresetName || "智能"}润色` };
+    return { Icon: ShieldCheck, label: "智能纠错" };
   };
 
   const { Icon: StatusIcon, label: statusLabel } = getStatusConfig();
@@ -168,7 +180,7 @@ export function TranscriptDisplay({
                 </span>
               )}
               {llmTime !== null && (
-                <span className="text-xs text-[var(--crail)] bg-[rgba(217,119,87,0.12)] px-2 py-1 rounded-md" title="LLM 润色耗时">
+                <span className="text-xs text-[var(--crail)] bg-[rgba(217,119,87,0.12)] px-2 py-1 rounded-md" title="LLM 增强耗时">
                   LLM {(llmTime / 1000).toFixed(2)}s
                 </span>
               )}
@@ -219,7 +231,7 @@ export function TranscriptDisplay({
                 </button>
               </div>
               <div className="overflow-y-auto pr-2 custom-scroll max-h-[18rem]">
-                <p className="text-stone-800 text-base leading-relaxed whitespace-pre-wrap">{transcript}</p>
+                <p className="text-stone-600 text-base leading-relaxed whitespace-pre-wrap">{transcript}</p>
                 <div ref={transcriptEndRef} />
               </div>
             </div>

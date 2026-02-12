@@ -35,7 +35,7 @@ export const ASR_CACHE_STORAGE_KEY = 'pushtotalk_asr_cache';
 export const DEFAULT_PRESETS: LlmPreset[] = [
   {
     id: "polishing",
-    name: "文本润色",
+    name: "风格化润色",
     system_prompt: "你是一个语音转写润色助手。请在不改变原意的前提下：1）删除重复或意义相近的句子；2）合并同一主题的内容；3）去除「嗯」「啊」等口头禅；4）保留数字与关键信息；5）相关数字和时间不要使用中文；6）整理成自然的段落。输出纯文本即可。"
   },
   {
@@ -135,7 +135,10 @@ export const DEFAULT_DUAL_HOTKEY_CONFIG = {
     keys: ['control_left', 'meta_left'] as HotkeyKey[],
     release_mode_keys: ['f2'] as HotkeyKey[],
   },
-  assistant: { keys: ['alt_left', 'space'] as HotkeyKey[] }
+  assistant: { keys: ['alt_left', 'space'] as HotkeyKey[] },
+  correction: {
+    keys: ['control_left', 'shift_left', 'space'] as HotkeyKey[],
+  },
 };
 
 // 默认 ASR 缓存

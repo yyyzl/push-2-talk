@@ -121,7 +121,7 @@ export function HistoryDrawer({
                           <div className={`text-xs font-semibold tracking-wide flex items-center gap-1.5 ${record.mode === "assistant" ? "text-blue-500" : "text-[var(--crail)]"
                             }`}>
                             {record.mode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
-                            {record.mode === "assistant" ? "AI 回复" : (record.presetName || "润色后")}
+                            {record.mode === "assistant" ? "AI 回复" : (record.presetName || "增强后")}
                           </div>
                           <button
                             onClick={(e) => onCopyText(record.polishedText!, e)}

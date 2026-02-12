@@ -28,6 +28,8 @@ export type RightPanelProps = {
   setEnablePostProcess: Dispatch<SetStateAction<boolean>>;
   enableDictionaryEnhancement: boolean;
   setEnableDictionaryEnhancement: Dispatch<SetStateAction<boolean>>;
+  enableUserCorrectionEnhancement: boolean;
+  setEnableUserCorrectionEnhancement: Dispatch<SetStateAction<boolean>>;
   llmConfig: LlmConfig;
   setLlmConfig: Dispatch<SetStateAction<LlmConfig>>;
 
@@ -51,6 +53,8 @@ export function RightPanel({
   setEnablePostProcess,
   enableDictionaryEnhancement,
   setEnableDictionaryEnhancement,
+  enableUserCorrectionEnhancement,
+  setEnableUserCorrectionEnhancement,
   llmConfig,
   setLlmConfig,
   dualHotkeyConfig,
@@ -135,16 +139,27 @@ export function RightPanel({
               {formatHotkeyDisplay(dualHotkeyConfig.assistant)}
             </kbd>
           </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-stone-500">用户纠错</span>
+            <kbd className="px-2 py-1 bg-[var(--panel)] border border-[var(--stone)] rounded text-[10px] font-bold mono">
+              {formatHotkeyDisplay(dualHotkeyConfig.correction)}
+            </kbd>
+          </div>
         </div>
       </div>
 
-      {/* 语句润色（热更新，不需要重启服务） */}
+      {/* 大模型增强（热更新，不需要重启服务） */}
       <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">
+            大模型增强
+          </label>
+        </div>
         <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-bold">语句润色</span>
-              <Tooltip content="使用 AI 对识别结果进行智能优化，如纠错、润色、翻译等">
+              <span className="text-xs font-bold">风格化润色</span>
+              <Tooltip content="使用大模型对识别结果做风格化优化，如去口头禅、合并重复语句、整理段落等">
                 <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
               </Tooltip>
             </div>
@@ -179,7 +194,7 @@ export function RightPanel({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-bold text-stone-700">词库增强</span>
-              <Tooltip content="将个人词库注入提示词，用于同音词纠错与专业术语优先匹配；可独立于语句润色开关单独生效（仍会调用 LLM）">
+              <Tooltip content="将个人词库注入提示词，用于同音词纠错与专业术语优先匹配；可独立于风格化润色、智能纠错单独生效">
                 <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
               </Tooltip>
             </div>
@@ -194,7 +209,37 @@ export function RightPanel({
               variant="orange"
             />
           </div>
-          {!llmConfig.shared.api_key && (enablePostProcess || enableDictionaryEnhancement) && (
+          <div className="my-3 border-t border-dashed border-stone-200" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-bold text-stone-700">智能纠错</span>
+              <Tooltip content="参考你提交过的“原文 -> 纠正文”记录，优先修正高频口误与术语错误；可独立开启">
+                <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+              </Tooltip>
+            </div>
+            <ConfigToggle
+              checked={enableUserCorrectionEnhancement}
+              onCheckedChange={setEnableUserCorrectionEnhancement}
+              onCommit={async (checked) => {
+                await saveImmediately({ enableUserCorrectionEnhancement: checked });
+              }}
+              disabled={isRunning}
+              size="sm"
+              variant="orange"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate("user-corrections")}
+            className="mt-2 w-full rounded-lg border border-[var(--stone)] bg-[var(--paper)] px-2 py-1.5 text-[11px] font-semibold text-stone-600 transition-colors hover:border-[rgba(176,174,165,0.75)] hover:text-[var(--ink)]"
+          >
+            管理纠错记录
+          </button>
+          {!llmConfig.shared.api_key && (
+            enablePostProcess
+            || enableDictionaryEnhancement
+            || enableUserCorrectionEnhancement
+          ) && (
             <div className="mt-3 text-[10px] font-bold text-amber-600">
               LLM API Key 未配置，请到 Presets 中设置
             </div>

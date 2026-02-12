@@ -115,10 +115,10 @@ export function Sidebar({
         <button
           onClick={() => onNavigate("llm")}
           className={navItem("llm")}
-          title="语句润色预设"
+          title="大模型增强预设"
         >
           <Sparkles className="shrink-0 w-5 h-5" />
-          <span className={navTextClass}>语句润色</span>
+          <span className={navTextClass}>大模型增强</span>
         </button>
 
         <button
@@ -200,6 +200,15 @@ export function Sidebar({
         >
           <History className="shrink-0 w-5 h-5" />
           <span className={navTextClass}>历史记录</span>
+        </button>
+
+        <button
+          onClick={() => onNavigate("user-corrections")}
+          className={navItem("user-corrections")}
+          title="纠错记录"
+        >
+          <Sparkles className="shrink-0 w-5 h-5" />
+          <span className={navTextClass}>纠错记录</span>
         </button>
       </nav>
 
