@@ -1,7 +1,8 @@
 import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig } from '../types';
+import { isMacos } from "../hooks/usePlatform";
 
 // 按键显示名称映射
-export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
+const BASE_KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
   control_left: 'Ctrl(左)', control_right: 'Ctrl(右)',
   shift_left: 'Shift(左)', shift_right: 'Shift(右)',
   alt_left: 'Alt(左)', alt_right: 'Alt(右)',
@@ -20,6 +21,29 @@ export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
   return: 'Enter', backspace: 'Backspace', delete: 'Delete', insert: 'Insert',
   home: 'Home', end: 'End', page_up: 'PageUp', page_down: 'PageDown',
 };
+
+const MAC_KEY_DISPLAY_OVERRIDES: Partial<Record<HotkeyKey, string>> = {
+  control_left: "Control(⌃)",
+  control_right: "Control(⌃)",
+  alt_left: "Option(⌥)",
+  alt_right: "Option(⌥)",
+  meta_left: "Cmd(⌘)",
+  meta_right: "Cmd(⌘)",
+  return: "Return",
+  backspace: "Delete",
+};
+
+export const getKeyDisplayNames = (platformIsMacos = isMacos): Record<HotkeyKey, string> => {
+  if (!platformIsMacos) {
+    return BASE_KEY_DISPLAY_NAMES;
+  }
+  return {
+    ...BASE_KEY_DISPLAY_NAMES,
+    ...MAC_KEY_DISPLAY_OVERRIDES,
+  } as Record<HotkeyKey, string>;
+};
+
+export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = getKeyDisplayNames();
 
 // 历史记录
 export const HISTORY_KEY = 'pushtotalk_history';
@@ -132,7 +156,7 @@ export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {
 // 默认双热键配置
 export const DEFAULT_DUAL_HOTKEY_CONFIG = {
   dictation: {
-    keys: ['control_left', 'meta_left'] as HotkeyKey[],
+    keys: (isMacos ? ['alt_left', 'meta_left'] : ['control_left', 'meta_left']) as HotkeyKey[],
     release_mode_keys: ['f2'] as HotkeyKey[],
   },
   assistant: { keys: ['alt_left', 'space'] as HotkeyKey[] }

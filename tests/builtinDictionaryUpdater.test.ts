@@ -5,11 +5,12 @@ import test from "node:test";
 const readSource = (path: string) => readFile(path, "utf8");
 
 test("builtin updater 应在 setup 阶段初始化而非 start_app", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
-  assert.match(source, /setup\(move \|app\|/);
-  assert.match(source, /builtin_hotwords_raw/);
-  const startAppBlock = source.match(
-    /async fn start_app[\s\S]*?\n}\n\n#\[tauri::command\]\nasync fn stop_app/
+  const libSource = await readSource("src-tauri/src/lib.rs");
+  const lifecycleSource = await readSource("src-tauri/src/commands/lifecycle.rs");
+  assert.match(libSource, /setup\(move \|app\|/);
+  assert.match(libSource, /builtin_hotwords_raw/);
+  const startAppBlock = lifecycleSource.match(
+    /#\[tauri::command\][\s\S]*?pub async fn start_app[\s\S]*?#\[tauri::command\][\s\S]*?pub async fn stop_app/
   );
   assert.ok(startAppBlock, "应能匹配到 start_app 函数体");
   assert.doesNotMatch(
@@ -20,7 +21,9 @@ test("builtin updater 应在 setup 阶段初始化而非 start_app", async () =>
 
 test("应注册 get_builtin_domains_raw 命令与 builtin_dictionary_updated 事件", async () => {
   const source = await readSource("src-tauri/src/lib.rs");
-  assert.match(source, /fn get_builtin_domains_raw\(/);
-  assert.match(source, /generate_handler!\[[\s\S]*get_builtin_domains_raw/);
-  assert.match(source, /emit\("builtin_dictionary_updated"/);
+  const traySource = await readSource("src-tauri/src/tray.rs");
+  const configCommands = await readSource("src-tauri/src/commands/config.rs");
+  assert.match(configCommands, /fn get_builtin_domains_raw\(/);
+  assert.match(source, /generate_handler!\[[\s\S]*commands::config::get_builtin_domains_raw/);
+  assert.match(traySource, /emit\("builtin_dictionary_updated"/);
 });

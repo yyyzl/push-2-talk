@@ -3,12 +3,15 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { VocabularyLearningToast } from "../components/learning/VocabularyLearningToast";
+import { features } from "../hooks/usePlatform";
 import type { VocabularyLearningSuggestion } from "../types";
 
 // 最大通知数量
 const MAX_NOTIFICATIONS = 3;
 
 export default function NotificationWindow() {
+  if (!features.notificationToast) return null;
+
   const [suggestions, setSuggestions] = useState<VocabularyLearningSuggestion[]>([]);
 
   // 获取当前窗口引用（更可靠的方式）

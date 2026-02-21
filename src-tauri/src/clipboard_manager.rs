@@ -10,7 +10,7 @@ use arboard::Clipboard;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::win32_input;
+use crate::platform::input;
 
 /// RAII守卫：自动恢复剪贴板内容
 ///
@@ -79,11 +79,11 @@ pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
     thread::sleep(Duration::from_millis(50));
 
     // 4. 防御性释放修饰键
-    win32_input::release_all_modifiers()?;
+    input::release_all_modifiers()?;
     thread::sleep(Duration::from_millis(5));
 
     // 5. 使用 Win32 SendInput 模拟 Ctrl+C
-    win32_input::send_ctrl_c()?;
+    input::send_copy()?;
 
     // 6. 等待剪贴板更新（带重试机制）
     let selected_text = wait_for_clipboard_update(&mut clipboard, 3, 80)?;
@@ -189,7 +189,7 @@ pub fn insert_text_with_context(
     );
 
     // 2. 使用 Win32 SendInput 模拟 Ctrl+V 粘贴
-    win32_input::send_ctrl_v()?;
+    input::send_paste()?;
 
     // 3. 等待粘贴完成
     thread::sleep(Duration::from_millis(150));

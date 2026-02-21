@@ -12,8 +12,9 @@ use tauri::{AppHandle, Emitter};
 
 use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::config::AppConfig;
-use crate::learning::coordinator::start_learning_observation;
+use crate::learning::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
+use crate::platform::types::WindowId;
 use crate::text_inserter::TextInserter;
 use crate::tnl::TnlEngine;
 
@@ -57,7 +58,7 @@ impl NormalPipeline {
         asr_result: Result<String>,
         asr_time_ms: u64,
         _context: TranscriptionContext, // 普通模式不使用上下文
-        target_hwnd: Option<isize>,     // 目标窗口句柄（用于焦点恢复）
+        target_hwnd: Option<WindowId>,  // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果
         let asr_text = asr_result?;

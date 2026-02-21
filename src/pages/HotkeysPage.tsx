@@ -1,6 +1,7 @@
 import { Keyboard, Mic, MessageSquare, RotateCcw, ToggleLeft } from "lucide-react";
 import type { AppStatus, DualHotkeyConfig, HotkeyKey, HotkeyRecordingMode } from "../types";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../utils";
+import { isMacos } from "../hooks/usePlatform";
 
 export type HotkeysPageProps = {
   status: AppStatus;
@@ -211,6 +212,12 @@ export function HotkeysPage({
                 <div className="text-[10px] text-stone-400 mt-1 font-medium">
                   按一下开始，再按一下结束
                 </div>
+                {isMacos && (
+                  <div className="text-[10px] text-stone-400 mt-1 leading-relaxed">
+                    macOS 若 F2 不生效，请在系统设置中启用“将 F1、F2 等键用作标准功能键”，
+                    或使用 Fn+F2。
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">

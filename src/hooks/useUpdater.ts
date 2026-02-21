@@ -3,6 +3,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
 import type { UpdateStatus } from "../types";
+import { isMacos } from "./usePlatform";
 import { fetchAccumulatedNotes } from "../utils/releaseNotes";
 
 export type UpdaterInfo = { version: string; notes?: string };
@@ -148,7 +149,9 @@ export function useUpdater({ onToast, onError }: UseUpdaterParams) {
       } else if (errorStr.includes("space") || errorStr.includes("disk")) {
         errorMsg = "磁盘空间不足，请清理后重试";
       } else if (errorStr.includes("permission") || errorStr.includes("access")) {
-        errorMsg = "没有写入权限，请以管理员身份运行";
+        errorMsg = isMacos
+          ? "没有写入权限，请检查系统隐私与安全设置"
+          : "没有写入权限，请以管理员身份运行";
       } else if (errorStr.includes("signature") || errorStr.includes("verify")) {
         errorMsg = "安装包签名验证失败，请从官方渠道下载";
       }

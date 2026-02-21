@@ -60,7 +60,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["nsis", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",
@@ -68,12 +68,18 @@
       "icons/256x256.png",
       "icons/512x512.png",
       "icons/icon.ico",
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.icns"
     ],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist"
     },
     "createUpdaterArtifacts": true
   },

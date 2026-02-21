@@ -1,6 +1,7 @@
 // src/App.tsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import {
   CheckCircle2,
   AlertCircle,
@@ -13,6 +14,7 @@ import type {
   DualHotkeyConfig,
   LearningConfig,
   LlmConfig,
+  PermissionStatus,
   UsageStats,
 } from "./types";
 import type { AppPage } from "./pages/types";
@@ -48,6 +50,8 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { PreferencesPage } from "./pages/PreferencesPage";
 import { HelpPage } from "./pages/HelpPage";
 import { ConfigSaveContext, type ConfigSyncStatus, type ConfigOverrides } from "./contexts/ConfigSaveContext";
+import { PermissionGuideModal } from "./components/modals/PermissionGuideModal";
+import { isMacos } from "./hooks/usePlatform";
 import {
   createConfigSyncWindowController,
   scheduleSyncWindowRelease,
@@ -128,7 +132,9 @@ function App() {
   const [showAsrApiKey, setShowAsrApiKey] = useState(false);
   const [showModelsApiKey, setShowModelsApiKey] = useState(false);
   const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null);
   const [enableAutostart, setEnableAutostart] = useState(false);
   const [enableMuteOtherApps, setEnableMuteOtherApps] = useState(false);
   const [theme, setTheme] = useState("light");
@@ -388,6 +394,18 @@ function App() {
     applyRuntimeConfigRef.current = applyRuntimeConfig;
   }, [applyRuntimeConfig]);
 
+  const refreshPermissions = useCallback(async () => {
+    if (!isMacos) return;
+    try {
+      const status = await invoke<PermissionStatus>("check_permissions");
+      setPermissionStatus(status);
+      const hasMissingPermission = !status.microphone || !status.input_monitoring || !status.accessibility;
+      setShowPermissionModal(hasMissingPermission);
+    } catch (err) {
+      console.error("检测 macOS 权限失败:", err);
+    }
+  }, []);
+
   // 包装 immediatelySaveConfig，添加状态管理
   const wrappedSaveImmediately = useCallback(async (overrides?: ConfigOverrides) => {
     // 清理之前的 timeout
@@ -531,6 +549,7 @@ function App() {
           hasCheckedUpdateOnStartup.current = true;
           await checkForUpdates({ openModal: true, silentOnNoUpdate: true, silentOnError: true });
         }
+        await refreshPermissions();
       } catch (err) {
         hasLoadedConfigRef.current = false;
         console.error("初始化失败:", err);
@@ -538,7 +557,7 @@ function App() {
       }
     };
     init();
-  }, [checkForUpdates, loadConfig, releaseConfigSyncWindow]);
+  }, [checkForUpdates, loadConfig, refreshPermissions, releaseConfigSyncWindow]);
   useEffect(() => {
     getVersion().then(v => {
       setCurrentVersion(v);
@@ -947,6 +966,13 @@ function App() {
           downloadProgress={downloadProgress}
           onDismiss={dismissUpdateModal}
           onDownloadAndInstall={() => { void downloadAndInstall(); }}
+        />
+
+        <PermissionGuideModal
+          open={showPermissionModal}
+          status={permissionStatus}
+          onDismiss={() => setShowPermissionModal(false)}
+          onRefresh={() => { void refreshPermissions(); }}
         />
 
         {/* Global Toast */}

@@ -5,7 +5,7 @@ use arboard::Clipboard;
 use std::thread;
 use std::time::Duration;
 
-use crate::win32_input;
+use crate::platform::input;
 
 pub struct TextInserter {
     clipboard: Clipboard,
@@ -31,7 +31,7 @@ impl TextInserter {
         thread::sleep(Duration::from_millis(50));
 
         // 4. 使用 Win32 SendInput 模拟 Ctrl+V 粘贴
-        win32_input::send_ctrl_v()?;
+        input::send_paste()?;
 
         // 5. 等待粘贴完成
         thread::sleep(Duration::from_millis(150));

@@ -19,9 +19,15 @@ export function TopStatusBar({
   const isPolishing = status === "polishing";
   const isAssistantProcessing = status === "assistant_processing";
   const isProcessing = isTranscribing || isPolishing || isAssistantProcessing;
+  const globalNotice: string | null = null;
 
   return (
     <div className="relative border-b border-[var(--stone)] bg-[var(--paper)] font-sans">
+      <div
+        className={`overflow-hidden transition-all duration-200 ${
+          globalNotice ? "max-h-10 opacity-100" : "max-h-0 opacity-0"
+        }`}
+      />
       {/* ── Main status bar content (always stable, never shifts) ── */}
       <div className="px-6 py-3 flex items-center justify-between">
         <div

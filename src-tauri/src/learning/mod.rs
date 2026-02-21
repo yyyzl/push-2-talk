@@ -9,11 +9,21 @@
 // - llm_judge: LLM 词汇判断器
 // - coordinator: 学习流程协调器
 
-pub mod coordinator;
 pub mod diff_analyzer;
 pub mod llm_judge;
 pub mod store;
+#[cfg(target_os = "windows")]
 pub mod validator;
+
+#[cfg(target_os = "windows")]
+pub mod coordinator;
+#[cfg(not(target_os = "windows"))]
+pub mod coordinator_stub;
+
+#[cfg(target_os = "windows")]
+pub use coordinator::start_learning_observation;
+#[cfg(not(target_os = "windows"))]
+pub use coordinator_stub::start_learning_observation;
 
 /// 统一的词字符判断函数
 ///

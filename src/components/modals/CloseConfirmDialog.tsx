@@ -1,4 +1,5 @@
 import { Minus, X, XCircle } from "lucide-react";
+import { isMacos } from "../../hooks/usePlatform";
 
 export type CloseConfirmDialogProps = {
   open: boolean;
@@ -56,8 +57,12 @@ export function CloseConfirmDialog({
                           <Minus size={18} />
                         </div>
                         <div>
-                          <div className="text-sm font-bold text-[var(--ink)]">最小化到系统托盘</div>
-                          <div className="text-xs text-[var(--stone-dark)]">应用将在后台继续运行</div>
+                          <div className="text-sm font-bold text-[var(--ink)]">
+                            {isMacos ? "隐藏到菜单栏" : "最小化到系统托盘"}
+                          </div>
+                          <div className="text-xs text-[var(--stone-dark)]">
+                            {isMacos ? "应用将在后台菜单栏继续运行" : "应用将在后台继续运行"}
+                          </div>
                         </div>
                       </div>
                     </button>

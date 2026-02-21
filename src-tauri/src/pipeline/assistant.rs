@@ -14,7 +14,8 @@ use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::assistant_processor::AssistantProcessor;
 use crate::clipboard_manager::{insert_text_with_context, ClipboardGuard};
 use crate::config::AppConfig;
-use crate::learning::coordinator::start_learning_observation;
+use crate::learning::start_learning_observation;
+use crate::platform::types::WindowId;
 use crate::tnl::TnlEngine;
 
 /// AI 助手模式处理管道
@@ -56,7 +57,7 @@ impl AssistantPipeline {
         asr_result: Result<String>,
         asr_time_ms: u64,
         context: TranscriptionContext,
-        target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
+        target_hwnd: Option<WindowId>, // 目标窗口句柄（用于焦点恢复）
         dictionary: Vec<String>,
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果（用户指令）

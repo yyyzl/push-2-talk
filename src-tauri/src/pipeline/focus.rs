@@ -3,7 +3,8 @@
 // 提供悬浮窗隐藏和目标窗口焦点恢复功能
 // 确保文本能正确粘贴到用户原本操作的窗口
 
-use crate::win32_input;
+use crate::platform::input;
+use crate::platform::types::WindowId;
 use tauri::{AppHandle, Manager};
 
 /// 隐藏悬浮窗并恢复目标窗口焦点
@@ -21,7 +22,7 @@ use tauri::{AppHandle, Manager};
 /// 2. 等待 50ms 让 Windows 处理窗口消息
 /// 3. 主动恢复目标窗口焦点（带验证，最多重试 3 次）
 /// 4. 等待 100ms 焦点稳定
-pub async fn hide_overlay_and_restore_focus(app: &AppHandle, target_hwnd: Option<isize>) {
+pub async fn hide_overlay_and_restore_focus(app: &AppHandle, target_hwnd: Option<WindowId>) {
     // 1. 隐藏悬浮窗
     if let Some(overlay) = app.get_webview_window("overlay") {
         if overlay.is_visible().unwrap_or(false) {
@@ -38,11 +39,11 @@ pub async fn hide_overlay_and_restore_focus(app: &AppHandle, target_hwnd: Option
         tracing::info!("Pipeline: 恢复目标窗口焦点 (0x{:X})...", hwnd);
 
         // 检查窗口是否仍然有效
-        if !win32_input::is_window_valid(hwnd) {
+        if !input::is_window_valid(hwnd) {
             tracing::warn!("Pipeline: 目标窗口已无效，跳过焦点恢复");
         } else {
             // 尝试恢复焦点（最多重试 3 次）
-            let success = win32_input::restore_focus_with_verify(hwnd, 3);
+            let success = input::restore_focus_with_verify(hwnd, 3);
 
             if success {
                 tracing::info!("Pipeline: 焦点恢复成功");
@@ -62,9 +63,9 @@ pub async fn hide_overlay_and_restore_focus(app: &AppHandle, target_hwnd: Option
 ///
 /// 用于在粘贴前进行最后检查
 #[allow(dead_code)]
-pub fn verify_focus(target_hwnd: Option<isize>) -> bool {
+pub fn verify_focus(target_hwnd: Option<WindowId>) -> bool {
     match target_hwnd {
-        Some(hwnd) => win32_input::verify_foreground_window(hwnd),
+        Some(hwnd) => input::verify_foreground_window(hwnd),
         None => false,
     }
 }

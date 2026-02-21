@@ -2,6 +2,8 @@ import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { DualHotkeyConfig, HotkeyKey, HotkeyRecordingMode } from "../types";
+import { DEFAULT_DUAL_HOTKEY_CONFIG } from "../constants";
+import { isMacos } from "./usePlatform";
 import { isModifierKey, mapDomKeyToHotkeyKey } from "../utils";
 
 export type UseHotkeyRecordingParams = {
@@ -94,9 +96,10 @@ export function useHotkeyRecording({
       const keysArray = Array.from(pressedKeysSet);
       const hasModifier = keysArray.some((key) => isModifierKey(key));
       const isFunctionKey = keysArray.every((key) => /^f([1-9]|1[0-2])$/.test(key));
+      const modifierHint = isMacos ? "Ctrl/Option/Shift/Cmd" : "Ctrl/Alt/Shift/Win";
 
       if (!(hasModifier || isFunctionKey)) {
-        setHotkeyError("必须包含修饰键 Ctrl/Alt/Shift/Win 或功能键 F1-F12");
+        setHotkeyError(`必须包含修饰键 ${modifierHint} 或功能键 F1-F12`);
         window.setTimeout(() => setHotkeyError(null), 3000);
         setIsRecordingHotkey(false);
         setRecordingKeys([]);
@@ -147,9 +150,11 @@ export function useHotkeyRecording({
   ]);
 
   const resetHotkeyToDefault = (mode: "dictation" | "assistant" | "release") => {
-    const defaultDictationKeys = ["control_left", "meta_left"] as HotkeyKey[];
-    const defaultAssistantKeys = ["alt_left", "space"] as HotkeyKey[];
-    const defaultReleaseKeys = ["f2"] as HotkeyKey[];
+    const defaultDictationKeys = [...DEFAULT_DUAL_HOTKEY_CONFIG.dictation.keys] as HotkeyKey[];
+    const defaultAssistantKeys = [...DEFAULT_DUAL_HOTKEY_CONFIG.assistant.keys] as HotkeyKey[];
+    const defaultReleaseKeys = [
+      ...(DEFAULT_DUAL_HOTKEY_CONFIG.dictation.release_mode_keys || (["f2"] as HotkeyKey[])),
+    ] as HotkeyKey[];
 
     setDualHotkeyConfig((prev) => {
       let next: DualHotkeyConfig;

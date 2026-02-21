@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { AlertCircle, MessageSquareQuote, Plus, Trash2 } from "lucide-react";
 import type { LlmConfig, LlmPreset } from "../types";
+import { metaKeyName, modifierKey } from "../hooks/usePlatform";
 import { LlmConnectionConfig } from "../components/common";
 
 export type LlmPageProps = {
@@ -32,7 +33,7 @@ export function LlmPage({
             <div className="p-5 border-b border-[var(--stone)]">
               <div className="flex items-center gap-2 p-3 bg-[var(--panel)] border border-[var(--stone)] rounded-xl text-xs text-[var(--ink)]">
                 <AlertCircle size={14} className="text-[var(--steel)]" />
-                <span>Ctrl+Win 听写时使用</span>
+                <span>{`${modifierKey}+${metaKeyName} 听写时使用`}</span>
               </div>
               <button
                 onClick={handleAddPreset}

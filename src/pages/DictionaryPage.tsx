@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { SourceBadge } from "../components/learning/SourceBadge";
+import { features } from "../hooks/usePlatform";
 import type { DictionaryEntry } from "../types";
 import {
   BUILTIN_DICTIONARY_DOMAINS,
@@ -114,13 +115,16 @@ export function DictionaryPage({
 
   // 筛选词条
   const filteredDictionary = dictionary.filter((entry) => {
+    if (!features.autoLearning && entry.source === "auto") return false;
     if (filter === "all") return true;
     return entry.source === filter;
   });
 
   // 统计
   const manualCount = dictionary.filter((e) => e.source === "manual").length;
-  const autoCount = dictionary.filter((e) => e.source === "auto").length;
+  const autoCount = features.autoLearning
+    ? dictionary.filter((e) => e.source === "auto").length
+    : 0;
 
   // 切换选择
   const toggleSelect = (id: string) => {
@@ -271,15 +275,17 @@ export function DictionaryPage({
                 >
                   手动 ({manualCount})
                 </button>
-                <button
-                  onClick={() => setFilter("auto")}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${filter === "auto"
-                    ? "bg-[var(--sage)] text-white"
-                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                    }`}
-                >
-                  自动 ({autoCount})
-                </button>
+                {features.autoLearning && (
+                  <button
+                    onClick={() => setFilter("auto")}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${filter === "auto"
+                      ? "bg-[var(--sage)] text-white"
+                      : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                      }`}
+                  >
+                    自动 ({autoCount})
+                  </button>
+                )}
               </div>
 
               {/* 批量操作 */}
@@ -372,7 +378,9 @@ export function DictionaryPage({
                     }}>
                       {entry.word}
                     </span>
-                    <SourceBadge source={entry.source} />
+                    {(features.autoLearning || entry.source !== "auto") && (
+                      <SourceBadge source={entry.source} />
+                    )}
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                       <button
                         onClick={(e) => {
@@ -393,7 +401,11 @@ export function DictionaryPage({
 
             {filteredDictionary.length === 0 && (
               <div className="text-center py-8 text-stone-400 text-sm">
-                {filter === "all" ? "暂无词条，开始添加吧" : `暂无${filter === "manual" ? "手动" : "自动"}添加的词条`}
+                {filter === "all"
+                  ? "暂无词条，开始添加吧"
+                  : filter === "manual"
+                  ? "暂无手动添加的词条"
+                  : "暂无自动添加的词条"}
               </div>
             )}
           </>

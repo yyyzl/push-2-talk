@@ -5,6 +5,7 @@ import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../componen
 import { RedDot } from "../components/common/RedDot";
 import { SettingsModal } from "../components/modals/SettingsModal";
 import { normalizeLearningConfig } from "../constants";
+import { features, isMacos } from "../hooks/usePlatform";
 
 export type PreferencesPageProps = {
   status: AppStatus;
@@ -95,13 +96,18 @@ export function PreferencesPage({
               <Power size={16} />
             </div>
             <div>
-              <div className="text-sm font-bold text-[var(--ink)]">开机自启动</div>
-              <div className="text-[11px] text-stone-400 font-semibold">系统启动后自动运行</div>
+              <div className="text-sm font-bold text-[var(--ink)]">
+                {isMacos ? "登录时自动启动" : "开机自启动"}
+              </div>
+              <div className="text-[11px] text-stone-400 font-semibold">
+                {isMacos ? "登录后自动运行" : "系统启动后自动运行"}
+              </div>
             </div>
           </div>
           <Toggle checked={enableAutostart} onCheckedChange={() => onToggleAutostart()} size="sm" variant="green" />
         </div>
 
+        {features.muteOtherApps && (
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
           <div className="flex items-center gap-3">
             <div
@@ -131,7 +137,9 @@ export function PreferencesPage({
             variant="orange"
           />
         </div>
+        )}
 
+        {features.autoLearning && (
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
           <div className="flex items-center gap-3">
             <div
@@ -177,7 +185,9 @@ export function PreferencesPage({
             />
           </div>
         </div>
+        )}
 
+        {features.autoLearning && (
         <SettingsModal
           open={learningConfigModalOpen}
           onDismiss={() => setLearningConfigModalOpen(false)}
@@ -203,6 +213,7 @@ export function PreferencesPage({
             </div>
           </div>
         </SettingsModal>
+        )}
 
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
           <div className="flex items-center gap-3">

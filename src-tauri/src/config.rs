@@ -307,9 +307,9 @@ pub struct HotkeyConfig {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        // 默认为 Ctrl+Win（向后兼容）
+        // 默认跟随平台：Windows=Ctrl+Win，macOS=Option+Cmd
         Self {
-            keys: vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft],
+            keys: default_dictation_keys(),
             mode: HotkeyMode::default(),
             enable_release_lock: false,
             release_mode_keys: None, // 默认无松手模式快捷键
@@ -326,7 +326,7 @@ impl Default for HotkeyConfig {
 /// 支持两个独立的快捷键，分别触发听写模式和AI助手模式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DualHotkeyConfig {
-    /// 听写模式快捷键（默认 Ctrl+Win）
+    /// 听写模式快捷键（Windows 默认 Ctrl+Win，macOS 默认 Option+Cmd）
     #[serde(default = "default_dictation_hotkey")]
     pub dictation: HotkeyConfig,
     /// AI助手模式快捷键（默认 Alt+Space）
@@ -334,9 +334,19 @@ pub struct DualHotkeyConfig {
     pub assistant: HotkeyConfig,
 }
 
+#[cfg(target_os = "macos")]
+fn default_dictation_keys() -> Vec<HotkeyKey> {
+    vec![HotkeyKey::AltLeft, HotkeyKey::MetaLeft]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_dictation_keys() -> Vec<HotkeyKey> {
+    vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
+}
+
 fn default_dictation_hotkey() -> HotkeyConfig {
     HotkeyConfig {
-        keys: vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft],
+        keys: default_dictation_keys(),
         mode: HotkeyMode::Press,
         enable_release_lock: false,
         release_mode_keys: Some(vec![HotkeyKey::F2]), // 默认 F2 为松手模式快捷键
@@ -1437,7 +1447,7 @@ impl AppConfig {
             // 迁移 5: 旧单快捷键 → 新双快捷键 (保持原有逻辑)
             if let Some(old_hotkey) = config.hotkey_config.take() {
                 let is_default = config.dual_hotkey_config.dictation.keys
-                    == vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
+                    == default_dictation_keys()
                     && config.dual_hotkey_config.assistant.keys
                         == vec![HotkeyKey::AltLeft, HotkeyKey::Space];
 

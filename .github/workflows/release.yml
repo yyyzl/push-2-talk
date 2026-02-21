@@ -45,8 +45,8 @@ jobs:
       - name: Build only (No Release)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5UW5Nb3ZvRnFVL25mNmRRQ2FDZE9rRzlYaHhEWkxOQ0x2OERRL09aTm9BWUFBQkFBQUFBQUFBQUFBQUlBQUFBQUsydjdtdkdpVWQ4dTcxS1Z4K0F0Q3VCQXZ3K01BcnhvUThTLzZ1NGlQbkxpK1dUYVZUbndCTG5LaE9ZQ0JvY0FlYTk1aDB0TkxHc3FFVDBnOS8zL3dFWTRndHNUUzlVbG12LzVNSFpscG4yTkZhWk5ZbUxwMUdLNlE5NVFXR09qa09DcUd5ZVBMeHM9Cg==
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
   # ========================================================
@@ -63,6 +63,8 @@ jobs:
         include:
           - platform: windows-latest
             args: ''
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
 
@@ -159,12 +161,21 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install CMake (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install cmake
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5UW5Nb3ZvRnFVL25mNmRRQ2FDZE9rRzlYaHhEWkxOQ0x2OERRL09aTm9BWUFBQkFBQUFBQUFBQUFBQUlBQUFBQUsydjdtdkdpVWQ4dTcxS1Z4K0F0Q3VCQXZ3K01BcnhvUThTLzZ1NGlQbkxpK1dUYVZUbndCTG5LaE9ZQ0JvY0FlYTk1aDB0TkxHc3FFVDBnOS8zL3dFWTRndHNUUzlVbG12LzVNSFpscG4yTkZhWk5ZbUxwMUdLNlE5NVFXR09qa09DcUd5ZVBMeHM9Cg==
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: v__VERSION__
           releaseName: 'v__VERSION__'

@@ -21,7 +21,7 @@ export interface HotkeyConfig {
 
 // 双热键配置（听写模式 + AI助手模式）
 export interface DualHotkeyConfig {
-  dictation: HotkeyConfig;  // 听写模式（默认 Ctrl+Win）
+  dictation: HotkeyConfig;  // 听写模式（Windows 默认 Ctrl+Win，macOS 默认 Option+Cmd）
   assistant: HotkeyConfig;  // AI助手模式（默认 Alt+Space）
 }
 
@@ -192,6 +192,12 @@ export interface UsageStats {
   totalRecordingMs: number;
   totalRecordingCount: number;
   totalRecognizedChars: number;
+}
+
+export interface PermissionStatus {
+  microphone: boolean;
+  input_monitoring: boolean;
+  accessibility: boolean;
 }
 
 // 热键录制模式

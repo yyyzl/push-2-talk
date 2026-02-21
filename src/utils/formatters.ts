@@ -1,5 +1,5 @@
 import type { HotkeyConfig, HotkeyKey } from '../types';
-import { KEY_DISPLAY_NAMES } from '../constants';
+import { getKeyDisplayNames } from '../constants';
 
 // 格式化时间戳为 HH:MM:SS
 export const formatTimestamp = (ts: number): string => {
@@ -16,7 +16,8 @@ export const formatRecordingTime = (seconds: number): string => {
 
 // 格式化热键显示
 export const formatHotkeyKeysDisplay = (keys: HotkeyKey[]): string => {
-  return keys.map(k => KEY_DISPLAY_NAMES[k] || k).join(' + ');
+  const names = getKeyDisplayNames();
+  return keys.map(k => names[k] || k).join(' + ');
 };
 
 export const formatHotkeyDisplay = (config: HotkeyConfig): string => {
@@ -35,5 +36,6 @@ export const formatMsShort = (ms: number): string => {
 
 // 获取按键显示名称
 export const getKeyDisplayName = (key: HotkeyKey): string => {
-  return KEY_DISPLAY_NAMES[key] || key;
+  const names = getKeyDisplayNames();
+  return names[key] || key;
 };

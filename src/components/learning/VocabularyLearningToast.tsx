@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, X, Sparkles } from "lucide-react";
 import { DiffDisplay } from "./DiffDisplay";
+import { features } from "../../hooks/usePlatform";
 import type { VocabularyLearningSuggestion } from "../../types";
 
 interface VocabularyLearningToastProps {
@@ -15,6 +16,8 @@ export function VocabularyLearningToast({
   onDismiss,
   onAdd,
 }: VocabularyLearningToastProps) {
+  if (!features.autoLearning) return null;
+
   const [isExiting, setIsExiting] = useState(false);
   const [countdown, setCountdown] = useState(5);
   const [isSubmitting, setIsSubmitting] = useState(false);

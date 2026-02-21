@@ -532,7 +532,7 @@ export function useAppServiceController({
       } else if (config.hotkey_config && config.hotkey_config.keys.length > 0) {
         setDualHotkeyConfig({
           dictation: config.hotkey_config,
-          assistant: { keys: ["alt_left", "space"] },
+          assistant: { keys: [...DEFAULT_DUAL_HOTKEY_CONFIG.assistant.keys] },
         });
       } else {
         setDualHotkeyConfig(DEFAULT_DUAL_HOTKEY_CONFIG);
@@ -582,8 +582,8 @@ export function useAppServiceController({
       const loadedDualHotkeyConfig = config.dual_hotkey_config || {
         dictation:
           config.hotkey_config ||
-          ({ keys: ["control_left", "meta_left"] as HotkeyKey[] } as const),
-        assistant: { keys: ["alt_left", "space"] as HotkeyKey[] },
+          ({ keys: [...DEFAULT_DUAL_HOTKEY_CONFIG.dictation.keys] as HotkeyKey[] } as const),
+        assistant: { keys: [...DEFAULT_DUAL_HOTKEY_CONFIG.assistant.keys] as HotkeyKey[] },
       };
 
       if (effectiveAsrConfig && isAsrConfigValid(effectiveAsrConfig)) {

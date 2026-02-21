@@ -55,7 +55,7 @@ test("P1-A: saveFieldPatchWithStatus 应主动开启同步窗口并在 finally �
 });
 
 test("P1-B: load_config 命令应持有 CONFIG_LOCK，避免与 save rename 竞态", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
+  const source = await readSource("src-tauri/src/commands/config.rs");
 
   assert.match(
     source,
@@ -64,7 +64,7 @@ test("P1-B: load_config 命令应持有 CONFIG_LOCK，避免与 save rename 竞�
 });
 
 test("P2-B: save_config 未传 hotkey_config 时应保留旧值", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
+  const source = await readSource("src-tauri/src/commands/config.rs");
 
   assert.match(
     source,
@@ -73,7 +73,7 @@ test("P2-B: save_config 未传 hotkey_config 时应保留旧值", async () => {
 });
 
 test("P2-C: patch_config_fields 应对白名单 theme/close_action 做校验", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
+  const source = await readSource("src-tauri/src/commands/config.rs");
 
   assert.match(
     source,
@@ -94,7 +94,7 @@ test("M2: PreferencesPage 不应再在切换学习开关时 load_config", async 
 });
 
 test("S3: 托盘配置切换应拆分磁盘保存与事件派发，避免长时间持锁", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
+  const source = await readSource("src-tauri/src/tray.rs");
 
   assert.match(source, /fn\s+save_persisted_config_without_emit\s*\(/);
   assert.match(source, /save_persisted_config_without_emit\(&config\)\?;/);
@@ -138,16 +138,19 @@ test("S5: 即时保存 overrides 命名应统一为 dictionaryEntries", async ()
 
 test("S2: 后端应提供 set_learning_enabled 字段级 patch 命令", async () => {
   const source = await readSource("src-tauri/src/lib.rs");
+  const configCommands = await readSource("src-tauri/src/commands/config.rs");
+  const systemCommands = await readSource("src-tauri/src/commands/system.rs");
 
-  assert.match(source, /async\s+fn\s+patch_config_fields\s*\(\s*app:\s*AppHandle\s*,\s*patch:\s*ConfigFieldPatch\s*\)/);
+  assert.match(configCommands, /async\s+fn\s+patch_config_fields\s*\(\s*app:\s*AppHandle\s*,\s*patch:\s*ConfigFieldPatch\s*,?\s*\)/);
   assert.match(source, /invoke_handler\(tauri::generate_handler!\[[\s\S]*patch_config_fields,/);
   assert.match(
-    source,
+    systemCommands,
     /async\s+fn\s+set_learning_enabled\s*\(\s*app:\s*AppHandle\s*,\s*enabled:\s*bool\s*\)/,
   );
-  assert.match(source, /patch_config_fields\(\s*app\s*,\s*ConfigFieldPatch\s*\{/);
-  assert.match(source, /learning_enabled:\s*Some\(enabled\)/);
-  assert.match(source, /set_learning_enabled\s*,/);
+  assert.match(systemCommands, /patch_config_fields\(\s*app\s*,\s*ConfigFieldPatch\s*\{/);
+  assert.match(systemCommands, /learning_enabled:\s*Some\(enabled\)/);
+  assert.match(source, /commands::config::patch_config_fields\s*,/);
+  assert.match(source, /commands::system::set_learning_enabled\s*,/);
 });
 
 test("S2: Preferences 学习开关应改为调用 set_learning_enabled", async () => {
@@ -159,7 +162,7 @@ test("S2: Preferences 学习开关应改为调用 set_learning_enabled", async (
 });
 
 test("S2+: 后端配置写入应通过统一 mutate helper", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
+  const source = await readSource("src-tauri/src/tray.rs");
 
   assert.match(source, /fn\s+mutate_persisted_config_with_result<\s*R\s*,\s*F\s*>\s*\(/);
   assert.match(source, /fn\s+mutate_persisted_config<\s*F\s*>\s*\(/);

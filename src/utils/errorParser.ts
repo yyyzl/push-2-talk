@@ -17,6 +17,7 @@ export const ERROR_ICONS: Record<ErrorCategory, string> = {
   service: '⚠️',
   unknown: '❓',
 };
+const isMacPlatform = typeof navigator !== "undefined" && /mac/i.test(`${navigator.platform} ${navigator.userAgent}`);
 
 // 错误匹配模式配置
 interface ErrorPattern {
@@ -40,7 +41,9 @@ const ERROR_PATTERNS: ErrorPattern[] = [
     match: (raw) => raw.includes('录音失败'),
     category: 'audio',
     title: '麦克风启动失败',
-    suggestion: '请检查麦克风权限和设备连接',
+    suggestion: isMacPlatform
+      ? '请检查系统设置中的麦克风权限（隐私与安全性）和设备连接'
+      : '请检查麦克风权限和设备连接',
   },
   {
     match: (raw) => raw.includes('停止录音失败'),

@@ -77,6 +77,7 @@ tauri-plugin-opener = "2"
 
 # 单实例支持
 tauri-plugin-single-instance = "2"
+tauri-plugin-os = "2"
 
 # Windows Audio Session API - 录音时静音其他应用
 # Win32 Input API - 键盘模拟（替代 enigo）
@@ -91,6 +92,14 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",  # 焦点管理: GetForegroundWindow, SetForegroundWindow, IsWindow
     "Win32_System_Threading",         # 焦点管理: GetCurrentThreadId, AttachThreadInput, GetWindowThreadProcessId
 ] }
+
+[target.'cfg(not(windows))'.dependencies]
+rdev = "0.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.23"
+cocoa = "0.25"
+objc = "0.2"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
