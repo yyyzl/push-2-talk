@@ -18,7 +18,8 @@ import type {
 } from "../types";
 import { MAX_HISTORY, DEFAULT_LEARNING_CONFIG, normalizeLearningConfig } from "../constants";
 import { saveHistory, loadUsageStats } from "../utils";
-import { parseEntry } from "../utils/dictionaryUtils";
+import { features } from "./usePlatform";
+import { filterDictionaryEntriesByAutoLearning, parseEntry } from "../utils/dictionaryUtils";
 import {
   fetchBuiltinDomains,
   normalizeBuiltinDictionaryDomains,
@@ -270,9 +271,12 @@ export function useTauriEventListeners({
 
           if (setDictionary) {
             const configDictionary = Array.isArray(config.dictionary) ? config.dictionary : [];
-            const normalizedDictionary = configDictionary
-              .filter((entry) => typeof entry === "string" && entry.trim())
-              .map((entry) => parseEntry(entry));
+            const normalizedDictionary = filterDictionaryEntriesByAutoLearning(
+              configDictionary
+                .filter((entry) => typeof entry === "string" && entry.trim())
+                .map((entry) => parseEntry(entry)),
+              features.autoLearning,
+            );
             setDictionary(normalizedDictionary);
           }
 

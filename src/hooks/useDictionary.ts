@@ -3,7 +3,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { DictionaryEntry } from "../types";
-import { parseEntry } from "../utils/dictionaryUtils";
+import { features } from "./usePlatform";
+import { filterDictionaryEntriesByAutoLearning, parseEntry } from "../utils/dictionaryUtils";
 
 export type UseDictionaryResult = {
   dictionary: DictionaryEntry[];
@@ -29,9 +30,12 @@ export type UseDictionaryResult = {
   refreshDictionary: () => Promise<void>;
 };
 
+const applyPlatformDictionaryFilter = (entries: DictionaryEntry[]): DictionaryEntry[] =>
+  filterDictionaryEntriesByAutoLearning(entries, features.autoLearning);
+
 export function useDictionary(initialDictionary: string[] = []): UseDictionaryResult {
   const [dictionary, setDictionary] = useState<DictionaryEntry[]>(
-    initialDictionary.map(parseEntry)
+    () => applyPlatformDictionaryFilter(initialDictionary.map(parseEntry))
   );
   const [newWord, setNewWord] = useState("");
   const [duplicateHint, setDuplicateHint] = useState(false);
@@ -61,7 +65,7 @@ export function useDictionary(initialDictionary: string[] = []): UseDictionaryRe
   const refreshDictionary = useCallback(async () => {
     try {
       const entries = await invoke<string[]>("get_dictionary_entries");
-      setDictionary(entries.map(parseEntry));
+      setDictionary(applyPlatformDictionaryFilter(entries.map(parseEntry)));
     } catch (error) {
       console.error("刷新词典失败:", error);
     }

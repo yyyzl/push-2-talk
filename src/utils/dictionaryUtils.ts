@@ -47,6 +47,20 @@ export function entriesToWords(entries: DictionaryEntry[]): string[] {
 }
 
 /**
+ * 按平台能力过滤词典条目
+ *
+ * 当 autoLearning=false（如 macOS）时，移除 auto 来源词条，
+ * 避免出现“页面不可见但运行时仍生效”的状态不一致。
+ */
+export function filterDictionaryEntriesByAutoLearning(
+  entries: DictionaryEntry[],
+  autoLearningEnabled: boolean,
+): DictionaryEntry[] {
+  if (autoLearningEnabled) return entries;
+  return entries.filter((entry) => entry.source !== "auto");
+}
+
+/**
  * 将 DictionaryEntry[] 转换为存储格式（保留 source 信息）
  *
  * - source = "manual" -> "word"

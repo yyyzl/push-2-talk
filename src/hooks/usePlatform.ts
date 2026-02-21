@@ -35,7 +35,7 @@ export const isMacos = currentPlatform === "macos";
 export const isWindows = currentPlatform === "windows";
 
 export const metaKeyName = isMacos ? "Cmd" : "Win";
-export const modifierKey = isMacos ? "Cmd" : "Ctrl";
+export const modifierKey = isMacos ? "Option" : "Ctrl";
 export const altKeyName = isMacos ? "Option" : "Alt";
 
 export const features = {

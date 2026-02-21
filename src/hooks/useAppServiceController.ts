@@ -22,7 +22,13 @@ import {
   normalizeLearningConfig,
 } from "../constants";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
-import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
+import { features } from "./usePlatform";
+import {
+  entriesToWords,
+  filterDictionaryEntriesByAutoLearning,
+  parseEntry,
+  entriesToStorageFormat,
+} from "../utils/dictionaryUtils";
 import {
   fetchBuiltinDomains,
   getBuiltinWordsForDomains,
@@ -57,6 +63,9 @@ const buildRuntimeDictionary = (
 
   return result;
 };
+
+const applyPlatformDictionaryFilter = (entries: DictionaryEntry[]): DictionaryEntry[] =>
+  filterDictionaryEntriesByAutoLearning(entries, features.autoLearning);
 
 type SaveConfigGatewayOverrides = {
   apiKey?: string;
@@ -255,14 +264,17 @@ export function useAppServiceController({
     }): Promise<boolean> => {
       if (status !== "running") return false;
       try {
+        const runtimeDictionaryEntries = updates.dictionary
+          ? applyPlatformDictionaryFilter(updates.dictionary)
+          : undefined;
         await invoke<string>("update_runtime_config", {
           enablePostProcess: updates.enablePostProcess,
           enableDictionaryEnhancement: updates.enableDictionaryEnhancement,
           llmConfig: updates.llmConfig,
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
-          dictionary: updates.dictionary
-            ? buildRuntimeDictionary(updates.dictionary, builtinDictionaryDomains)
+          dictionary: runtimeDictionaryEntries
+            ? buildRuntimeDictionary(runtimeDictionaryEntries, builtinDictionaryDomains)
             : undefined,
         });
         return true;
@@ -280,13 +292,16 @@ export function useAppServiceController({
         (word) => typeof word === "string" && word.trim(),
       );
       const dictionaryEntriesFromStorage = storageDictionaryFromOverrides?.map(parseEntry);
-      const finalDictionaryEntries =
+      const rawDictionaryEntries =
         overrides.dictionaryEntries ?? dictionaryEntriesFromStorage ?? dictionary;
+      const finalDictionaryEntries = applyPlatformDictionaryFilter(rawDictionaryEntries);
       const finalBuiltinDictionaryDomains = normalizeBuiltinDictionaryDomains(
         overrides.builtinDictionaryDomains ?? builtinDictionaryDomains,
       );
       const finalStorageDictionary =
-        storageDictionaryFromOverrides ?? entriesToStorageFormat(finalDictionaryEntries);
+        storageDictionaryFromOverrides && features.autoLearning
+          ? storageDictionaryFromOverrides
+          : entriesToStorageFormat(finalDictionaryEntries);
       const finalTheme = (overrides.theme ?? theme) || "light";
       const finalAsrConfig = overrides.asrConfig ?? asrConfig;
       const finalLearningConfig = normalizeLearningConfig(
@@ -572,6 +587,7 @@ export function useAppServiceController({
         );
         loadedDictionary = words.map(parseEntry);
       }
+      loadedDictionary = applyPlatformDictionaryFilter(loadedDictionary);
       setDictionary(loadedDictionary);
 
       const loadedBuiltinDictionaryDomains = normalizeBuiltinDictionaryDomains(
