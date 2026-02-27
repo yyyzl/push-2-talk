@@ -1,0 +1,53 @@
+name: Develop Build Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build app on GitHub runner
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5UW5Nb3ZvRnFVL25mNmRRQ2FDZE9rRzlYaHhEWkxOQ0x2OERRL09aTm9BWUFBQkFBQUFBQUFBQUFBQUlBQUFBQUsydjdtdkdpVWQ4dTcxS1Z4K0F0Q3VCQXZ3K01BcnhvUThTLzZ1NGlQbkxpK1dUYVZUbndCTG5LaE9ZQ0JvY0FlYTk1aDB0TkxHc3FFVDBnOS8zL3dFWTRndHNUUzlVbG12LzVNSFpscG4yTkZhWk5ZbUxwMUdLNlE5NVFXR09qa09DcUd5ZVBMeHM9Cg==
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri build
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: push-to-talk-develop-${{ github.run_number }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sig
+            src-tauri/target/release/bundle/nsis/*.zip
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
