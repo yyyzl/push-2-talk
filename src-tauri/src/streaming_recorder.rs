@@ -15,6 +15,12 @@ use crate::audio_utils::{
 const TARGET_SAMPLE_RATE: u32 = 16000;
 // 每个音频块的样本数（0.2秒 @ 16kHz = 3200 样本）
 const CHUNK_SAMPLES: usize = 3200;
+const HANGOVER_CHUNKS: usize = 3; // 3块 * 0.2s = 0.6秒拖尾，平衡防吞字和响应速度
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StreamingOptions {
+    pub preserve_silence: bool,
+}
 
 /// 流式音频录制器
 /// 边录音边输出 PCM 数据块，同时保留完整音频用于备用方案
@@ -27,6 +33,10 @@ pub struct StreamingRecorder {
     chunk_sender: Option<Sender<Vec<i16>>>,
     // 累积的完整音频数据（用于备用方案）
     full_audio_data: Arc<Mutex<Vec<f32>>>,
+    // 尚未凑满一个 200ms 分块的实时音频尾巴
+    pending_realtime_samples: Arc<Mutex<Vec<f32>>>,
+    // stop_streaming 后导出的最终实时尾包，供 finish 时发送
+    final_realtime_chunk: Arc<Mutex<Option<Vec<i16>>>>,
 }
 
 impl StreamingRecorder {
@@ -38,6 +48,8 @@ impl StreamingRecorder {
             stream: None,
             chunk_sender: None,
             full_audio_data: Arc::new(Mutex::new(Vec::new())),
+            pending_realtime_samples: Arc::new(Mutex::new(Vec::new())),
+            final_realtime_chunk: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -96,15 +108,29 @@ impl StreamingRecorder {
             .collect()
     }
 
+    pub fn take_final_realtime_chunk(&mut self) -> Option<Vec<i16>> {
+        self.final_realtime_chunk.lock().unwrap().take()
+    }
+
     /// 启动流式录音，返回音频块接收通道
     /// app_handle 用于发送音频级别事件到前端
     pub fn start_streaming(&mut self, app_handle: Option<AppHandle>) -> Result<Receiver<Vec<i16>>> {
+        self.start_streaming_with_options(app_handle, StreamingOptions::default())
+    }
+
+    pub fn start_streaming_with_options(
+        &mut self,
+        app_handle: Option<AppHandle>,
+        options: StreamingOptions,
+    ) -> Result<Receiver<Vec<i16>>> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
         tracing::info!("开始流式录音...");
 
         // 清空之前的数据
         self.full_audio_data.lock().unwrap().clear();
+        self.pending_realtime_samples.lock().unwrap().clear();
+        *self.final_realtime_chunk.lock().unwrap() = None;
         *self.is_recording.lock().unwrap() = true;
 
         // 创建音频块通道（缓冲 50 个块，约 10 秒）
@@ -125,11 +151,12 @@ impl StreamingRecorder {
         self.channels = config.channels;
 
         tracing::info!(
-            "流式录音配置: 采样率={}Hz, 声道={}, 目标采样率={}Hz, 块大小={}样本",
+            "流式录音配置: 采样率={}Hz, 声道={}, 目标采样率={}Hz, 块大小={}样本, preserve_silence={}",
             self.device_sample_rate,
             self.channels,
             TARGET_SAMPLE_RATE,
-            CHUNK_SAMPLES
+            CHUNK_SAMPLES,
+            options.preserve_silence
         );
 
         let is_recording = Arc::clone(&self.is_recording);
@@ -138,8 +165,7 @@ impl StreamingRecorder {
         let channels = self.channels;
 
         // 用于累积样本直到达到块大小
-        let pending_samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-        let pending_samples_clone = Arc::clone(&pending_samples);
+        let pending_samples_clone = Arc::clone(&self.pending_realtime_samples);
 
         // 基于时间的音频级别发送控制（目标 30-40Hz）
         use std::time::Instant;
@@ -151,11 +177,10 @@ impl StreamingRecorder {
         // VAD 拖尾计数器：检测到静音后继续发送几个块，防止句尾吞字
         let vad_hangover: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
         let vad_hangover_clone = Arc::clone(&vad_hangover);
-        const HANGOVER_CHUNKS: usize = 3; // 3块 * 0.2s = 0.6秒拖尾，平衡防吞字和响应速度
-
         // AGC 增益状态，用于平滑过渡
         let agc_gain: Arc<Mutex<f32>> = Arc::new(Mutex::new(1.0));
         let agc_gain_clone = Arc::clone(&agc_gain);
+        let preserve_silence = options.preserve_silence;
 
         // 克隆 app_handle 用于闭包
         let app_handle_f32 = app_handle.clone();
@@ -212,13 +237,16 @@ impl StreamingRecorder {
                             *hangover -= 1;
                         }
 
+                        let drop_silent_chunk =
+                            should_drop_realtime_chunk(is_active, *hangover, preserve_silence);
+                        drop(hangover);
+
                         // 静音且拖尾结束，丢弃前先衰减增益
-                        if !is_active && *hangover == 0 {
+                        if drop_silent_chunk {
                             let mut gain = agc_gain_clone.lock().unwrap();
                             *gain = *gain * 0.5 + 0.5;
                             continue;
                         }
-                        drop(hangover);
 
                         // AGC（带平滑处理）
                         let mut gain = agc_gain_clone.lock().unwrap();
@@ -238,7 +266,7 @@ impl StreamingRecorder {
             cpal::SampleFormat::I16 => {
                 let is_recording_i16 = Arc::clone(&is_recording);
                 let full_audio_data_i16 = Arc::clone(&full_audio_data);
-                let pending_samples_i16 = Arc::clone(&pending_samples);
+                let pending_samples_i16 = Arc::clone(&self.pending_realtime_samples);
                 let chunk_tx_i16 = chunk_tx.clone();
                 let last_emit_time_i16 = Arc::clone(&last_emit_time);
                 let app_handle_i16 = app_handle.clone();
@@ -291,13 +319,16 @@ impl StreamingRecorder {
                                 *hangover -= 1;
                             }
 
+                            let drop_silent_chunk =
+                                should_drop_realtime_chunk(is_active, *hangover, preserve_silence);
+                            drop(hangover);
+
                             // 静音且拖尾结束，丢弃前先衰减增益
-                            if !is_active && *hangover == 0 {
+                            if drop_silent_chunk {
                                 let mut gain = agc_gain_i16.lock().unwrap();
                                 *gain = *gain * 0.5 + 0.5;
                                 continue;
                             }
-                            drop(hangover);
 
                             // AGC（带平滑处理）
                             let mut gain = agc_gain_i16.lock().unwrap();
@@ -318,7 +349,7 @@ impl StreamingRecorder {
             cpal::SampleFormat::U16 => {
                 let is_recording_u16 = Arc::clone(&is_recording);
                 let full_audio_data_u16 = Arc::clone(&full_audio_data);
-                let pending_samples_u16 = Arc::clone(&pending_samples);
+                let pending_samples_u16 = Arc::clone(&self.pending_realtime_samples);
                 let chunk_tx_u16 = chunk_tx.clone();
                 let last_emit_time_u16 = Arc::clone(&last_emit_time);
                 let app_handle_u16 = app_handle;
@@ -373,13 +404,16 @@ impl StreamingRecorder {
                                 *hangover -= 1;
                             }
 
+                            let drop_silent_chunk =
+                                should_drop_realtime_chunk(is_active, *hangover, preserve_silence);
+                            drop(hangover);
+
                             // 静音且拖尾结束，丢弃前先衰减增益
-                            if !is_active && *hangover == 0 {
+                            if drop_silent_chunk {
                                 let mut gain = agc_gain_u16.lock().unwrap();
                                 *gain = *gain * 0.5 + 0.5;
                                 continue;
                             }
-                            drop(hangover);
 
                             // AGC（带平滑处理）
                             let mut gain = agc_gain_u16.lock().unwrap();
@@ -426,6 +460,15 @@ impl StreamingRecorder {
         // 最后 drop stream
         self.stream = None;
         self.chunk_sender = None;
+
+        let final_chunk = {
+            let mut pending = self.pending_realtime_samples.lock().unwrap();
+            take_pending_realtime_chunk_from_samples(&mut pending)
+        };
+        if let Some(ref chunk) = final_chunk {
+            tracing::info!("流式录音停止，保留最后未满块尾音: {} samples", chunk.len());
+        }
+        *self.final_realtime_chunk.lock().unwrap() = final_chunk;
 
         // 获取完整音频数据
         let raw_audio = self.full_audio_data.lock().unwrap().clone();
@@ -479,3 +522,54 @@ impl StreamingRecorder {
 // 实现 Send 和 Sync traits
 unsafe impl Send for StreamingRecorder {}
 unsafe impl Sync for StreamingRecorder {}
+
+fn should_drop_realtime_chunk(is_active: bool, hangover: usize, preserve_silence: bool) -> bool {
+    !preserve_silence && !is_active && hangover == 0
+}
+
+fn take_pending_realtime_chunk_from_samples(pending: &mut Vec<f32>) -> Option<Vec<i16>> {
+    if pending.is_empty() {
+        return None;
+    }
+
+    let tail = StreamingRecorder::f32_to_i16(pending);
+    pending.clear();
+    Some(tail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_drop_realtime_chunk, take_pending_realtime_chunk_from_samples};
+
+    #[test]
+    fn preserve_silence_keeps_silent_chunks_for_server_side_vad() {
+        assert!(!should_drop_realtime_chunk(false, 0, true));
+    }
+
+    #[test]
+    fn default_streaming_drops_fully_silent_chunk_after_hangover() {
+        assert!(should_drop_realtime_chunk(false, 0, false));
+        assert!(!should_drop_realtime_chunk(false, 1, false));
+        assert!(!should_drop_realtime_chunk(true, 0, false));
+    }
+
+    #[test]
+    fn take_pending_realtime_chunk_returns_partial_tail_without_padding() {
+        let mut pending = vec![0.25_f32, -0.25_f32, 0.5_f32];
+
+        let tail = take_pending_realtime_chunk_from_samples(&mut pending)
+            .expect("partial tail should be preserved");
+
+        assert_eq!(tail.len(), 3);
+        assert!(pending.is_empty(), "pending samples should be drained");
+    }
+
+    #[test]
+    fn take_pending_realtime_chunk_returns_none_for_empty_pending() {
+        let mut pending = Vec::new();
+
+        let tail = take_pending_realtime_chunk_from_samples(&mut pending);
+
+        assert!(tail.is_none());
+    }
+}

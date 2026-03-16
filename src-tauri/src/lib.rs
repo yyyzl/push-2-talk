@@ -40,12 +40,13 @@ use manual_correction::{
 };
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
 use pipeline::{AssistantPipeline, NormalPipeline, TranscriptionContext};
-use streaming_recorder::StreamingRecorder;
+use streaming_recorder::{StreamingOptions, StreamingRecorder};
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -76,6 +77,28 @@ fn get_cursor_position() -> Option<(i32, i32)> {
             None
         }
     }
+}
+
+fn estimate_doubao_realtime_wait_timeout(audio_data: Option<&[u8]>) -> Duration {
+    const DEFAULT_TIMEOUT_SECS: u64 = 6;
+    const MAX_TIMEOUT_SECS: u64 = 15;
+    const WAV_HEADER_BYTES: usize = 44;
+    const PCM_BYTES_PER_SECOND: f64 = 16000.0 * 2.0; // 16kHz, 16bit, mono
+
+    let Some(audio_data) = audio_data else {
+        return Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+    };
+
+    if audio_data.len() <= WAV_HEADER_BYTES {
+        return Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+    }
+
+    let pcm_bytes = (audio_data.len() - WAV_HEADER_BYTES) as f64;
+    let duration_secs = pcm_bytes / PCM_BYTES_PER_SECOND;
+    let timeout_secs =
+        ((duration_secs / 2.0).ceil() as u64 + 2).clamp(DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
+
+    Duration::from_secs(timeout_secs)
 }
 
 fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
@@ -765,7 +788,12 @@ async fn handle_doubao_realtime_start(
                 tracing::warn!("发现正在进行的流式录音，先停止它");
                 let _ = rec.stop_streaming();
             }
-            match rec.start_streaming(Some(app.clone())) {
+            match rec.start_streaming_with_options(
+                Some(app.clone()),
+                StreamingOptions {
+                    preserve_silence: true,
+                },
+            ) {
                 Ok(rx) => Some(rx),
                 Err(e) => {
                     emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
@@ -1914,18 +1942,18 @@ async fn handle_assistant_mode(
     // 1. 停止录音并获取音频数据
     let (asr_result, audio_data) = if use_realtime {
         // 实时模式：先停止流式录音
-        let audio_data = {
+        let (audio_data, final_realtime_chunk) = {
             let mut recorder_guard = streaming_recorder.lock().unwrap();
             if let Some(ref mut rec) = *recorder_guard {
                 match rec.stop_streaming() {
-                    Ok(data) => Some(data),
+                    Ok(data) => (Some(data), rec.take_final_realtime_chunk()),
                     Err(e) => {
                         tracing::error!("停止流式录音失败: {}", e);
-                        None
+                        (None, None)
                     }
                 }
             } else {
-                None
+                (None, None)
             }
         };
 
@@ -1938,14 +1966,26 @@ async fn handle_assistant_mode(
             }
         }
 
+        let doubao_wait_timeout = estimate_doubao_realtime_wait_timeout(audio_data.as_deref());
+
         // 获取实时转录结果
         let provider = realtime_provider.lock().unwrap().clone();
         let result = match provider {
             Some(config::AsrProvider::Doubao) => {
                 let mut session_guard = doubao_session.lock().await;
                 if let Some(ref mut session) = *session_guard {
-                    let _ = session.finish_audio().await;
-                    let res = session.wait_for_result().await;
+                    let finish_result = if let Some(ref tail_chunk) = final_realtime_chunk {
+                        session.finish_audio_with_tail(tail_chunk).await
+                    } else {
+                        session.finish_audio().await
+                    };
+                    let res = if let Err(e) = finish_result {
+                        Err(e)
+                    } else {
+                        session
+                            .wait_for_result_with_timeout(doubao_wait_timeout)
+                            .await
+                    };
                     drop(session_guard);
                     *doubao_session.lock().await = None;
                     res
@@ -2359,18 +2399,18 @@ async fn handle_realtime_stop(
     let enable_fb = *enable_fallback_state.lock().unwrap();
 
     // 1. 停止流式录音，获取完整音频数据（用于备用方案）
-    let audio_data = {
+    let (audio_data, final_realtime_chunk) = {
         let mut recorder_guard = streaming_recorder.lock().unwrap();
         if let Some(ref mut rec) = *recorder_guard {
             match rec.stop_streaming() {
-                Ok(data) => Some(data),
+                Ok(data) => (Some(data), rec.take_final_realtime_chunk()),
                 Err(e) => {
                     tracing::error!("停止流式录音失败: {}", e);
-                    None
+                    (None, None)
                 }
             }
         } else {
-            None
+            (None, None)
         }
     };
 
@@ -2383,6 +2423,8 @@ async fn handle_realtime_stop(
         }
     }
 
+    let doubao_wait_timeout = estimate_doubao_realtime_wait_timeout(audio_data.as_deref());
+
     // 3. 检查使用的是哪个 provider
     let provider = realtime_provider.lock().unwrap().clone();
 
@@ -2394,7 +2436,12 @@ async fn handle_realtime_stop(
                 tracing::info!("豆包：发送 finish 并等待转录结果...");
 
                 // 发送 finish
-                if let Err(e) = session.finish_audio().await {
+                let finish_result = if let Some(ref tail_chunk) = final_realtime_chunk {
+                    session.finish_audio_with_tail(tail_chunk).await
+                } else {
+                    session.finish_audio().await
+                };
+                if let Err(e) = finish_result {
                     tracing::error!("豆包发送 finish 失败: {}", e);
                     drop(doubao_session_guard);
                     // 回退到备用方案
@@ -2418,7 +2465,10 @@ async fn handle_realtime_stop(
                 }
 
                 // 等待转录结果
-                match session.wait_for_result().await {
+                match session
+                    .wait_for_result_with_timeout(doubao_wait_timeout)
+                    .await
+                {
                     Ok(text) => {
                         let asr_time_ms = asr_start.elapsed().as_millis() as u64;
                         tracing::info!("豆包实时转录成功: {} (ASR 耗时: {}ms)", text, asr_time_ms);

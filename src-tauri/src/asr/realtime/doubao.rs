@@ -5,13 +5,14 @@ use base64::{engine::general_purpose, Engine as _};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use futures_util::{SinkExt, StreamExt};
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::http, tungstenite::Message};
 
-// 双向流式模式（优化版本）
-const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
+// 流式输入模式：更适合按住说话、松开拿最终文本的短语音场景
+const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
 const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 const TRANSCRIPTION_TIMEOUT_SECS: u64 = 6;
 
@@ -25,39 +26,86 @@ fn generate_websocket_key() -> String {
 pub struct DoubaoRealtimeSession {
     sender: mpsc::Sender<SessionCommand>,
     result_receiver: mpsc::Receiver<Result<String>>,
+    latest_text: Arc<Mutex<String>>,
 }
 
 enum SessionCommand {
-    SendAudio(Vec<u8>),
-    Finish,
+    SendAudio {
+        audio: Vec<u8>,
+        ack: oneshot::Sender<Result<()>>,
+    },
+    Finish {
+        audio: Vec<u8>,
+        ack: oneshot::Sender<Result<()>>,
+    },
 }
 
 impl DoubaoRealtimeSession {
     pub async fn send_audio_chunk(&mut self, pcm_data: &[i16]) -> Result<()> {
         let bytes: Vec<u8> = pcm_data.iter().flat_map(|&s| s.to_le_bytes()).collect();
+        let (ack_tx, ack_rx) = oneshot::channel();
         self.sender
-            .send(SessionCommand::SendAudio(bytes))
+            .send(SessionCommand::SendAudio {
+                audio: bytes,
+                ack: ack_tx,
+            })
             .await
-            .map_err(|_| anyhow::anyhow!("发送音频块失败"))
+            .map_err(|_| anyhow::anyhow!("发送音频块失败"))?;
+        ack_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("音频块写入确认失败"))?
     }
 
     pub async fn finish_audio(&mut self) -> Result<()> {
+        let (ack_tx, ack_rx) = oneshot::channel();
         self.sender
-            .send(SessionCommand::Finish)
+            .send(SessionCommand::Finish {
+                audio: Vec::new(),
+                ack: ack_tx,
+            })
             .await
-            .map_err(|_| anyhow::anyhow!("发送结束标志失败"))
+            .map_err(|_| anyhow::anyhow!("发送结束标志失败"))?;
+        ack_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("结束包写入确认失败"))?
+    }
+
+    pub async fn finish_audio_with_tail(&mut self, pcm_data: &[i16]) -> Result<()> {
+        let bytes: Vec<u8> = pcm_data.iter().flat_map(|&s| s.to_le_bytes()).collect();
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.sender
+            .send(SessionCommand::Finish {
+                audio: bytes,
+                ack: ack_tx,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("发送带尾音的结束标志失败"))?;
+        ack_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("带尾音结束包写入确认失败"))?
     }
 
     pub async fn wait_for_result(&mut self) -> Result<String> {
-        match timeout(
-            Duration::from_secs(TRANSCRIPTION_TIMEOUT_SECS),
-            self.result_receiver.recv(),
-        )
-        .await
-        {
+        self.wait_for_result_with_timeout(Duration::from_secs(TRANSCRIPTION_TIMEOUT_SECS))
+            .await
+    }
+
+    pub async fn wait_for_result_with_timeout(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<String> {
+        match timeout(timeout_duration, self.result_receiver.recv()).await {
             Ok(Some(result)) => result,
             Ok(None) => Err(anyhow::anyhow!("通道已关闭")),
-            Err(_) => Err(anyhow::anyhow!("转录超时")),
+            Err(_) => {
+                let latest_text = self.latest_text.lock().unwrap().clone();
+                if !latest_text.is_empty() {
+                    tracing::warn!("豆包等待最终结果超时，返回最近中间结果: {}", latest_text);
+                    Ok(latest_text)
+                } else {
+                    Err(anyhow::anyhow!("转录超时"))
+                }
+            }
         }
     }
 }
@@ -94,47 +142,16 @@ impl DoubaoRealtimeClient {
             .header("X-Api-Connect-Id", &request_id)
             .body(())?;
 
-        let (ws_stream, _) = connect_async(request).await?;
+        let (ws_stream, response) = connect_async(request).await?;
+        if let Some(logid) = response.headers().get("X-Tt-Logid") {
+            if let Ok(logid) = logid.to_str() {
+                tracing::info!("豆包 WebSocket 建连成功, X-Tt-Logid={}", logid);
+            }
+        }
         let (mut write, mut read) = ws_stream.split();
 
         // 发送 Full Client Request
-        let mut request_obj = serde_json::json!({
-        "model_name": "bigmodel",
-        "enable_nonstream":true, //开启二遍识别
-         "enable_itn": true, //文本规范化
-         "enable_punc": true, //启用标点
-         "enable_ddc": true, //语义顺滑
-        //  "show_speech_rate":true //语速
-        });
-
-        // 添加词库支持和对话上下文
-        {
-            let mut context_obj = serde_json::json!({
-                "context_type": "dialog_ctx",
-                "context_data": [
-                    // 大模型的约束，但是效果存疑
-                    {"text": "你好，请问有什么可以帮您的"},
-                    {"text": "豆包语音识别真的不错呀"},
-                    {"text": "当前聊天的场景是日常聊天，因此保留语气词，去除尾部句号"},
-                    ]
-            });
-
-            if !self.dictionary.is_empty() {
-                let purified_words = entries_to_words(&self.dictionary);
-                let hotwords: Vec<serde_json::Value> = purified_words
-                    .iter()
-                    .map(|w| serde_json::json!({"word": w}))
-                    .collect();
-                context_obj["hotwords"] = serde_json::json!(hotwords);
-                tracing::info!("豆包流式 ASR 词库: {} 个词（已提纯）", purified_words.len());
-            } else {
-                tracing::info!("豆包流式 ASR 词库: 未配置");
-            }
-
-            let context = context_obj.to_string();
-            tracing::debug!("豆包流式 ASR context={}", context);
-            request_obj["corpus"] = serde_json::json!({"context": context});
-        }
+        let request_obj = build_request_object(&self.dictionary);
 
         let config = serde_json::json!({
             "user": {"uid": &self.app_id},
@@ -145,7 +162,7 @@ impl DoubaoRealtimeClient {
             "豆包 Full Client Request: {}",
             serde_json::to_string_pretty(&config)?
         );
-        let msg = build_message(0x1, 0x1, 1, &serde_json::to_vec(&config)?, 0x1)?; // Gzip 压缩
+        let msg = build_message(0x1, 0x0, 0, &serde_json::to_vec(&config)?, 0x1)?; // 文档要求 full request 不带 sequence
         write.send(Message::Binary(msg.clone().into())).await?;
         tracing::debug!("豆包 Full Client Request 已发送: {} bytes", msg.len());
 
@@ -162,7 +179,14 @@ impl DoubaoRealtimeClient {
                             }
                         }
                         Err(e) => {
-                            tracing::debug!("豆包初始响应（预期无文本）: {}", e);
+                            let err_text = e.to_string();
+                            if err_text.contains("服务器返回错误") {
+                                return Err(anyhow::anyhow!(
+                                    "豆包 Full Client Request 被服务端拒绝: {}",
+                                    err_text
+                                ));
+                            }
+                            tracing::debug!("豆包初始响应（预期无文本）: {}", err_text);
                         }
                     }
                 }
@@ -177,35 +201,48 @@ impl DoubaoRealtimeClient {
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<SessionCommand>(100);
         let (result_tx, result_rx) = mpsc::channel::<Result<String>>(1);
+        let latest_text = Arc::new(Mutex::new(String::new()));
+        let latest_text_for_reader = Arc::clone(&latest_text);
 
-        let mut sequence = 1i32;
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
-                    SessionCommand::SendAudio(audio) => {
-                        sequence += 1;
-                        // 音频数据使用无压缩 (0x0) 以提高性能
-                        if let Ok(msg) = build_message(0x2, 0x1, sequence, &audio, 0x0) {
-                            if let Err(e) = write.send(Message::Binary(msg.into())).await {
-                                tracing::error!("豆包发送音频块失败: {}", e);
-                                break;
-                            }
+                    SessionCommand::SendAudio { audio, ack } => {
+                        // 官方协议示例要求 audio-only request 不带 sequence，并使用 Gzip 压缩。
+                        let send_result = match build_message(0x2, 0x0, 0, &audio, 0x1) {
+                            Ok(msg) => write
+                                .send(Message::Binary(msg.into()))
+                                .await
+                                .map_err(|e| anyhow::anyhow!("豆包发送音频块失败: {}", e)),
+                            Err(e) => Err(e),
+                        };
+                        let should_break = send_result.is_err();
+                        let _ = ack.send(send_result);
+                        if should_break {
+                            break;
                         }
                     }
-                    SessionCommand::Finish => {
-                        // 关键修复: 先递增序列号，再取反，确保结束包占用新的序列号
-                        sequence += 1;
-                        let last_seq = -sequence;
-                        tracing::debug!("豆包发送结束标志，sequence={}", last_seq);
-                        // 结束包必须使用无压缩 (0x0)，payload 长度严格为 0
-                        if let Ok(msg) = build_message(0x2, 0x3, last_seq, &[], 0x0) {
-                            if let Err(e) = write.send(Message::Binary(msg.into())).await {
-                                tracing::error!("豆包发送结束标志失败: {}", e);
-                            }
+                    SessionCommand::Finish { audio, ack } => {
+                        tracing::debug!(
+                            "豆包发送最后一包音频，flags=0x2, payload={} bytes",
+                            audio.len()
+                        );
+                        let send_result = match build_message(0x2, 0x2, 0, &audio, 0x1) {
+                            Ok(msg) => write
+                                .send(Message::Binary(msg.into()))
+                                .await
+                                .map_err(|e| anyhow::anyhow!("豆包发送最后一包音频失败: {}", e)),
+                            Err(e) => Err(e),
+                        };
+                        let should_break = send_result.is_err();
+                        let _ = ack.send(send_result);
+                        if should_break {
+                            break;
                         }
                     }
                 }
             }
+            tracing::debug!("豆包 WebSocket 写入任务结束");
         });
 
         tokio::spawn(async move {
@@ -220,6 +257,8 @@ impl DoubaoRealtimeClient {
                             Ok((text, is_final)) => {
                                 if !text.is_empty() {
                                     accumulated_text = text; // 更新为最新文本
+                                    *latest_text_for_reader.lock().unwrap() =
+                                        accumulated_text.clone();
                                     tracing::debug!("豆包累积文本: {}", accumulated_text);
                                 }
                                 if is_final {
@@ -235,8 +274,15 @@ impl DoubaoRealtimeClient {
                                 }
                             }
                             Err(e) => {
+                                let err_text = e.to_string();
+                                if err_text.contains("服务器返回错误") {
+                                    tracing::error!("豆包服务端错误帧: {}", err_text);
+                                    let _ = result_tx.send(Err(anyhow::anyhow!(err_text))).await;
+                                    result_sent = true;
+                                    break;
+                                }
                                 // 中间响应可能没有最终结果，继续等待
-                                tracing::debug!("豆包响应解析（非最终结果）: {}", e);
+                                tracing::debug!("豆包响应解析（非最终结果）: {}", err_text);
                             }
                         }
                     }
@@ -248,9 +294,16 @@ impl DoubaoRealtimeClient {
                             let _ = result_tx.send(Ok(accumulated_text.clone())).await;
                             result_sent = true;
                         } else {
-                            tracing::warn!("豆包连接关闭，无转录结果");
+                            let close_reason = frame
+                                .as_ref()
+                                .map(|f| format!("code={:?}, reason={}", f.code, f.reason))
+                                .unwrap_or_else(|| "无 close frame".to_string());
+                            tracing::warn!("豆包连接关闭，无转录结果: {}", close_reason);
                             let _ = result_tx
-                                .send(Err(anyhow::anyhow!("WebSocket 连接被关闭")))
+                                .send(Err(anyhow::anyhow!(
+                                    "WebSocket 连接被关闭: {}",
+                                    close_reason
+                                )))
                                 .await;
                             result_sent = true;
                         }
@@ -288,8 +341,38 @@ impl DoubaoRealtimeClient {
         Ok(DoubaoRealtimeSession {
             sender: cmd_tx,
             result_receiver: result_rx,
+            latest_text,
         })
     }
+}
+
+fn build_request_object(dictionary: &[String]) -> serde_json::Value {
+    let mut request_obj = serde_json::json!({
+        "model_name": "bigmodel",
+        "enable_itn": true,
+        "enable_punc": true
+    });
+
+    // 官方文档将热词直传和 dialog_ctx 上下文列为两类独立格式。
+    // 这里先只保留热词直传，避免混合 schema 导致 session failed。
+    if !dictionary.is_empty() {
+        let purified_words = entries_to_words(dictionary);
+        let hotwords: Vec<serde_json::Value> = purified_words
+            .iter()
+            .map(|w| serde_json::json!({ "word": w }))
+            .collect();
+        let context = serde_json::json!({ "hotwords": hotwords }).to_string();
+        tracing::info!(
+            "豆包流式 ASR 词库: {} 个词（热词直传）",
+            purified_words.len()
+        );
+        tracing::debug!("豆包流式 ASR hotwords context={}", context);
+        request_obj["corpus"] = serde_json::json!({ "context": context });
+    } else {
+        tracing::info!("豆包流式 ASR 词库: 未配置");
+    }
+
+    request_obj
 }
 
 fn build_message(
@@ -317,7 +400,9 @@ fn build_message(
         (serialization << 4) | compression_type, // Serialization + compression
         0x00,                                    // Reserved
     ];
-    msg.extend_from_slice(&sequence.to_be_bytes());
+    if matches!(flags, 0x1 | 0x3) {
+        msg.extend_from_slice(&sequence.to_be_bytes());
+    }
     msg.extend_from_slice(&(final_payload.len() as u32).to_be_bytes());
     msg.extend_from_slice(&final_payload);
     Ok(msg)
@@ -345,17 +430,41 @@ fn parse_response(data: &[u8]) -> Result<(String, bool)> {
 
     // 检查是否是错误响应
     if message_type == 0xf {
-        let error_code = if data.len() >= header_size + 4 {
-            u32::from_be_bytes([
-                data[header_size],
-                data[header_size + 1],
-                data[header_size + 2],
-                data[header_size + 3],
-            ])
+        if data.len() < header_size + 8 {
+            return Err(anyhow::anyhow!("服务器返回错误，但错误帧过短"));
+        }
+        let error_code = u32::from_be_bytes([
+            data[header_size],
+            data[header_size + 1],
+            data[header_size + 2],
+            data[header_size + 3],
+        ]);
+        let error_size = u32::from_be_bytes([
+            data[header_size + 4],
+            data[header_size + 5],
+            data[header_size + 6],
+            data[header_size + 7],
+        ]) as usize;
+        if data.len() < header_size + 8 + error_size {
+            return Err(anyhow::anyhow!(
+                "服务器返回错误，但错误信息不完整: code={}",
+                error_code
+            ));
+        }
+        let error_payload = &data[header_size + 8..header_size + 8 + error_size];
+        let error_text = if compression == 0x1 {
+            let mut decoder = GzDecoder::new(error_payload);
+            let mut s = String::new();
+            decoder.read_to_string(&mut s)?;
+            s
         } else {
-            0
+            String::from_utf8_lossy(error_payload).into_owned()
         };
-        return Err(anyhow::anyhow!("服务器返回错误: code={}", error_code));
+        return Err(anyhow::anyhow!(
+            "服务器返回错误: code={}, message={}",
+            error_code,
+            error_text
+        ));
     }
 
     // 跳过 header，检查是否有 sequence
@@ -417,7 +526,7 @@ fn parse_response(data: &[u8]) -> Result<(String, bool)> {
     let is_last = message_flags & 0x02 != 0;
 
     // 提取文本结果（可能为空）
-    let text = result["result"]["text"].as_str().unwrap_or("").to_string();
+    let text = extract_result_text(&result);
 
     // 如果是最后一包或者有文本内容，返回结果
     if is_last || !text.is_empty() {
@@ -425,4 +534,93 @@ fn parse_response(data: &[u8]) -> Result<(String, bool)> {
     }
 
     Err(anyhow::anyhow!("中间响应，等待更多数据"))
+}
+
+fn extract_result_text(result: &serde_json::Value) -> String {
+    if let Some(text) = result["result"]["text"].as_str() {
+        return text.to_string();
+    }
+
+    result["result"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .rev()
+                .find_map(|item| item["text"].as_str().map(ToOwned::to_owned))
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_message, build_request_object, parse_response};
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write;
+
+    fn gzip_bytes(data: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data).expect("gzip write should succeed");
+        encoder.finish().expect("gzip finish should succeed")
+    }
+
+    #[test]
+    fn full_client_request_uses_header_and_payload_only() {
+        let payload = br#"{"request":"demo"}"#;
+        let compressed = gzip_bytes(payload);
+
+        let msg = build_message(0x1, 0x0, 1, payload, 0x1).expect("message should build");
+
+        assert_eq!(&msg[..4], &[0x11, 0x10, 0x11, 0x00]);
+        assert_eq!(msg.len(), 8 + compressed.len());
+        assert_eq!(
+            u32::from_be_bytes(msg[4..8].try_into().unwrap()) as usize,
+            compressed.len()
+        );
+        assert_eq!(&msg[8..], compressed.as_slice());
+    }
+
+    #[test]
+    fn last_audio_packet_uses_last_packet_flag_without_sequence() {
+        let payload = [1_u8, 2, 3, 4, 5];
+        let compressed = gzip_bytes(&payload);
+
+        let msg = build_message(0x2, 0x2, 99, &payload, 0x1).expect("message should build");
+
+        assert_eq!(&msg[..4], &[0x11, 0x22, 0x01, 0x00]);
+        assert_eq!(msg.len(), 8 + compressed.len());
+        assert_eq!(
+            u32::from_be_bytes(msg[4..8].try_into().unwrap()) as usize,
+            compressed.len()
+        );
+        assert_eq!(&msg[8..], compressed.as_slice());
+    }
+
+    #[test]
+    fn parse_response_includes_server_error_message() {
+        let message = br#"{"message":"empty audio"}"#;
+        let mut frame = vec![0x11, 0xf0, 0x10, 0x00];
+        frame.extend_from_slice(&45000002_u32.to_be_bytes());
+        frame.extend_from_slice(&(message.len() as u32).to_be_bytes());
+        frame.extend_from_slice(message);
+
+        let err = parse_response(&frame).expect_err("error frame should fail");
+        let err_text = err.to_string();
+        assert!(err_text.contains("45000002"));
+        assert!(err_text.contains("empty audio"));
+    }
+
+    #[test]
+    fn request_object_uses_hotwords_only_context_schema() {
+        let request = build_request_object(&["OpenAI".to_string(), "字节跳动".to_string()]);
+        let context = request["corpus"]["context"]
+            .as_str()
+            .expect("context should be serialized json");
+        let context_json: serde_json::Value =
+            serde_json::from_str(context).expect("context should be valid json");
+
+        assert!(context_json.get("hotwords").is_some());
+        assert!(context_json.get("context_type").is_none());
+        assert!(context_json.get("context_data").is_none());
+    }
 }
