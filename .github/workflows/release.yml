@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main        # 监听 main 分支的普通提交（只测试构建）
+      - develop     # 监听 develop 分支的普通提交（发布 dev 预发布）
     tags:
       - 'v*'        # 监听打标签（执行发布）
   workflow_dispatch: # 允许手动触发
@@ -18,8 +19,8 @@ jobs:
   # 目的: 确保代码能编译通过，但不消耗版本号，不发布
   # ========================================================
   test-build:
-    # 如果不是 Tag，且不是手动触发，则运行测试
-    if: startsWith(github.ref, 'refs/tags/') != true
+    # 只在 main 分支运行测试构建
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -50,7 +51,149 @@ jobs:
         run: npm run tauri build
 
   # ========================================================
-  # Job 2: 正式发布 (Release)
+  # Job 2: Dev 预发布 (Develop Prerelease)
+  # 场景: 推送代码到 develop 分支
+  # 目的: 生成 develop 最新预发布并上传 Windows exe 安装包
+  # ========================================================
+  dev-release:
+    if: github.ref == 'refs/heads/develop'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate dev changelog
+        id: dev_changelog
+        shell: bash
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M UTC')
+          COMMITS=$(git log -20 --pretty=format:"%s")
+
+          FEATURES=""
+          FIXES=""
+          UPDATES=""
+          OTHERS=""
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+
+            if echo "$line" | grep -qiE "^feat[：:]"; then
+              FEATURES="${FEATURES}- ${line#*[：:]}"$'\n'
+            elif echo "$line" | grep -qiE "^(fix|bugfix|bug)[：:]"; then
+              FIXES="${FIXES}- ${line#*[：:]}"$'\n'
+            elif echo "$line" | grep -qiE "^(update|improve|perf|优化)[：:]"; then
+              UPDATES="${UPDATES}- ${line#*[：:]}"$'\n'
+            elif echo "$line" | grep -qiE "^(chore|docs|refactor|style|test|security)[：:]"; then
+              OTHERS="${OTHERS}- ${line#*[：:]}"$'\n'
+            else
+              OTHERS="${OTHERS}- ${line}"$'\n'
+            fi
+          done <<< "$COMMITS"
+
+          CHANGELOG="## Develop 最新构建"$'\n'
+          CHANGELOG="${CHANGELOG}- 分支: develop"$'\n'
+          CHANGELOG="${CHANGELOG}- 提交: ${SHORT_SHA}"$'\n'
+          CHANGELOG="${CHANGELOG}- 构建时间: ${BUILD_TIME}"$'\n\n'
+
+          if [ -n "$FEATURES" ]; then
+            CHANGELOG="${CHANGELOG}## ✨ 新功能"$'\n'"${FEATURES}"$'\n'
+          fi
+
+          if [ -n "$FIXES" ]; then
+            CHANGELOG="${CHANGELOG}## 🐛 Bug 修复"$'\n'"${FIXES}"$'\n'
+          fi
+
+          if [ -n "$UPDATES" ]; then
+            CHANGELOG="${CHANGELOG}## 🚀 优化改进"$'\n'"${UPDATES}"$'\n'
+          fi
+
+          if [ -n "$OTHERS" ]; then
+            CHANGELOG="${CHANGELOG}## 📦 其他"$'\n'"${OTHERS}"$'\n'
+          fi
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Update develop prerelease tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f develop-latest "$GITHUB_SHA"
+          git push origin refs/tags/develop-latest --force
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and release develop prerelease
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5UW5Nb3ZvRnFVL25mNmRRQ2FDZE9rRzlYaHhEWkxOQ0x2OERRL09aTm9BWUFBQkFBQUFBQUFBQUFBQUlBQUFBQUsydjdtdkdpVWQ4dTcxS1Z4K0F0Q3VCQXZ3K01BcnhvUThTLzZ1NGlQbkxpK1dUYVZUbndCTG5LaE9ZQ0JvY0FlYTk1aDB0TkxHc3FFVDBnOS8zL3dFWTRndHNUUzlVbG12LzVNSFpscG4yTkZhWk5ZbUxwMUdLNlE5NVFXR09qa09DcUd5ZVBMeHM9Cg==
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: develop-latest
+          releaseName: 'develop 最新构建'
+          releaseBody: |
+            ${{ steps.dev_changelog.outputs.changelog }}
+          releaseDraft: false
+          prerelease: true
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+      - name: Refresh develop release metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          BODY_FILE=$(mktemp)
+          cat <<'EOF' > "$BODY_FILE"
+          ${{ steps.dev_changelog.outputs.changelog }}
+          EOF
+          gh release edit develop-latest \
+            --title "develop 最新构建" \
+            --notes-file "$BODY_FILE" \
+            --prerelease
+
+      - name: Upload develop installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: push-to-talk-develop-release-${{ github.run_number }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sig
+            src-tauri/target/release/bundle/nsis/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ========================================================
+  # Job 3: 正式发布 (Release)
   # 场景: 推送了 v* 标签
   # 目的: 生成更新日志、签名、打包、上传 Release
   # ========================================================
