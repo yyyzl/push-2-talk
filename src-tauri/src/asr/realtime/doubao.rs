@@ -1,4 +1,5 @@
 // 豆包流式 ASR WebSocket 客户端（二进制协议）
+use crate::asr::utils;
 use crate::dictionary_utils::entries_to_words;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
@@ -15,6 +16,8 @@ use tokio_tungstenite::{connect_async, tungstenite::http, tungstenite::Message};
 const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
 const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 const TRANSCRIPTION_TIMEOUT_SECS: u64 = 6;
+const STYLE_CONTEXT_PROMPT: &str =
+    "语音转写输出要求：只输出识别文本；英文内容尽量使用小写；不要在句尾添加句号。";
 
 /// 生成随机的 Sec-WebSocket-Key
 fn generate_websocket_key() -> String {
@@ -347,30 +350,41 @@ impl DoubaoRealtimeClient {
 }
 
 fn build_request_object(dictionary: &[String]) -> serde_json::Value {
+    let purified_words = entries_to_words(dictionary);
     let mut request_obj = serde_json::json!({
         "model_name": "bigmodel",
         "enable_itn": true,
         "enable_punc": true
     });
 
-    // 官方文档将热词直传和 dialog_ctx 上下文列为两类独立格式。
-    // 这里先只保留热词直传，避免混合 schema 导致 session failed。
-    if !dictionary.is_empty() {
-        let purified_words = entries_to_words(dictionary);
-        let hotwords: Vec<serde_json::Value> = purified_words
-            .iter()
-            .map(|w| serde_json::json!({ "word": w }))
-            .collect();
-        let context = serde_json::json!({ "hotwords": hotwords }).to_string();
+    let mut context_data = vec![serde_json::json!({ "text": STYLE_CONTEXT_PROMPT })];
+
+    if !purified_words.is_empty() {
         tracing::info!(
-            "豆包流式 ASR 词库: {} 个词（热词直传）",
+            "豆包流式 ASR 词库: {} 个词（上下文提示）",
             purified_words.len()
         );
-        tracing::debug!("豆包流式 ASR hotwords context={}", context);
-        request_obj["corpus"] = serde_json::json!({ "context": context });
+
+        let dictionary_hint = format!(
+            "以下词语可能出现在本次语音中，请优先按原词输出：{}",
+            purified_words.join("、")
+        );
+        context_data.push(serde_json::json!({ "text": dictionary_hint }));
+
+        //NOTE: 实验性功能，能提升性能
+        request_obj["model_version"] = "400".into();
+        request_obj["enable_ddc"] = true.into();
     } else {
         tracing::info!("豆包流式 ASR 词库: 未配置");
     }
+
+    let context = serde_json::json!({
+        "context_type": "dialog_ctx",
+        "context_data": context_data
+    })
+    .to_string();
+    tracing::debug!("豆包流式 ASR dialog context={}", context);
+    request_obj["corpus"] = serde_json::json!({ "context": context });
 
     request_obj
 }
@@ -538,7 +552,7 @@ fn parse_response(data: &[u8]) -> Result<(String, bool)> {
 
 fn extract_result_text(result: &serde_json::Value) -> String {
     if let Some(text) = result["result"]["text"].as_str() {
-        return text.to_string();
+        return normalize_transcript_text(text);
     }
 
     result["result"]
@@ -547,9 +561,15 @@ fn extract_result_text(result: &serde_json::Value) -> String {
             items
                 .iter()
                 .rev()
-                .find_map(|item| item["text"].as_str().map(ToOwned::to_owned))
+                .find_map(|item| item["text"].as_str().map(normalize_transcript_text))
         })
         .unwrap_or_default()
+}
+
+fn normalize_transcript_text(text: &str) -> String {
+    let mut normalized = text.trim().to_string();
+    utils::strip_trailing_punctuation(&mut normalized);
+    normalized
 }
 
 #[cfg(test)]
@@ -611,16 +631,78 @@ mod tests {
     }
 
     #[test]
-    fn request_object_uses_hotwords_only_context_schema() {
+    fn request_object_uses_dialog_context_with_style_and_dictionary_hints() {
         let request = build_request_object(&["OpenAI".to_string(), "字节跳动".to_string()]);
         let context = request["corpus"]["context"]
             .as_str()
             .expect("context should be serialized json");
         let context_json: serde_json::Value =
             serde_json::from_str(context).expect("context should be valid json");
+        let context_data = context_json["context_data"]
+            .as_array()
+            .expect("context_data should be an array");
+        let texts: Vec<&str> = context_data
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .collect();
 
-        assert!(context_json.get("hotwords").is_some());
-        assert!(context_json.get("context_type").is_none());
-        assert!(context_json.get("context_data").is_none());
+        assert_eq!(context_json["context_type"], "dialog_ctx");
+        assert!(context_json.get("hotwords").is_none());
+        assert!(texts
+            .iter()
+            .any(|text| text.contains("英文") && text.contains("小写")));
+        assert!(texts
+            .iter()
+            .any(|text| text.contains("句尾") && text.contains("句号")));
+        assert!(texts
+            .iter()
+            .any(|text| text.contains("OpenAI") && text.contains("字节跳动")));
+    }
+
+    #[test]
+    fn request_object_keeps_style_context_without_dictionary() {
+        let request = build_request_object(&[]);
+        let context = request["corpus"]["context"]
+            .as_str()
+            .expect("context should exist even without dictionary");
+        let context_json: serde_json::Value =
+            serde_json::from_str(context).expect("context should be valid json");
+        let context_data = context_json["context_data"]
+            .as_array()
+            .expect("context_data should be an array");
+        let texts: Vec<&str> = context_data
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .collect();
+
+        assert_eq!(context_json["context_type"], "dialog_ctx");
+        assert!(texts
+            .iter()
+            .any(|text| text.contains("英文") && text.contains("小写")));
+        assert!(texts
+            .iter()
+            .any(|text| text.contains("句尾") && text.contains("句号")));
+    }
+
+    #[test]
+    fn parse_response_strips_trailing_punctuation_from_result_text() {
+        let payload = serde_json::json!({
+            "result": {
+                "text": "OpenAI release notes。"
+            }
+        });
+        let payload_bytes =
+            serde_json::to_vec(&payload).expect("response payload should serialize");
+        let compressed = gzip_bytes(&payload_bytes);
+
+        let mut frame = vec![0x11, 0x93, 0x11, 0x00];
+        frame.extend_from_slice(&(-1_i32).to_be_bytes());
+        frame.extend_from_slice(&(compressed.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&compressed);
+
+        let (text, is_last) = parse_response(&frame).expect("response should parse");
+
+        assert!(is_last);
+        assert_eq!(text, "OpenAI release notes");
     }
 }
