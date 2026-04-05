@@ -112,6 +112,10 @@ export function RightPanel({
               value: "doubao_ime" as AsrProvider,
               label: `${ASR_PROVIDERS.doubao_ime.name} · ${ASR_PROVIDERS.doubao_ime.model}`,
             },
+            {
+              value: "omni" as AsrProvider,
+              label: `${ASR_PROVIDERS.omni.name} · ${ASR_PROVIDERS.omni.model}`,
+            },
           ]}
         />
       </div>
@@ -223,6 +227,18 @@ export function RightPanel({
                 <div className="text-xs font-bold">豆包输入法专属模式</div>
                 <div className="text-[10px] text-emerald-600 font-medium mt-0.5">
                   自动使用流式模式，无需配置
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : asrConfig.selection.active_provider === "omni" ? (
+          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-violet-700">
+              <Sparkles size={14} className="flex-shrink-0" />
+              <div>
+                <div className="text-xs font-bold">Omni 精准模式</div>
+                <div className="text-[10px] text-violet-600 font-medium mt-0.5">
+                  仅 HTTP 模式，通过多模态 LLM 直接转录
                 </div>
               </div>
             </div>

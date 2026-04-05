@@ -480,6 +480,8 @@ pub enum AsrProvider {
     DoubaoIme,
     #[serde(rename = "siliconflow")]
     SiliconFlow,
+    #[serde(rename = "omni")]
+    Omni,
 }
 
 impl Default for AsrProvider {
@@ -535,12 +537,57 @@ pub enum AsrLanguageMode {
     Auto,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Omni 多模态模型 ASR 配置（LongCat）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OmniAsrConfig {
+    /// LongCat API 密钥
+    #[serde(default)]
+    pub api_key: String,
+    /// 使用的模型名称（如 "LongCat-Flash-Omni-2603"）
+    pub model: String,
+    /// 用户自定义转录规则（Markdown 格式，可选）
+    #[serde(default)]
+    pub custom_rules: String,
+    /// 是否在 prompt 中包含内置词库领域
+    #[serde(default = "default_true")]
+    pub include_builtin_dictionary: bool,
+    /// 是否跳过 TNL（默认 true，Omni 已处理格式化）
+    #[serde(default = "default_true")]
+    pub skip_tnl: bool,
+    /// 是否跳过 LLM 后处理（默认 true，Omni 一步到位）
+    #[serde(default = "default_true")]
+    pub skip_post_processing: bool,
+    /// 是否强制流式响应（Qwen Omni 必须 true，LongCat 可以 false）
+    #[serde(default)]
+    pub force_stream: bool,
+}
+
+impl Default for OmniAsrConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            model: "LongCat-Flash-Omni-2603".to_string(),
+            custom_rules: String::new(),
+            include_builtin_dictionary: true,
+            skip_tnl: true,
+            skip_post_processing: true,
+            force_stream: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
     pub credentials: AsrCredentials,
     pub selection: AsrSelection,
     #[serde(default)]
     pub language_mode: AsrLanguageMode,
+    #[serde(default)]
+    pub omni: OmniAsrConfig,
 }
 
 impl Default for AsrConfig {
@@ -549,6 +596,7 @@ impl Default for AsrConfig {
             credentials: AsrCredentials::default(),
             selection: AsrSelection::default(),
             language_mode: AsrLanguageMode::Auto,
+            omni: OmniAsrConfig::default(),
         }
     }
 }

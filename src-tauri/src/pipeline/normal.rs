@@ -11,7 +11,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
-use crate::config::AppConfig;
+use crate::config::{self, AppConfig};
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::text_inserter::TextInserter;
@@ -67,52 +67,72 @@ impl NormalPipeline {
             asr_time_ms
         );
 
-        // 2. TNL 技术规范化（如果启用）
-        let (text, tnl_changed) = {
-            // 从配置加载 TNL 开关
-            let tnl_enabled = AppConfig::load()
-                .map(|(c, _)| c.tnl_config.enabled)
-                .unwrap_or(true);
+        // 2. 读取 Omni 模式跳过标记和 TNL 开关
+        let (tnl_enabled, omni_skip_tnl, omni_skip_post_processing) = AppConfig::load()
+            .map(|(c, _)| {
+                let is_omni = matches!(
+                    c.asr_config.selection.active_provider,
+                    config::AsrProvider::Omni
+                );
+                let skip_tnl = is_omni && c.asr_config.omni.skip_tnl;
+                let skip_post = is_omni && c.asr_config.omni.skip_post_processing;
+                (c.tnl_config.enabled, skip_tnl, skip_post)
+            })
+            .unwrap_or((true, false, false));
 
-            if tnl_enabled {
-                let engine = TnlEngine::new(dictionary.clone());
-                let tnl_result = engine.normalize(&asr_text);
-                if tnl_result.changed {
-                    tracing::info!(
-                        "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
-                        asr_text,
-                        tnl_result.text,
-                        tnl_result.elapsed_us,
-                        tnl_result.applied.len()
-                    );
-                }
-                (tnl_result.text, tnl_result.changed)
-            } else {
-                (asr_text.clone(), false)
+        // 3. TNL 技术规范化（如果启用且 Omni 未跳过）
+        let (text, tnl_changed) = if tnl_enabled && !omni_skip_tnl {
+            let engine = TnlEngine::new(dictionary.clone());
+            let tnl_result = engine.normalize(&asr_text);
+            if tnl_result.changed {
+                tracing::info!(
+                    "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
+                    asr_text,
+                    tnl_result.text,
+                    tnl_result.elapsed_us,
+                    tnl_result.applied.len()
+                );
             }
+            (tnl_result.text, tnl_result.changed)
+        } else {
+            if omni_skip_tnl {
+                tracing::info!("NormalPipeline: Omni 模式跳过 TNL");
+            }
+            (asr_text.clone(), false)
         };
 
         // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL 后文本（text）
 
-        // 3. 可选 LLM 后处理
+        // 4. 可选 LLM 后处理（Omni 模式可跳过）
+        let effective_post_process = if omni_skip_post_processing {
+            tracing::info!("NormalPipeline: Omni 模式跳过 LLM 后处理");
+            false
+        } else {
+            enable_post_process
+        };
+        let effective_dictionary_enhancement = if omni_skip_post_processing {
+            false
+        } else {
+            enable_dictionary_enhancement
+        };
         let (final_text, original_text, llm_time_ms) = Self::maybe_polish(
             app,
             post_processor,
-            enable_post_process,
+            effective_post_process,
             &dictionary,
-            enable_dictionary_enhancement,
+            effective_dictionary_enhancement,
             &text,
         )
         .await;
 
-        // 4. 插入前隐藏窗口并主动恢复焦点到目标应用
+        // 5. 插入前隐藏窗口并主动恢复焦点到目标应用
         // 使用新的焦点恢复机制，确保文本插入到正确的窗口
         super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
 
-        // 5. 插入文本
+        // 6. 插入文本
         let inserted = Self::insert_text(text_inserter, &final_text);
 
-        // 6. 触发学习观察（如果启用且插入成功）
+        // 7. 触发学习观察（如果启用且插入成功）
         if inserted {
             if let Some(hwnd) = target_hwnd {
                 if let Ok((config, _)) = AppConfig::load() {
@@ -128,7 +148,7 @@ impl NormalPipeline {
             }
         }
 
-        // 7. 返回结果
+        // 8. 返回结果
         // 历史记录存储 ASR 原文（约束 C14）
         // 决定是否显示双栏：
         // - 有 LLM 处理 → 使用 LLM 返回的 original_text

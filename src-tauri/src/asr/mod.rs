@@ -1,5 +1,6 @@
 pub mod doubao_ime;
 pub mod http;
+pub mod omni;
 mod race_strategy;
 pub mod realtime;
 mod utils;
@@ -9,6 +10,7 @@ pub use doubao_ime::{
     DoubaoImeRealtimeClient, DoubaoImeRealtimeSession,
 };
 pub use http::{DoubaoASRClient, QwenASRClient, SenseVoiceClient};
+pub use omni::OmniAsrClient;
 pub use race_strategy::{transcribe_doubao_sensevoice_race, transcribe_with_fallback_clients};
 pub use realtime::{
     DoubaoRealtimeClient, DoubaoRealtimeSession, QwenRealtimeClient, RealtimeSession,

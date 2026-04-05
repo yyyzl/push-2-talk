@@ -55,3 +55,6 @@ docs/
 
 # Git worktrees
 .worktrees/
+
+# Omni ASR comparison test scripts (contain API keys)
+tests/omni-comparison/

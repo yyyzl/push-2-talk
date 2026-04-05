@@ -25,8 +25,8 @@ mod win32_input;
 
 use asr::{
     DoubaoASRClient, DoubaoImeCredentials, DoubaoImeRealtimeClient, DoubaoImeRealtimeSession,
-    DoubaoRealtimeClient, DoubaoRealtimeSession, QwenASRClient, QwenRealtimeClient,
-    RealtimeSession, SenseVoiceClient,
+    DoubaoRealtimeClient, DoubaoRealtimeSession, OmniAsrClient, QwenASRClient,
+    QwenRealtimeClient, RealtimeSession, SenseVoiceClient,
 };
 use assistant_processor::AssistantProcessor;
 use audio_mute_manager::AudioMuteManager;
@@ -110,6 +110,7 @@ struct AppState {
     qwen_client: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client: Arc<Mutex<Option<DoubaoASRClient>>>,
+    omni_client: Arc<Mutex<Option<OmniAsrClient>>>,
     // 活跃的实时转录会话（用于真正的流式传输）
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
@@ -163,6 +164,7 @@ struct TrayMenuState {
     asr_qwen_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_ime_item: CheckMenuItem<tauri::Wry>,
+    asr_omni_item: CheckMenuItem<tauri::Wry>,
 }
 
 const TRAY_MENU_ID_SHOW: &str = "show";
@@ -172,6 +174,7 @@ const TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT: &str = "tray_toggle_dictionary
 const TRAY_MENU_ID_ASR_QWEN: &str = "tray_asr_qwen";
 const TRAY_MENU_ID_ASR_DOUBAO: &str = "tray_asr_doubao";
 const TRAY_MENU_ID_ASR_DOUBAO_IME: &str = "tray_asr_doubao_ime";
+const TRAY_MENU_ID_ASR_OMNI: &str = "tray_asr_omni";
 
 /// 全局互斥标志：防止并发 ASR 引擎切换导致多个 restart 并行执行
 static TRAY_ASR_SWITCHING: AtomicBool = AtomicBool::new(false);
@@ -198,6 +201,7 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
         &tray_state.asr_qwen_item,
         &tray_state.asr_doubao_item,
         &tray_state.asr_doubao_ime_item,
+        &tray_state.asr_omni_item,
         &config.asr_config.selection.active_provider,
     );
 }
@@ -316,6 +320,24 @@ async fn refresh_builtin_dictionary_once(
         size_bytes: content.len(),
     };
 
+    // 内置词库变更时重建 Omni 客户端的 prompt（如有）
+    if let Some(state) = app_handle.try_state::<AppState>() {
+        if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
+            let dict = state.dictionary.lock().unwrap().clone();
+            let omni_cfg = match config::AppConfig::load() {
+                Ok((cfg, _)) => cfg.asr_config.omni,
+                Err(_) => config::OmniAsrConfig::default(),
+            };
+            client.update_dictionary(
+                dict,
+                &content,
+                omni_cfg.include_builtin_dictionary,
+                &omni_cfg.custom_rules,
+            );
+            tracing::info!("内置词库更新: Omni ASR prompt 已重建");
+        }
+    }
+
     if let Err(err) = app_handle.emit("builtin_dictionary_updated", payload) {
         tracing::warn!("广播内置词库更新事件失败: {}", err);
     }
@@ -368,6 +390,7 @@ fn asr_provider_name(provider: &config::AsrProvider) -> &'static str {
         config::AsrProvider::Doubao => "豆包",
         config::AsrProvider::DoubaoIme => "豆包输入法",
         config::AsrProvider::SiliconFlow => "硅基流动",
+        config::AsrProvider::Omni => "Omni",
     }
 }
 
@@ -396,6 +419,9 @@ fn is_asr_provider_configured(config: &AppConfig, provider: &config::AsrProvider
             .sensevoice_api_key
             .trim()
             .is_empty(),
+        config::AsrProvider::Omni => {
+            !config.asr_config.omni.api_key.trim().is_empty()
+        }
     }
 }
 
@@ -403,11 +429,13 @@ fn sync_asr_provider_checks(
     qwen_item: &CheckMenuItem<tauri::Wry>,
     doubao_item: &CheckMenuItem<tauri::Wry>,
     doubao_ime_item: &CheckMenuItem<tauri::Wry>,
+    omni_item: &CheckMenuItem<tauri::Wry>,
     provider: &config::AsrProvider,
 ) {
     let qwen_checked = matches!(provider, config::AsrProvider::Qwen);
     let doubao_checked = matches!(provider, config::AsrProvider::Doubao);
     let doubao_ime_checked = matches!(provider, config::AsrProvider::DoubaoIme);
+    let omni_checked = matches!(provider, config::AsrProvider::Omni);
 
     if let Err(e) = qwen_item.set_checked(qwen_checked) {
         tracing::warn!("更新托盘千问勾选状态失败: {}", e);
@@ -417,6 +445,9 @@ fn sync_asr_provider_checks(
     }
     if let Err(e) = doubao_ime_item.set_checked(doubao_ime_checked) {
         tracing::warn!("更新托盘豆包输入法勾选状态失败: {}", e);
+    }
+    if let Err(e) = omni_item.set_checked(omni_checked) {
+        tracing::warn!("更新托盘 Omni 勾选状态失败: {}", e);
     }
 }
 
@@ -541,6 +572,7 @@ async fn switch_asr_provider_from_tray(
     qwen_item: CheckMenuItem<tauri::Wry>,
     doubao_item: CheckMenuItem<tauri::Wry>,
     doubao_ime_item: CheckMenuItem<tauri::Wry>,
+    omni_item: CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
     // 并发互斥：防止快速连续点击导致多个 restart 并行执行
     if TRAY_ASR_SWITCHING
@@ -556,6 +588,7 @@ async fn switch_asr_provider_from_tray(
         &qwen_item,
         &doubao_item,
         &doubao_ime_item,
+        &omni_item,
     )
     .await;
     TRAY_ASR_SWITCHING.store(false, Ordering::SeqCst);
@@ -568,6 +601,7 @@ async fn switch_asr_provider_from_tray_inner(
     qwen_item: &CheckMenuItem<tauri::Wry>,
     doubao_item: &CheckMenuItem<tauri::Wry>,
     doubao_ime_item: &CheckMenuItem<tauri::Wry>,
+    omni_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
     let config = {
         let _guard = CONFIG_LOCK
@@ -581,6 +615,7 @@ async fn switch_asr_provider_from_tray_inner(
                 qwen_item,
                 doubao_item,
                 doubao_ime_item,
+                omni_item,
                 &config.asr_config.selection.active_provider,
             );
             return Err(format!(
@@ -590,7 +625,7 @@ async fn switch_asr_provider_from_tray_inner(
         }
 
         if config.asr_config.selection.active_provider == target_provider {
-            sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
+            sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, omni_item, &target_provider);
             return Ok(());
         }
 
@@ -606,7 +641,7 @@ async fn switch_asr_provider_from_tray_inner(
         *state.realtime_provider.lock().unwrap() = Some(target_provider.clone());
     }
 
-    sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
+    sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, omni_item, &target_provider);
 
     let is_running = {
         let state = app_handle.state::<AppState>();
@@ -801,6 +836,7 @@ mod save_config_merge_tests {
                 fallback_provider: Some(config::AsrProvider::Qwen),
             },
             language_mode: config::AsrLanguageMode::Zh,
+            omni: config::OmniAsrConfig::default(),
         }
     }
 
@@ -1483,6 +1519,16 @@ async fn start_app(
             }
             use_realtime_mode = true;
         }
+        // 强制覆盖：Omni 只支持 HTTP 模式
+        if matches!(
+            cfg.selection.active_provider,
+            config::AsrProvider::Omni
+        ) {
+            if use_realtime_mode {
+                tracing::info!("Omni ASR 只支持 HTTP 模式，已自动切换");
+            }
+            use_realtime_mode = false;
+        }
     }
 
     *state.use_realtime_asr.lock().unwrap() = use_realtime_mode;
@@ -1531,6 +1577,7 @@ async fn start_app(
         *state.qwen_client.lock().unwrap() = None;
         *state.sensevoice_client.lock().unwrap() = None;
         *state.doubao_client.lock().unwrap() = None;
+        *state.omni_client.lock().unwrap() = None;
 
         if let Some(ref cfg) = asr_config {
             // 初始化所有有凭证的客户端
@@ -1555,6 +1602,32 @@ async fn start_app(
                     dict.clone(),
                     cfg.language_mode,
                 ));
+            }
+
+            // 初始化 Omni ASR 客户端（当 active_provider 为 Omni 时）
+            if matches!(
+                cfg.selection.active_provider,
+                config::AsrProvider::Omni
+            ) {
+                let omni_cfg = &cfg.omni;
+                if omni_cfg.api_key.is_empty() {
+                    tracing::warn!("Omni ASR: API Key 未配置，客户端未初始化");
+                } else {
+                    let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
+                    let omni_client = OmniAsrClient::new(
+                        omni_cfg.api_key.clone(),
+                        omni_cfg.model.clone(),
+                        dict.clone(),
+                        &builtin_raw,
+                        omni_cfg.include_builtin_dictionary,
+                        &omni_cfg.custom_rules,
+                    );
+                    *state.omni_client.lock().unwrap() = Some(omni_client);
+                    tracing::info!(
+                        "Omni ASR 客户端已初始化: model={}",
+                        omni_cfg.model
+                    );
+                }
             }
 
             // 设置实时转录提供商
@@ -1737,6 +1810,8 @@ async fn start_app(
             config::AsrProvider::SiliconFlow => {
                 (cfg.credentials.sensevoice_api_key.clone(), None, None)
             }
+            // Omni 不需要实时 API Key（凭据在 OmniAsrClient 中管理）
+            config::AsrProvider::Omni => (String::new(), None, None),
         }
     } else {
         (String::new(), None, None)
@@ -2217,10 +2292,12 @@ async fn handle_assistant_mode(
                 .unwrap()
                 .clone();
 
+            let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
             transcribe_with_available_clients(
                 qwen,
                 doubao,
                 sensevoice,
+                omni,
                 data,
                 enable_fb,
                 active_prov,
@@ -2261,10 +2338,12 @@ async fn handle_assistant_mode(
             active_prov
         };
 
+        let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
         transcribe_with_available_clients(
             qwen,
             doubao,
             sensevoice,
+            omni,
             &data,
             enable_fb,
             effective_active_prov,
@@ -2350,12 +2429,23 @@ async fn transcribe_with_available_clients(
     qwen: Option<QwenASRClient>,
     doubao: Option<DoubaoASRClient>,
     sensevoice: Option<SenseVoiceClient>,
+    omni: Option<OmniAsrClient>,
     audio_data: &[u8],
     enable_fallback: bool,
     active_provider: Option<config::AsrProvider>,
     fallback_provider: Option<config::AsrProvider>,
     log_prefix: &str,
 ) -> anyhow::Result<String> {
+    // Omni 不参与 fallback 竞速，直接处理
+    if matches!(active_provider, Some(config::AsrProvider::Omni)) {
+        if let Some(o) = omni {
+            tracing::info!("{}使用 Omni ASR", log_prefix);
+            return o.transcribe_bytes(audio_data).await;
+        } else {
+            return Err(anyhow::anyhow!("Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"));
+        }
+    }
+
     if enable_fallback {
         // 根据配置的 active_provider 和 fallback_provider 选择客户端组合
         match (active_provider.as_ref(), fallback_provider.as_ref()) {
@@ -2412,6 +2502,10 @@ async fn transcribe_with_available_clients(
                         // 豆包输入法目前只支持实时流式模式，不支持 HTTP 模式
                         Err(anyhow::anyhow!("豆包输入法 ASR 不支持 HTTP 模式"))
                     }
+                    // Omni 已在函数开头处理，不会到达这里
+                    Some(config::AsrProvider::Omni) => {
+                        Err(anyhow::anyhow!("Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"))
+                    }
                     None => {
                         tracing::error!("{}未配置 ASR 提供商", log_prefix);
                         Err(anyhow::anyhow!("ASR 提供商未配置"))
@@ -2449,6 +2543,10 @@ async fn transcribe_with_available_clients(
             Some(config::AsrProvider::DoubaoIme) => {
                 // 豆包输入法目前只支持实时流式模式，不支持 HTTP 模式
                 Err(anyhow::anyhow!("豆包输入法 ASR 不支持 HTTP 模式"))
+            }
+            // Omni 已在函数开头处理，不会到达这里
+            Some(config::AsrProvider::Omni) => {
+                Err(anyhow::anyhow!("Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"))
             }
             None => {
                 tracing::error!("{}未配置 ASR 提供商", log_prefix);
@@ -2513,11 +2611,13 @@ async fn handle_http_transcription(
             .unwrap()
             .clone();
 
+        let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
         let asr_start = std::time::Instant::now();
         let result = transcribe_with_available_clients(
             qwen,
             doubao,
             sensevoice,
+            omni,
             &audio_data,
             enable_fallback,
             active_prov,
@@ -2934,11 +3034,13 @@ async fn fallback_transcription(
         active_prov
     };
 
+    let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
     let asr_start = std::time::Instant::now();
     let result = transcribe_with_available_clients(
         qwen,
         doubao,
         sensevoice,
+        omni,
         &audio_data,
         enable_fallback,
         effective_active_prov,
@@ -3703,6 +3805,21 @@ async fn update_runtime_config(
             client.update_dictionary(dict.clone());
             tracing::info!("热更新: 豆包 ASR HTTP 客户端词库已更新");
         }
+        // 更新 Omni ASR 客户端（需要重建 prompt）
+        if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
+            let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
+            let omni_cfg = match config::AppConfig::load() {
+                Ok((cfg, _)) => cfg.asr_config.omni,
+                Err(_) => config::OmniAsrConfig::default(),
+            };
+            client.update_dictionary(
+                dict.clone(),
+                &builtin_raw,
+                omni_cfg.include_builtin_dictionary,
+                &omni_cfg.custom_rules,
+            );
+            tracing::info!("热更新: Omni ASR 客户端词库已更新");
+        }
         updated.push("词库");
     }
 
@@ -3743,6 +3860,16 @@ async fn add_learned_word(
     }
     if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
         client.update_dictionary(words.clone());
+    }
+    if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
+        let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
+        let omni_cfg = updated_config.asr_config.omni.clone();
+        client.update_dictionary(
+            words.clone(),
+            &builtin_raw,
+            omni_cfg.include_builtin_dictionary,
+            &omni_cfg.custom_rules,
+        );
     }
 
     // 发送事件通知前端刷新配置和词典
@@ -3792,6 +3919,16 @@ async fn delete_dictionary_entries(
     }
     if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
         client.update_dictionary(dict_words.clone());
+    }
+    if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
+        let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
+        let omni_cfg = updated_config.asr_config.omni.clone();
+        client.update_dictionary(
+            dict_words.clone(),
+            &builtin_raw,
+            omni_cfg.include_builtin_dictionary,
+            &omni_cfg.custom_rules,
+        );
     }
 
     // 发送事件通知前端刷新配置和词典
@@ -3964,6 +4101,7 @@ pub fn run() {
                 qwen_client: Arc::new(Mutex::new(None)),
                 sensevoice_client: Arc::new(Mutex::new(None)),
                 doubao_client: Arc::new(Mutex::new(None)),
+                omni_client: Arc::new(Mutex::new(None)),
                 active_session: Arc::new(tokio::sync::Mutex::new(None)),
                 doubao_session: Arc::new(tokio::sync::Mutex::new(None)),
                 doubao_ime_session: Arc::new(tokio::sync::Mutex::new(None)),
@@ -4067,11 +4205,19 @@ pub fn run() {
                 matches!(initial_active_provider, config::AsrProvider::DoubaoIme),
                 None::<&str>,
             )?;
+            let asr_omni_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_ASR_OMNI,
+                "Omni 精准",
+                true,
+                matches!(initial_active_provider, config::AsrProvider::Omni),
+                None::<&str>,
+            )?;
             let asr_switch_submenu = Submenu::with_items(
                 app,
                 "切换语音识别引擎",
                 true,
-                &[&asr_qwen_item, &asr_doubao_item, &asr_doubao_ime_item],
+                &[&asr_qwen_item, &asr_doubao_item, &asr_doubao_ime_item, &asr_omni_item],
             )?;
 
             let menu = Menu::with_items(
@@ -4090,6 +4236,7 @@ pub fn run() {
             let asr_qwen_item_for_event = asr_qwen_item.clone();
             let asr_doubao_item_for_event = asr_doubao_item.clone();
             let asr_doubao_ime_item_for_event = asr_doubao_ime_item.clone();
+            let asr_omni_item_for_event = asr_omni_item.clone();
 
             app.manage(TrayMenuState {
                 post_process_item: post_process_item.clone(),
@@ -4097,6 +4244,7 @@ pub fn run() {
                 asr_qwen_item: asr_qwen_item.clone(),
                 asr_doubao_item: asr_doubao_item.clone(),
                 asr_doubao_ime_item: asr_doubao_ime_item.clone(),
+                asr_omni_item: asr_omni_item.clone(),
             });
 
             // 创建系统托盘图标
@@ -4133,6 +4281,7 @@ pub fn run() {
                         let asr_qwen_item = asr_qwen_item_for_event.clone();
                         let asr_doubao_item = asr_doubao_item_for_event.clone();
                         let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
+                        let asr_omni_item = asr_omni_item_for_event.clone();
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = switch_asr_provider_from_tray(
                                 app_handle.clone(),
@@ -4140,6 +4289,7 @@ pub fn run() {
                                 asr_qwen_item,
                                 asr_doubao_item,
                                 asr_doubao_ime_item,
+                                asr_omni_item,
                             )
                             .await
                             {
@@ -4153,6 +4303,7 @@ pub fn run() {
                         let asr_qwen_item = asr_qwen_item_for_event.clone();
                         let asr_doubao_item = asr_doubao_item_for_event.clone();
                         let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
+                        let asr_omni_item = asr_omni_item_for_event.clone();
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = switch_asr_provider_from_tray(
                                 app_handle.clone(),
@@ -4160,6 +4311,7 @@ pub fn run() {
                                 asr_qwen_item,
                                 asr_doubao_item,
                                 asr_doubao_ime_item,
+                                asr_omni_item,
                             )
                             .await
                             {
@@ -4173,6 +4325,7 @@ pub fn run() {
                         let asr_qwen_item = asr_qwen_item_for_event.clone();
                         let asr_doubao_item = asr_doubao_item_for_event.clone();
                         let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
+                        let asr_omni_item = asr_omni_item_for_event.clone();
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = switch_asr_provider_from_tray(
                                 app_handle.clone(),
@@ -4180,10 +4333,33 @@ pub fn run() {
                                 asr_qwen_item,
                                 asr_doubao_item,
                                 asr_doubao_ime_item,
+                                asr_omni_item,
                             )
                             .await
                             {
                                 tracing::error!("托盘切换 ASR 到豆包输入法失败: {}", e);
+                                let _ = app_handle.emit("error", e);
+                            }
+                        });
+                    }
+                    TRAY_MENU_ID_ASR_OMNI => {
+                        let app_handle = app.clone();
+                        let asr_qwen_item = asr_qwen_item_for_event.clone();
+                        let asr_doubao_item = asr_doubao_item_for_event.clone();
+                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
+                        let asr_omni_item = asr_omni_item_for_event.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = switch_asr_provider_from_tray(
+                                app_handle.clone(),
+                                config::AsrProvider::Omni,
+                                asr_qwen_item,
+                                asr_doubao_item,
+                                asr_doubao_ime_item,
+                                asr_omni_item,
+                            )
+                            .await
+                            {
+                                tracing::error!("托盘切换 ASR 到 Omni 失败: {}", e);
                                 let _ = app_handle.emit("error", e);
                             }
                         });

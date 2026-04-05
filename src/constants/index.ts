@@ -1,4 +1,4 @@
-import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig } from '../types';
+import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig, OmniAsrConfig } from '../types';
 
 // 按键显示名称映射
 export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
@@ -127,6 +127,11 @@ export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {
     model: 'SenseVoiceSmall',
     docsUrl: 'https://cloud.siliconflow.cn/',
   },
+  omni: {
+    name: 'Omni 精准模式',
+    model: 'LongCat-Flash-Omni-2603',
+    docsUrl: '',
+  },
 };
 
 // 默认双热键配置
@@ -142,7 +147,7 @@ export const DEFAULT_DUAL_HOTKEY_CONFIG = {
 export const FALLBACK_ASR_PROVIDER = 'doubao_ime' as AsrProvider;
 
 // 合法的 ASR Provider 列表（用于 localStorage 迁移校验等）
-export const VALID_ASR_PROVIDERS: AsrProvider[] = ['qwen', 'doubao', 'doubao_ime', 'siliconflow'];
+export const VALID_ASR_PROVIDERS: AsrProvider[] = ['qwen', 'doubao', 'doubao_ime', 'siliconflow', 'omni'];
 
 // 默认 ASR 缓存
 export const DEFAULT_ASR_CACHE = {
@@ -150,7 +155,19 @@ export const DEFAULT_ASR_CACHE = {
   qwen: { api_key: '' },
   doubao: { app_id: '', access_token: '' },
   doubao_ime: { device_id: '', token: '', cdid: '' },
-  siliconflow: { api_key: '' }
+  siliconflow: { api_key: '' },
+  omni: { api_key: '', model: 'LongCat-Flash-Omni-2603' }
+};
+
+// 默认 Omni ASR 配置
+export const DEFAULT_OMNI_ASR_CONFIG: OmniAsrConfig = {
+  api_key: '',
+  model: 'LongCat-Flash-Omni-2603',
+  custom_rules: '',
+  include_builtin_dictionary: true,
+  skip_tnl: true,
+  skip_post_processing: true,
+  force_stream: false,
 };
 
 // 默认自动学习配置

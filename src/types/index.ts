@@ -26,7 +26,7 @@ export interface DualHotkeyConfig {
 }
 
 // ASR 配置
-export type AsrProvider = 'qwen' | 'doubao' | 'doubao_ime' | 'siliconflow';
+export type AsrProvider = 'qwen' | 'doubao' | 'doubao_ime' | 'siliconflow' | 'omni';
 export type AsrLanguageMode = 'zh' | 'auto';
 
 export interface AsrCredentials {
@@ -46,10 +46,29 @@ export interface AsrSelection {
   fallback_provider: AsrProvider | null;
 }
 
+// Omni 多模态模型 ASR 配置（LongCat）
+export interface OmniAsrConfig {
+  /** LongCat API 密钥 */
+  api_key: string;
+  /** 模型名称 */
+  model: string;
+  /** 用户自定义转录规则 */
+  custom_rules: string;
+  /** 是否在 prompt 中包含内置词库 */
+  include_builtin_dictionary: boolean;
+  /** 是否跳过 TNL */
+  skip_tnl: boolean;
+  /** 是否跳过 LLM 后处理 */
+  skip_post_processing: boolean;
+  /** 是否强制流式响应（预留给 Qwen Omni） */
+  force_stream: boolean;
+}
+
 export interface AsrConfig {
   credentials: AsrCredentials;
   selection: AsrSelection;
   language_mode: AsrLanguageMode;
+  omni?: OmniAsrConfig;
 }
 
 // LLM 配置
