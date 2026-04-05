@@ -238,7 +238,8 @@ export function RightPanel({
               <div>
                 <div className="text-xs font-bold">Omni 精准模式</div>
                 <div className="text-[10px] text-violet-600 font-medium mt-0.5">
-                  仅 HTTP 模式，通过多模态 LLM 直接转录
+                  {asrConfig.omni?.model ?? "LongCat-Flash-Omni-2603"}
+                  {asrConfig.omni?.enable_thinking ? " · 深度思考" : ""}
                 </div>
               </div>
             </div>

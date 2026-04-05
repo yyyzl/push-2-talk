@@ -17,9 +17,6 @@ use std::time::Duration;
 /// Omni ASR 请求超时时间（秒）
 const REQUEST_TIMEOUT_SECS: u64 = 90;
 
-/// LongCat API 端点
-const LONGCAT_ENDPOINT: &str = "https://api.longcat.chat/openai/v1/chat/completions";
-
 /// WAV 文件头魔数
 const WAV_MAGIC: &[u8; 4] = b"RIFF";
 
@@ -27,23 +24,22 @@ const WAV_MAGIC: &[u8; 4] = b"RIFF";
 pub struct OmniAsrClient {
     api_key: String,
     model: String,
+    endpoint: String,
+    enable_thinking: bool,
+    /// 当前服务商是否支持 thinking 参数（LongCat 不支持，MiMo 支持）
+    thinking_supported: bool,
     system_prompt: String,
     client: reqwest::Client,
 }
 
 impl OmniAsrClient {
     /// 创建 Omni ASR 客户端
-    ///
-    /// # Arguments
-    /// * `api_key` - LongCat API 密钥
-    /// * `model` - 模型名称（如 "LongCat-Flash-Omni-2603"）
-    /// * `dictionary` - 用户词库条目（可能含 |auto 后缀）
-    /// * `builtin_hotwords_raw` - 内置词库原始文本（【领域】:[词1,词2,...] 格式）
-    /// * `include_builtin` - 是否在 prompt 中包含内置词库
-    /// * `custom_rules` - 用户自定义转录规则
     pub fn new(
         api_key: String,
         model: String,
+        endpoint: String,
+        enable_thinking: bool,
+        thinking_supported: bool,
         dictionary: Vec<String>,
         builtin_hotwords_raw: &str,
         include_builtin: bool,
@@ -57,14 +53,20 @@ impl OmniAsrClient {
         );
 
         tracing::info!(
-            "Omni ASR 客户端已创建: model={}, prompt_len={} 字符",
+            "Omni ASR 客户端已创建: model={}, endpoint={}, thinking={} (supported={}), prompt_len={} 字符",
             model,
+            endpoint,
+            enable_thinking,
+            thinking_supported,
             system_prompt.len()
         );
 
         Self {
             api_key,
             model,
+            endpoint,
+            enable_thinking,
+            thinking_supported,
             system_prompt,
             client: utils::create_http_client(),
         }
@@ -88,7 +90,7 @@ impl OmniAsrClient {
             "wav" // 默认按 WAV 处理
         };
 
-        let request_body = serde_json::json!({
+        let mut request_body = serde_json::json!({
             "model": self.model,
             "messages": [
                 {
@@ -111,16 +113,29 @@ impl OmniAsrClient {
                 }
             ],
             "stream": false,
-            "topP": 0.1,
-            "topK": 1,
+            "temperature": 0.01,
+            "top_p": 0.1,
+            "top_k": 1,
             "output_modalities": ["text"]
         });
 
-        tracing::info!("Omni ASR: 发送请求到 {}", LONGCAT_ENDPOINT);
+        // thinking 模式：仅对支持 thinking 的服务商发送参数
+        if self.thinking_supported {
+            request_body["chat_template_kwargs"] =
+                serde_json::json!({"enable_thinking": self.enable_thinking});
+            if self.enable_thinking {
+                request_body["thinking"] = serde_json::json!({"type": "enabled"});
+            }
+            tracing::info!("Omni ASR: thinking={} (supported)", self.enable_thinking);
+        } else {
+            tracing::info!("Omni ASR: thinking 不支持，跳过参数");
+        }
+
+        tracing::info!("Omni ASR: 发送请求到 {}", self.endpoint);
 
         let response = self
             .client
-            .post(LONGCAT_ENDPOINT)
+            .post(&self.endpoint)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -143,6 +158,23 @@ impl OmniAsrClient {
             serde_json::to_string_pretty(&result)?
         );
 
+        // 如有 reasoning_content，记录日志（不影响转录结果）
+        if let Some(reasoning) = result
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|msg| msg.get("reasoning_content"))
+            .and_then(|r| r.as_str())
+        {
+            let preview: String = reasoning.chars().take(100).collect();
+            tracing::info!(
+                "Omni ASR: thinking 推理过程 ({} 字符): {}",
+                reasoning.chars().count(),
+                preview
+            );
+        }
+
         // 解析 choices[0].message.content
         // content 可能是 string 或 array of {type, text}
         let text = Self::extract_content_text(&result)?;
@@ -154,13 +186,16 @@ impl OmniAsrClient {
         Ok(text)
     }
 
-    /// 热更新词库（重建 system prompt）
-    pub fn update_dictionary(
+    /// 热更新配置（重建 system prompt，同步 endpoint / thinking）
+    pub fn update_config(
         &mut self,
         dictionary: Vec<String>,
         builtin_hotwords_raw: &str,
         include_builtin: bool,
         custom_rules: &str,
+        endpoint: &str,
+        enable_thinking: bool,
+        thinking_supported: bool,
     ) {
         self.system_prompt = prompt_builder::build(
             &dictionary,
@@ -168,8 +203,14 @@ impl OmniAsrClient {
             include_builtin,
             custom_rules,
         );
+        self.endpoint = endpoint.to_string();
+        self.enable_thinking = enable_thinking;
+        self.thinking_supported = thinking_supported;
         tracing::info!(
-            "Omni ASR: 词库已热更新, prompt_len={} 字符",
+            "Omni ASR: 配置已热更新, endpoint={}, thinking={} (supported={}), prompt_len={} 字符",
+            self.endpoint,
+            self.enable_thinking,
+            self.thinking_supported,
             self.system_prompt.len()
         );
     }

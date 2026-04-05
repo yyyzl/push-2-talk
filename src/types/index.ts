@@ -46,12 +46,28 @@ export interface AsrSelection {
   fallback_provider: AsrProvider | null;
 }
 
-// Omni 多模态模型 ASR 配置（LongCat）
+// 每个 Omni 端点的独立配置快照
+export interface OmniEndpointProfile {
+  api_key: string;
+  model: string;
+  enable_thinking: boolean;
+  thinking_supported: boolean;
+  custom_rules: string;
+  skip_tnl: boolean;
+  skip_post_processing: boolean;
+  include_builtin_dictionary: boolean;
+}
+
+// Omni 多模态模型 ASR 配置
 export interface OmniAsrConfig {
-  /** LongCat API 密钥 */
+  /** 当前激活的 API 密钥 */
   api_key: string;
   /** 模型名称 */
   model: string;
+  /** API 端点 */
+  endpoint: string;
+  /** 各端点的配置快照缓存 */
+  endpoint_profiles: Record<string, OmniEndpointProfile>;
   /** 用户自定义转录规则 */
   custom_rules: string;
   /** 是否在 prompt 中包含内置词库 */
@@ -62,6 +78,10 @@ export interface OmniAsrConfig {
   skip_post_processing: boolean;
   /** 是否强制流式响应（预留给 Qwen Omni） */
   force_stream: boolean;
+  /** 是否启用 thinking/推理模式 */
+  enable_thinking: boolean;
+  /** 当前服务商是否支持 thinking 参数 */
+  thinking_supported: boolean;
 }
 
 export interface AsrConfig {

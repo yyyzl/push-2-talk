@@ -328,11 +328,14 @@ async fn refresh_builtin_dictionary_once(
                 Ok((cfg, _)) => cfg.asr_config.omni,
                 Err(_) => config::OmniAsrConfig::default(),
             };
-            client.update_dictionary(
+            client.update_config(
                 dict,
                 &content,
                 omni_cfg.include_builtin_dictionary,
                 &omni_cfg.custom_rules,
+                &omni_cfg.endpoint,
+                omni_cfg.enable_thinking,
+                omni_cfg.thinking_supported,
             );
             tracing::info!("内置词库更新: Omni ASR prompt 已重建");
         }
@@ -421,6 +424,7 @@ fn is_asr_provider_configured(config: &AppConfig, provider: &config::AsrProvider
             .is_empty(),
         config::AsrProvider::Omni => {
             !config.asr_config.omni.api_key.trim().is_empty()
+                && !config.asr_config.omni.endpoint.trim().is_empty()
         }
     }
 }
@@ -1617,6 +1621,9 @@ async fn start_app(
                     let omni_client = OmniAsrClient::new(
                         omni_cfg.api_key.clone(),
                         omni_cfg.model.clone(),
+                        omni_cfg.endpoint.clone(),
+                        omni_cfg.enable_thinking,
+                        omni_cfg.thinking_supported,
                         dict.clone(),
                         &builtin_raw,
                         omni_cfg.include_builtin_dictionary,
@@ -3805,20 +3812,23 @@ async fn update_runtime_config(
             client.update_dictionary(dict.clone());
             tracing::info!("热更新: 豆包 ASR HTTP 客户端词库已更新");
         }
-        // 更新 Omni ASR 客户端（需要重建 prompt）
+        // 更新 Omni ASR 客户端��需要重建 prompt + 同步 endpoint/thinking）
         if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
             let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
             let omni_cfg = match config::AppConfig::load() {
                 Ok((cfg, _)) => cfg.asr_config.omni,
                 Err(_) => config::OmniAsrConfig::default(),
             };
-            client.update_dictionary(
+            client.update_config(
                 dict.clone(),
                 &builtin_raw,
                 omni_cfg.include_builtin_dictionary,
                 &omni_cfg.custom_rules,
+                &omni_cfg.endpoint,
+                omni_cfg.enable_thinking,
+                omni_cfg.thinking_supported,
             );
-            tracing::info!("热更新: Omni ASR 客户端词库已更新");
+            tracing::info!("热更新: Omni ASR 客户端配置已更新");
         }
         updated.push("词库");
     }
@@ -3864,11 +3874,14 @@ async fn add_learned_word(
     if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
         let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
         let omni_cfg = updated_config.asr_config.omni.clone();
-        client.update_dictionary(
+        client.update_config(
             words.clone(),
             &builtin_raw,
             omni_cfg.include_builtin_dictionary,
             &omni_cfg.custom_rules,
+            &omni_cfg.endpoint,
+            omni_cfg.enable_thinking,
+            omni_cfg.thinking_supported,
         );
     }
 
@@ -3923,11 +3936,14 @@ async fn delete_dictionary_entries(
     if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
         let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
         let omni_cfg = updated_config.asr_config.omni.clone();
-        client.update_dictionary(
+        client.update_config(
             dict_words.clone(),
             &builtin_raw,
             omni_cfg.include_builtin_dictionary,
             &omni_cfg.custom_rules,
+            &omni_cfg.endpoint,
+            omni_cfg.enable_thinking,
+            omni_cfg.thinking_supported,
         );
     }
 

@@ -93,7 +93,7 @@ export const isAsrConfigValid = (config: AsrConfig): boolean => {
   } else if (provider === 'siliconflow') {
     return config.credentials.sensevoice_api_key.trim() !== '';
   } else if (provider === 'omni') {
-    return (config.omni?.api_key ?? '').trim() !== '';
+    return (config.omni?.api_key ?? '').trim() !== '' && (config.omni?.endpoint ?? '').trim() !== '';
   }
 
   return false;

@@ -541,29 +541,67 @@ fn default_true() -> bool {
     true
 }
 
-/// Omni 多模态模型 ASR 配置（LongCat）
+fn default_omni_endpoint() -> String {
+    "https://api.longcat.chat/openai/v1/chat/completions".to_string()
+}
+
+/// 每个 Omni 端点的独立配置快照（切换服务商时自动存取）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OmniAsrConfig {
-    /// LongCat API 密钥
+pub struct OmniEndpointProfile {
     #[serde(default)]
     pub api_key: String,
-    /// 使用的模型名称（如 "LongCat-Flash-Omni-2603"）
+    #[serde(default)]
     pub model: String,
-    /// 用户自定义转录规则（Markdown 格式，可选）
+    #[serde(default)]
+    pub enable_thinking: bool,
+    /// 当前服务商是否支持 thinking 参数（决定是否发送 chat_template_kwargs）
+    #[serde(default)]
+    pub thinking_supported: bool,
+    #[serde(default)]
+    pub custom_rules: String,
+    #[serde(default = "default_true")]
+    pub skip_tnl: bool,
+    #[serde(default = "default_true")]
+    pub skip_post_processing: bool,
+    #[serde(default = "default_true")]
+    pub include_builtin_dictionary: bool,
+}
+
+/// Omni 多模态模型 ASR 配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OmniAsrConfig {
+    /// 当前激活的 API 密钥（后端使用此字段）
+    #[serde(default)]
+    pub api_key: String,
+    /// 使用的模型名称
+    pub model: String,
+    /// API 端点
+    #[serde(default = "default_omni_endpoint")]
+    pub endpoint: String,
+    /// 各端点的配置快照缓存（endpoint URL → profile）
+    #[serde(default)]
+    pub endpoint_profiles: std::collections::HashMap<String, OmniEndpointProfile>,
+    /// 用户自定义转录规则
     #[serde(default)]
     pub custom_rules: String,
     /// 是否在 prompt 中包含内置词库领域
     #[serde(default = "default_true")]
     pub include_builtin_dictionary: bool,
-    /// 是否跳过 TNL（默认 true，Omni 已处理格式化）
+    /// 是否跳过 TNL
     #[serde(default = "default_true")]
     pub skip_tnl: bool,
-    /// 是否跳过 LLM 后处理（默认 true，Omni 一步到位）
+    /// 是否跳过 LLM 后处理
     #[serde(default = "default_true")]
     pub skip_post_processing: bool,
-    /// 是否强制流式响应（Qwen Omni 必须 true，LongCat 可以 false）
+    /// 是否强制流式响应
     #[serde(default)]
     pub force_stream: bool,
+    /// 是否启用 thinking/推理模式
+    #[serde(default)]
+    pub enable_thinking: bool,
+    /// 当前服务商是否支持 thinking 参数
+    #[serde(default)]
+    pub thinking_supported: bool,
 }
 
 impl Default for OmniAsrConfig {
@@ -571,11 +609,15 @@ impl Default for OmniAsrConfig {
         Self {
             api_key: String::new(),
             model: "LongCat-Flash-Omni-2603".to_string(),
+            endpoint: default_omni_endpoint(),
+            endpoint_profiles: std::collections::HashMap::new(),
             custom_rules: String::new(),
             include_builtin_dictionary: true,
             skip_tnl: true,
             skip_post_processing: true,
             force_stream: false,
+            enable_thinking: false,
+            thinking_supported: false,
         }
     }
 }

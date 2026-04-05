@@ -390,7 +390,8 @@ export function useAppServiceController({
         backendCreds?.qwen_api_key?.trim() ||
         backendCreds?.sensevoice_api_key?.trim() ||
         backendCreds?.doubao_app_id?.trim() ||
-        backendCreds?.doubao_access_token?.trim()
+        backendCreds?.doubao_access_token?.trim() ||
+        config.asr_config?.omni?.api_key?.trim()
       );
 
       if (!backendHasAnyCredential) {

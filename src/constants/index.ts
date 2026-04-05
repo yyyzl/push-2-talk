@@ -1,4 +1,4 @@
-import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig, OmniAsrConfig } from '../types';
+import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig, OmniAsrConfig, OmniEndpointProfile } from '../types';
 
 // 按键显示名称映射
 export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
@@ -159,15 +159,45 @@ export const DEFAULT_ASR_CACHE = {
   omni: { api_key: '', model: 'LongCat-Flash-Omni-2603' }
 };
 
-// 默认 Omni ASR 配置
+// Omni 端点预设（每个预设含默认 profile 作为首次切入的初始值）
+export const OMNI_ENDPOINT_PRESETS: {
+  label: string;
+  value: string;
+  defaults: OmniEndpointProfile;
+}[] = [
+  {
+    label: 'LongCat',
+    value: 'https://api.longcat.chat/openai/v1/chat/completions',
+    defaults: {
+      api_key: '', model: 'LongCat-Flash-Omni-2603',
+      enable_thinking: false, thinking_supported: false,
+      custom_rules: '', skip_tnl: true, skip_post_processing: true, include_builtin_dictionary: true,
+    },
+  },
+  {
+    label: '小米 MiMo',
+    value: 'https://api.xiaomimimo.com/v1/chat/completions',
+    defaults: {
+      api_key: '', model: 'mimo-v2-omni',
+      enable_thinking: false, thinking_supported: true,
+      custom_rules: '', skip_tnl: true, skip_post_processing: true, include_builtin_dictionary: true,
+    },
+  },
+];
+
+// 默认 Omni ASR 配置（LongCat 初始值）
 export const DEFAULT_OMNI_ASR_CONFIG: OmniAsrConfig = {
   api_key: '',
   model: 'LongCat-Flash-Omni-2603',
+  endpoint: 'https://api.longcat.chat/openai/v1/chat/completions',
+  endpoint_profiles: {},
   custom_rules: '',
   include_builtin_dictionary: true,
   skip_tnl: true,
   skip_post_processing: true,
   force_stream: false,
+  enable_thinking: false,
+  thinking_supported: false,
 };
 
 // 默认自动学习配置

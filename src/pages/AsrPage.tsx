@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { AlertCircle, Sparkles } from "lucide-react";
 import type { AsrConfig, AsrProvider, OmniAsrConfig } from "../types";
-import { ASR_PROVIDERS, DEFAULT_OMNI_ASR_CONFIG } from "../constants";
+import { ASR_PROVIDERS, DEFAULT_OMNI_ASR_CONFIG, OMNI_ENDPOINT_PRESETS } from "../constants";
 import { ApiKeyInput, Toggle, ConfigSelect } from "../components/common";
 import { useConfigSave } from "../contexts/ConfigSaveContext";
 
@@ -36,6 +36,35 @@ export function AsrPage({
       ...prev,
       omni: { ...(prev.omni ?? DEFAULT_OMNI_ASR_CONFIG), ...patch },
     }));
+  };
+
+  // 切换预设：缓存当前 endpoint 的完整 profile，恢复目标 endpoint 的 profile
+  const switchPreset = (newEndpoint: string) => {
+    setAsrConfig((prev) => {
+      const cur = prev.omni ?? DEFAULT_OMNI_ASR_CONFIG;
+      const profiles = { ...cur.endpoint_profiles };
+      // 保存当前 profile
+      profiles[cur.endpoint] = {
+        api_key: cur.api_key, model: cur.model,
+        enable_thinking: cur.enable_thinking, thinking_supported: cur.thinking_supported,
+        custom_rules: cur.custom_rules, skip_tnl: cur.skip_tnl,
+        skip_post_processing: cur.skip_post_processing, include_builtin_dictionary: cur.include_builtin_dictionary,
+      };
+      // 恢复目标 profile（优先缓存，其次预设默认值）
+      const cached = profiles[newEndpoint];
+      const presetDefaults = OMNI_ENDPOINT_PRESETS.find(p => p.value === newEndpoint)?.defaults;
+      const restored = cached ?? presetDefaults ?? { ...DEFAULT_OMNI_ASR_CONFIG, api_key: '', model: '' };
+      return {
+        ...prev,
+        omni: {
+          ...cur, endpoint: newEndpoint, endpoint_profiles: profiles,
+          api_key: restored.api_key, model: restored.model,
+          enable_thinking: restored.enable_thinking, thinking_supported: restored.thinking_supported,
+          custom_rules: restored.custom_rules, skip_tnl: restored.skip_tnl,
+          skip_post_processing: restored.skip_post_processing, include_builtin_dictionary: restored.include_builtin_dictionary,
+        },
+      };
+    });
   };
 
   return (
@@ -146,6 +175,28 @@ export function AsrPage({
 
             {isOmni && (
               <div className="space-y-3">
+                {/* 服务商预设 */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-stone-500">服务商</label>
+                  <div className="flex gap-2">
+                    {OMNI_ENDPOINT_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        disabled={isRunning}
+                        onClick={() => switchPreset(preset.value)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors disabled:opacity-60 ${
+                          omniConfig.endpoint === preset.value
+                            ? 'bg-violet-100 border-violet-300 text-violet-700'
+                            : 'bg-white border-stone-200 text-stone-500 hover:border-stone-300'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* API Key */}
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-stone-500">API Key</label>
@@ -172,8 +223,23 @@ export function AsrPage({
                   />
                 </div>
 
-                {/* 三个开关 */}
+                {/* 开关组 */}
                 <div className="space-y-2 p-3 bg-stone-50 border border-stone-200 rounded-xl">
+                  {omniConfig.thinking_supported && (
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-bold text-stone-600">深度思考模式</span>
+                        <p className="text-[10px] text-stone-400 mt-0.5">启用 thinking 推理链（会增加延迟和 token 消耗）</p>
+                      </div>
+                      <Toggle
+                        checked={omniConfig.enable_thinking}
+                        onCheckedChange={(v) => updateOmniConfig({ enable_thinking: v })}
+                        disabled={isRunning}
+                        size="xs"
+                        variant="blue"
+                      />
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-stone-600">包含内置词库</span>
                     <Toggle
