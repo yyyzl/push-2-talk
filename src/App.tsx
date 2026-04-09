@@ -21,6 +21,8 @@ import {
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_OMNI_ASR_CONFIG,
+  DEFAULT_OMNI_SHARED_CONFIG,
 } from "./constants";
 import { loadUsageStats } from "./utils";
 import { TopStatusBar } from "./components/layout/TopStatusBar";
@@ -35,13 +37,9 @@ import { useHotkeyRecording } from "./hooks/useHotkeyRecording";
 import { useHistoryController } from "./hooks/useHistoryController";
 import { useTauriEventListeners } from "./hooks/useTauriEventListeners";
 import { useAppServiceController } from "./hooks/useAppServiceController";
-import { useLlmPresets } from "./hooks/useLlmPresets";
 import { useUpdater } from "./hooks/useUpdater";
 import { DashboardPage } from "./pages/DashboardPage";
 import { AsrPage } from "./pages/AsrPage";
-import { ModelsPage } from "./pages/ModelsPage";
-import { LlmPage } from "./pages/LlmPage";
-import { AssistantPage } from "./pages/AssistantPage";
 import { DictionaryPage } from "./pages/DictionaryPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { HotkeysPage } from "./pages/HotkeysPage";
@@ -75,11 +73,18 @@ function App() {
       doubao_ime_cdid: '',
     },
     selection: {
-      active_provider: 'doubao_ime',
+      active_provider: 'omni',
       enable_fallback: false,
       fallback_provider: null,
     },
     language_mode: 'auto',
+    omni_shared_config: DEFAULT_OMNI_SHARED_CONFIG,
+    omni: DEFAULT_OMNI_ASR_CONFIG,
+    grok: {
+      api_key: '',
+      model: 'grok-2-audio',
+      proxy: '',
+    },
   });
 
   const [useRealtime, setUseRealtime] = useState(false);
@@ -93,9 +98,9 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [asrTime, setAsrTime] = useState<number | null>(null);
-  const [llmTime, setLlmTime] = useState<number | null>(null);
+  const [, setLlmTime] = useState<number | null>(null);
   const [totalTime, setTotalTime] = useState<number | null>(null);
-  const [activePresetName, setActivePresetName] = useState<string | null>(null);
+  const [, setActivePresetName] = useState<string | null>(null);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const {
     dictionary,
@@ -126,7 +131,6 @@ function App() {
   } = useHistoryController();
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   const [showAsrApiKey, setShowAsrApiKey] = useState(false);
-  const [showModelsApiKey, setShowModelsApiKey] = useState(false);
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
@@ -170,7 +174,7 @@ function App() {
       }
     },
   });
-  const [currentMode, setCurrentMode] = useState<string | null>(null); // 当前转录模式: "normal" | "smartcommand"
+  const [, setCurrentMode] = useState<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const hasCheckedUpdateOnStartup = useRef(false);
   const hasLoadedConfigRef = useRef(false);
@@ -251,12 +255,6 @@ function App() {
     totalRecordingCount: 0,
     totalRecognizedChars: 0,
   });
-  const {
-    activePreset,
-    handleAddPreset,
-    handleDeletePreset,
-    handleUpdateActivePreset,
-  } = useLlmPresets({ llmConfig, setLlmConfig });
   const llmConfigRef = useRef(llmConfig);
   useEffect(() => {
     llmConfigRef.current = llmConfig;
@@ -608,8 +606,6 @@ function App() {
     if (configHash === lastAppliedConfigHashRef.current) return;
 
     // 配置变了，应用后再更新基准（确保成功后才更新，失败时允许重试）
-    // 注意：builtinDictionaryDomains 在 hash 中但不传给 applyRuntimeConfig
-    // 因为它已在 useAppServiceController 内部通过闭包捕获
     void applyRuntimeConfig({
       enablePostProcess,
       enableDictionaryEnhancement,
@@ -701,17 +697,12 @@ function App() {
           <DashboardPage
             transcript={transcript}
             originalTranscript={originalTranscript}
-            currentMode={currentMode}
             asrTime={asrTime}
-            llmTime={llmTime}
             totalTime={totalTime}
-            activePresetName={activePresetName}
             transcriptEndRef={transcriptEndRef}
             onCopyText={handleCopyText}
             history={history}
             onOpenHistory={() => navigate("history")}
-            enablePostProcess={enablePostProcess}
-            enableDictionaryEnhancement={enableDictionaryEnhancement}
           />
         );
       case "asr":
@@ -721,45 +712,6 @@ function App() {
             setAsrConfig={setAsrConfig}
             showApiKey={showAsrApiKey}
             setShowApiKey={setShowAsrApiKey}
-            isRunning={isConfigLocked}
-          />
-        );
-      case "models":
-        return (
-          <ModelsPage
-            sharedConfig={llmConfig.shared}
-            setSharedConfig={(newShared) => {
-              if (typeof newShared === 'function') {
-                setLlmConfig((prev) => ({ ...prev, shared: newShared(prev.shared) }));
-              } else {
-                setLlmConfig((prev) => ({ ...prev, shared: newShared }));
-              }
-            }}
-            showApiKey={showModelsApiKey}
-            setShowApiKey={setShowModelsApiKey}
-            isRunning={isConfigLocked}
-          />
-        );
-      case "llm":
-        return (
-          <LlmPage
-            llmConfig={llmConfig}
-            setLlmConfig={setLlmConfig}
-            activePreset={activePreset}
-            handleAddPreset={handleAddPreset}
-            handleDeletePreset={handleDeletePreset}
-            handleUpdateActivePreset={handleUpdateActivePreset}
-            onNavigateToModels={() => setActivePage("models")}
-            isRunning={isConfigLocked}
-          />
-        );
-      case "assistant":
-        return (
-          <AssistantPage
-            assistantConfig={assistantConfig}
-            setAssistantConfig={setAssistantConfig}
-            sharedConfig={llmConfig.shared}
-            onNavigateToModels={() => setActivePage("models")}
             isRunning={isConfigLocked}
           />
         );
@@ -809,8 +761,6 @@ function App() {
           <PreferencesPage
             status={status}
             theme={theme}
-            learningConfig={learningConfig}
-            setLearningConfig={setLearningConfig}
             setTheme={async (newTheme) => {
               console.log("[App.tsx] setTheme 被调用, newTheme=", newTheme);
               await saveFieldPatchWithStatus({ theme: newTheme });
@@ -832,11 +782,6 @@ function App() {
             onDownloadAndInstall={() => {
               void downloadAndInstall();
             }}
-            sharedConfig={llmConfig.shared}
-            onSetLearningEnabled={async (enabled) => {
-              await saveFieldPatchWithStatus({ learningEnabled: enabled });
-            }}
-            onNavigateToModels={() => setActivePage("models")}
           />
         );
       case "help":
@@ -899,14 +844,6 @@ function App() {
               <RightPanel
                 asrConfig={asrConfig}
                 setAsrConfig={setAsrConfig}
-                useRealtime={useRealtime}
-                setUseRealtime={setUseRealtime}
-                enablePostProcess={enablePostProcess}
-                setEnablePostProcess={setEnablePostProcess}
-                enableDictionaryEnhancement={enableDictionaryEnhancement}
-                setEnableDictionaryEnhancement={setEnableDictionaryEnhancement}
-                llmConfig={llmConfig}
-                setLlmConfig={setLlmConfig}
                 dualHotkeyConfig={dualHotkeyConfig}
                 dictionary={dictionary}
                 newWord={newWord}

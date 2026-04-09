@@ -1,4 +1,4 @@
-import { Keyboard, Mic, MessageSquare, RotateCcw, ToggleLeft } from "lucide-react";
+import { Keyboard, Mic, RotateCcw, ToggleLeft } from "lucide-react";
 import type { AppStatus, DualHotkeyConfig, HotkeyKey, HotkeyRecordingMode } from "../types";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../utils";
 
@@ -124,59 +124,6 @@ export function HotkeysPage({
                   </button>
                   <button
                     onClick={() => resetHotkeyToDefault("dictation")}
-                    disabled={!canRecord}
-                    className="p-1.5 rounded-lg text-stone-400 hover:text-[var(--ink)] hover:bg-stone-100 disabled:opacity-30 transition-colors"
-                    title="恢复默认"
-                  >
-                    <RotateCcw size={16} />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Assistant */}
-          <div className="p-5 flex items-center justify-between group hover:bg-[var(--paper)] transition-colors">
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center border border-purple-100">
-                <MessageSquare size={20} />
-              </div>
-              <div>
-                <div className="text-sm font-bold text-[var(--ink)]">AI 助手</div>
-                <div className="mt-1.5">
-                  <RenderKeys
-                    text={
-                      isRecordingHotkey && recordingMode === "assistant"
-                        ? recordingKeys.join(" + ")
-                        : formatHotkeyDisplay(dualHotkeyConfig.assistant)
-                    }
-                    isRecording={isRecordingHotkey && recordingMode === "assistant"}
-                  />
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {isRecordingHotkey && recordingMode === "assistant" ? (
-                <button
-                  onClick={() => setIsRecordingHotkey(false)}
-                  className="px-3 py-1.5 rounded-lg border border-[var(--stone)] bg-white text-xs font-bold hover:bg-stone-50"
-                >
-                  取消
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={() => {
-                      setRecordingMode("assistant");
-                      setIsRecordingHotkey(true);
-                    }}
-                    disabled={!canRecord}
-                    className="px-3 py-1.5 rounded-lg border border-[var(--stone)] bg-white text-[var(--ink)] text-xs font-bold hover:border-stone-400 disabled:opacity-50 transition-colors"
-                  >
-                    录制
-                  </button>
-                  <button
-                    onClick={() => resetHotkeyToDefault("assistant")}
                     disabled={!canRecord}
                     className="p-1.5 rounded-lg text-stone-400 hover:text-[var(--ink)] hover:bg-stone-100 disabled:opacity-30 transition-colors"
                     title="恢复默认"

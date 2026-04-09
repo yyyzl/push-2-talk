@@ -21,6 +21,11 @@ test("normalize 应剔除 snapshot 不存在的领域", () => {
   assert.deepEqual(normalizeBuiltinDictionaryDomains(["AI", "不存在"]), ["AI"]);
 });
 
+test("snapshot 为空时 normalize 应保留已保存领域，等待远端词库加载", () => {
+  setBuiltinDomainsSnapshot([]);
+  assert.deepEqual(normalizeBuiltinDictionaryDomains(["AI", "不存在"]), ["AI", "不存在"]);
+});
+
 test("BUILTIN_DICTIONARY_DOMAINS 向后兼容导出应反映当前 snapshot", () => {
   setBuiltinDomainsSnapshot([{ name: "测试", words: ["A"] }]);
   assert.equal(BUILTIN_DICTIONARY_DOMAINS.length, 1);

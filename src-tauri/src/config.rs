@@ -482,6 +482,8 @@ pub enum AsrProvider {
     SiliconFlow,
     #[serde(rename = "omni")]
     Omni,
+    #[serde(rename = "grok")]
+    Grok,
 }
 
 impl Default for AsrProvider {
@@ -545,26 +547,55 @@ fn default_omni_endpoint() -> String {
     "https://api.longcat.chat/openai/v1/chat/completions".to_string()
 }
 
+fn default_omni_profile_key() -> String {
+    default_omni_endpoint()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OmniSharedConfig {
+    /// 是否启用 thinking/推理模式
+    #[serde(default)]
+    pub enable_thinking: bool,
+    /// 用户自定义转录规则
+    #[serde(default)]
+    pub custom_rules: String,
+    /// 是否在 prompt 中包含内置词库领域
+    #[serde(default = "default_true")]
+    pub include_builtin_dictionary: bool,
+    /// 是否附带热键按下时的焦点窗口截图作为多模态上下文
+    #[serde(default = "default_true")]
+    pub include_focused_window_screenshot: bool,
+    /// 调试用：是否把最近一次焦点窗口截图额外保存到临时目录
+    #[serde(default)]
+    pub debug_save_focused_window_screenshot: bool,
+}
+
+impl Default for OmniSharedConfig {
+    fn default() -> Self {
+        Self {
+            enable_thinking: false,
+            custom_rules: String::new(),
+            include_builtin_dictionary: true,
+            include_focused_window_screenshot: true,
+            debug_save_focused_window_screenshot: false,
+        }
+    }
+}
+
 /// 每个 Omni 端点的独立配置快照（切换服务商时自动存取）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OmniEndpointProfile {
     #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
     pub api_key: String,
     #[serde(default)]
     pub model: String,
-    #[serde(default)]
-    pub enable_thinking: bool,
     /// 当前服务商是否支持 thinking 参数（决定是否发送 chat_template_kwargs）
     #[serde(default)]
     pub thinking_supported: bool,
-    #[serde(default)]
-    pub custom_rules: String,
-    #[serde(default = "default_true")]
-    pub skip_tnl: bool,
     #[serde(default = "default_true")]
     pub skip_post_processing: bool,
-    #[serde(default = "default_true")]
-    pub include_builtin_dictionary: bool,
 }
 
 /// Omni 多模态模型 ASR 配置
@@ -575,30 +606,21 @@ pub struct OmniAsrConfig {
     pub api_key: String,
     /// 使用的模型名称
     pub model: String,
+    /// 当前激活的预设/配置槽位 key
+    #[serde(default = "default_omni_profile_key")]
+    pub active_profile_key: String,
     /// API 端点
     #[serde(default = "default_omni_endpoint")]
     pub endpoint: String,
     /// 各端点的配置快照缓存（endpoint URL → profile）
     #[serde(default)]
     pub endpoint_profiles: std::collections::HashMap<String, OmniEndpointProfile>,
-    /// 用户自定义转录规则
-    #[serde(default)]
-    pub custom_rules: String,
-    /// 是否在 prompt 中包含内置词库领域
-    #[serde(default = "default_true")]
-    pub include_builtin_dictionary: bool,
-    /// 是否跳过 TNL
-    #[serde(default = "default_true")]
-    pub skip_tnl: bool,
     /// 是否跳过 LLM 后处理
     #[serde(default = "default_true")]
     pub skip_post_processing: bool,
     /// 是否强制流式响应
     #[serde(default)]
     pub force_stream: bool,
-    /// 是否启用 thinking/推理模式
-    #[serde(default)]
-    pub enable_thinking: bool,
     /// 当前服务商是否支持 thinking 参数
     #[serde(default)]
     pub thinking_supported: bool,
@@ -609,15 +631,36 @@ impl Default for OmniAsrConfig {
         Self {
             api_key: String::new(),
             model: "LongCat-Flash-Omni-2603".to_string(),
+            active_profile_key: default_omni_profile_key(),
             endpoint: default_omni_endpoint(),
             endpoint_profiles: std::collections::HashMap::new(),
-            custom_rules: String::new(),
-            include_builtin_dictionary: true,
-            skip_tnl: true,
             skip_post_processing: true,
             force_stream: false,
-            enable_thinking: false,
             thinking_supported: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrokAsrConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_grok_model")]
+    pub model: String,
+    #[serde(default)]
+    pub proxy: String,
+}
+
+fn default_grok_model() -> String {
+    "grok-2-audio".to_string()
+}
+
+impl Default for GrokAsrConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            model: default_grok_model(),
+            proxy: String::new(),
         }
     }
 }
@@ -629,7 +672,11 @@ pub struct AsrConfig {
     #[serde(default)]
     pub language_mode: AsrLanguageMode,
     #[serde(default)]
+    pub omni_shared_config: OmniSharedConfig,
+    #[serde(default)]
     pub omni: OmniAsrConfig,
+    #[serde(default)]
+    pub grok: GrokAsrConfig,
 }
 
 impl Default for AsrConfig {
@@ -638,7 +685,9 @@ impl Default for AsrConfig {
             credentials: AsrCredentials::default(),
             selection: AsrSelection::default(),
             language_mode: AsrLanguageMode::Auto,
+            omni_shared_config: OmniSharedConfig::default(),
             omni: OmniAsrConfig::default(),
+            grok: GrokAsrConfig::default(),
         }
     }
 }
@@ -1322,7 +1371,7 @@ impl AppConfig {
 
     pub fn config_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir().ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
-        let app_dir = config_dir.join("PushToTalk");
+        let app_dir = config_dir.join("PushToTalkOmni");
         std::fs::create_dir_all(&app_dir)?;
         Ok(app_dir.join("config.json"))
     }
@@ -1394,6 +1443,71 @@ impl AppConfig {
                 config.asr_config.credentials.sensevoice_api_key =
                     config.siliconflow_api_key.clone();
                 migrated = true;
+            }
+
+            if v.get("asr_config")
+                .and_then(|cfg| cfg.get("omni_shared_config"))
+                .is_none()
+            {
+                if let Some(legacy_omni) = v.get("asr_config").and_then(|cfg| cfg.get("omni")) {
+                    let mut migrated_legacy_omni_shared = false;
+
+                    if let Some(enable_thinking) = legacy_omni
+                        .get("enable_thinking")
+                        .and_then(|value| value.as_bool())
+                    {
+                        config.asr_config.omni_shared_config.enable_thinking = enable_thinking;
+                        migrated_legacy_omni_shared = true;
+                    }
+
+                    if let Some(custom_rules) = legacy_omni
+                        .get("custom_rules")
+                        .and_then(|value| value.as_str())
+                    {
+                        config.asr_config.omni_shared_config.custom_rules =
+                            custom_rules.to_string();
+                        migrated_legacy_omni_shared = true;
+                    }
+
+                    if let Some(include_builtin_dictionary) = legacy_omni
+                        .get("include_builtin_dictionary")
+                        .and_then(|value| value.as_bool())
+                    {
+                        config
+                            .asr_config
+                            .omni_shared_config
+                            .include_builtin_dictionary = include_builtin_dictionary;
+                        migrated_legacy_omni_shared = true;
+                    }
+
+                    if let Some(include_focused_window_screenshot) = legacy_omni
+                        .get("include_focused_window_screenshot")
+                        .and_then(|value| value.as_bool())
+                    {
+                        config
+                            .asr_config
+                            .omni_shared_config
+                            .include_focused_window_screenshot = include_focused_window_screenshot;
+                        migrated_legacy_omni_shared = true;
+                    }
+
+                    if let Some(debug_save_focused_window_screenshot) = legacy_omni
+                        .get("debug_save_focused_window_screenshot")
+                        .and_then(|value| value.as_bool())
+                    {
+                        config
+                            .asr_config
+                            .omni_shared_config
+                            .debug_save_focused_window_screenshot =
+                            debug_save_focused_window_screenshot;
+                        migrated_legacy_omni_shared = true;
+                    }
+
+                    if migrated_legacy_omni_shared {
+                        tracing::info!("从旧版 Omni provider 配置迁移共享配置");
+                        migrated = true;
+                    }
+                }
             }
 
             // 迁移 2: LLM 配置统一化（旧的扁平结构 → 新的 shared + feature_override 结构）

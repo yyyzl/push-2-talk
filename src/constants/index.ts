@@ -1,4 +1,4 @@
-import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig, OmniAsrConfig, OmniEndpointProfile } from '../types';
+import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig, OmniAsrConfig, OmniEndpointProfile, GrokAsrConfig, OmniSharedConfig } from '../types';
 
 // 按键显示名称映射
 export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
@@ -22,14 +22,14 @@ export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
 };
 
 // 历史记录
-export const HISTORY_KEY = 'pushtotalk_history';
+export const HISTORY_KEY = 'pushtotalk_omni_history';
 export const MAX_HISTORY = 50;
 
 // 使用统计
-export const USAGE_STATS_KEY = 'pushtotalk_usage_stats_v1';
+export const USAGE_STATS_KEY = 'pushtotalk_omni_usage_stats_v1';
 
 // ASR 缓存 key
-export const ASR_CACHE_STORAGE_KEY = 'pushtotalk_asr_cache';
+export const ASR_CACHE_STORAGE_KEY = 'pushtotalk_omni_asr_cache';
 
 // 默认 LLM 预设
 export const DEFAULT_PRESETS: LlmPreset[] = [
@@ -132,6 +132,11 @@ export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {
     model: 'LongCat-Flash-Omni-2603',
     docsUrl: '',
   },
+  grok: {
+    name: 'Grok 语音识别',
+    model: 'grok-2-audio',
+    docsUrl: 'https://docs.x.ai/developers/model-capabilities/audio/voice-agent',
+  },
 };
 
 // 默认双热键配置
@@ -144,10 +149,10 @@ export const DEFAULT_DUAL_HOTKEY_CONFIG = {
 };
 
 // Key 缺失时自动回退的 ASR Provider
-export const FALLBACK_ASR_PROVIDER = 'doubao_ime' as AsrProvider;
+export const FALLBACK_ASR_PROVIDER = 'omni' as AsrProvider;
 
 // 合法的 ASR Provider 列表（用于 localStorage 迁移校验等）
-export const VALID_ASR_PROVIDERS: AsrProvider[] = ['qwen', 'doubao', 'doubao_ime', 'siliconflow', 'omni'];
+export const VALID_ASR_PROVIDERS: AsrProvider[] = ['qwen', 'doubao', 'doubao_ime', 'siliconflow', 'omni', 'grok'];
 
 // 默认 ASR 缓存
 export const DEFAULT_ASR_CACHE = {
@@ -156,48 +161,73 @@ export const DEFAULT_ASR_CACHE = {
   doubao: { app_id: '', access_token: '' },
   doubao_ime: { device_id: '', token: '', cdid: '' },
   siliconflow: { api_key: '' },
-  omni: { api_key: '', model: 'LongCat-Flash-Omni-2603' }
+  omni: { api_key: '', model: 'LongCat-Flash-Omni-2603' },
+  grok: { api_key: '', model: 'grok-2-audio', proxy: '' }
 };
+
+export const OMNI_CUSTOM_PRESET_KEY = "__custom__";
 
 // Omni 端点预设（每个预设含默认 profile 作为首次切入的初始值）
 export const OMNI_ENDPOINT_PRESETS: {
   label: string;
-  value: string;
+  profileKey: string;
   defaults: OmniEndpointProfile;
 }[] = [
   {
-    label: 'LongCat',
-    value: 'https://api.longcat.chat/openai/v1/chat/completions',
+    label: "LongCat",
+    profileKey: "https://api.longcat.chat/openai/v1/chat/completions",
     defaults: {
+      endpoint: "https://api.longcat.chat/openai/v1/chat/completions",
       api_key: '', model: 'LongCat-Flash-Omni-2603',
-      enable_thinking: false, thinking_supported: false,
-      custom_rules: '', skip_tnl: true, skip_post_processing: true, include_builtin_dictionary: true,
+      thinking_supported: false, skip_post_processing: true,
     },
   },
   {
-    label: '小米 MiMo',
-    value: 'https://api.xiaomimimo.com/v1/chat/completions',
+    label: "小米 MiMo",
+    profileKey: "https://api.xiaomimimo.com/v1/chat/completions",
     defaults: {
+      endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
       api_key: '', model: 'mimo-v2-omni',
-      enable_thinking: false, thinking_supported: true,
-      custom_rules: '', skip_tnl: true, skip_post_processing: true, include_builtin_dictionary: true,
+      thinking_supported: true, skip_post_processing: true,
+    },
+  },
+  {
+    label: "自定义",
+    profileKey: OMNI_CUSTOM_PRESET_KEY,
+    defaults: {
+      endpoint: "",
+      api_key: "",
+      model: "",
+      thinking_supported: false,
+      skip_post_processing: true,
     },
   },
 ];
+
+export const DEFAULT_OMNI_SHARED_CONFIG: OmniSharedConfig = {
+  enable_thinking: false,
+  custom_rules: "",
+  include_builtin_dictionary: true,
+  include_focused_window_screenshot: true,
+  debug_save_focused_window_screenshot: false,
+};
 
 // 默认 Omni ASR 配置（LongCat 初始值）
 export const DEFAULT_OMNI_ASR_CONFIG: OmniAsrConfig = {
   api_key: '',
   model: 'LongCat-Flash-Omni-2603',
+  active_profile_key: "https://api.longcat.chat/openai/v1/chat/completions",
   endpoint: 'https://api.longcat.chat/openai/v1/chat/completions',
   endpoint_profiles: {},
-  custom_rules: '',
-  include_builtin_dictionary: true,
-  skip_tnl: true,
   skip_post_processing: true,
   force_stream: false,
-  enable_thinking: false,
   thinking_supported: false,
+};
+
+export const DEFAULT_GROK_ASR_CONFIG: GrokAsrConfig = {
+  api_key: '',
+  model: 'grok-2-audio',
+  proxy: '',
 };
 
 // 默认自动学习配置

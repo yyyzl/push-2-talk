@@ -22,11 +22,12 @@ mod tnl;
 mod uia_text_reader;
 mod usage_stats;
 mod win32_input;
+mod window_capture;
 
 use asr::{
     DoubaoASRClient, DoubaoImeCredentials, DoubaoImeRealtimeClient, DoubaoImeRealtimeSession,
-    DoubaoRealtimeClient, DoubaoRealtimeSession, OmniAsrClient, QwenASRClient,
-    QwenRealtimeClient, RealtimeSession, SenseVoiceClient,
+    DoubaoRealtimeClient, DoubaoRealtimeSession, GrokRealtimeClient, GrokRealtimeSession,
+    OmniAsrClient, QwenASRClient, QwenRealtimeClient, RealtimeSession, SenseVoiceClient,
 };
 use assistant_processor::AssistantProcessor;
 use audio_mute_manager::AudioMuteManager;
@@ -44,7 +45,7 @@ use usage_stats::UsageStats;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, Submenu},
+    menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
@@ -113,6 +114,7 @@ struct AppState {
     omni_client: Arc<Mutex<Option<OmniAsrClient>>>,
     // 活跃的实时转录会话（用于真正的流式传输）
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
+    grok_session: Arc<tokio::sync::Mutex<Option<GrokRealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
     doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
@@ -159,25 +161,16 @@ struct BuiltinDictionaryUpdatedPayload {
 const BUILTIN_DICTIONARY_UPDATE_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 struct TrayMenuState {
-    post_process_item: CheckMenuItem<tauri::Wry>,
-    dictionary_enhancement_item: CheckMenuItem<tauri::Wry>,
-    asr_qwen_item: CheckMenuItem<tauri::Wry>,
-    asr_doubao_item: CheckMenuItem<tauri::Wry>,
-    asr_doubao_ime_item: CheckMenuItem<tauri::Wry>,
-    asr_omni_item: CheckMenuItem<tauri::Wry>,
+    builtin_dictionary_item: CheckMenuItem<tauri::Wry>,
 }
 
 const TRAY_MENU_ID_SHOW: &str = "show";
 const TRAY_MENU_ID_QUIT: &str = "quit";
-const TRAY_MENU_ID_TOGGLE_POST_PROCESS: &str = "tray_toggle_post_process";
-const TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT: &str = "tray_toggle_dictionary_enhancement";
-const TRAY_MENU_ID_ASR_QWEN: &str = "tray_asr_qwen";
-const TRAY_MENU_ID_ASR_DOUBAO: &str = "tray_asr_doubao";
-const TRAY_MENU_ID_ASR_DOUBAO_IME: &str = "tray_asr_doubao_ime";
-const TRAY_MENU_ID_ASR_OMNI: &str = "tray_asr_omni";
+const TRAY_MENU_ID_TOGGLE_BUILTIN_DICTIONARY: &str = "tray_toggle_builtin_dictionary";
 
-/// 全局互斥标志：防止并发 ASR 引擎切换导致多个 restart 并行执行
-static TRAY_ASR_SWITCHING: AtomicBool = AtomicBool::new(false);
+fn tray_include_builtin_dictionary_enabled(config: &AppConfig) -> bool {
+    config.asr_config.omni_shared_config.include_builtin_dictionary
+}
 
 fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     let Some(tray_state) = app_handle.try_state::<TrayMenuState>() else {
@@ -185,25 +178,11 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     };
 
     if let Err(e) = tray_state
-        .post_process_item
-        .set_checked(config.enable_llm_post_process)
+        .builtin_dictionary_item
+        .set_checked(tray_include_builtin_dictionary_enabled(config))
     {
-        tracing::warn!("同步托盘语句润色状态失败: {}", e);
+        tracing::warn!("同步托盘内置词库状态失败: {}", e);
     }
-    if let Err(e) = tray_state
-        .dictionary_enhancement_item
-        .set_checked(config.enable_dictionary_enhancement)
-    {
-        tracing::warn!("同步托盘词库增强状态失败: {}", e);
-    }
-
-    sync_asr_provider_checks(
-        &tray_state.asr_qwen_item,
-        &tray_state.asr_doubao_item,
-        &tray_state.asr_doubao_ime_item,
-        &tray_state.asr_omni_item,
-        &config.asr_config.selection.active_provider,
-    );
 }
 
 fn load_persisted_config() -> Result<AppConfig, String> {
@@ -324,17 +303,27 @@ async fn refresh_builtin_dictionary_once(
     if let Some(state) = app_handle.try_state::<AppState>() {
         if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
             let dict = state.dictionary.lock().unwrap().clone();
-            let omni_cfg = match config::AppConfig::load() {
-                Ok((cfg, _)) => cfg.asr_config.omni,
-                Err(_) => config::OmniAsrConfig::default(),
-            };
+            let (omni_cfg, omni_shared_cfg, builtin_dictionary_domains) =
+                match config::AppConfig::load() {
+                    Ok((cfg, _)) => (
+                        cfg.asr_config.omni,
+                        cfg.asr_config.omni_shared_config,
+                        cfg.builtin_dictionary_domains,
+                    ),
+                    Err(_) => (
+                        config::OmniAsrConfig::default(),
+                        config::OmniSharedConfig::default(),
+                        Vec::new(),
+                    ),
+                };
             client.update_config(
                 dict,
                 &content,
-                omni_cfg.include_builtin_dictionary,
-                &omni_cfg.custom_rules,
+                &builtin_dictionary_domains,
+                omni_shared_cfg.include_builtin_dictionary,
+                &omni_shared_cfg.custom_rules,
                 &omni_cfg.endpoint,
-                omni_cfg.enable_thinking,
+                omni_shared_cfg.enable_thinking,
                 omni_cfg.thinking_supported,
             );
             tracing::info!("内置词库更新: Omni ASR prompt 已重建");
@@ -387,279 +376,49 @@ fn start_builtin_dictionary_updater(
     });
 }
 
-fn asr_provider_name(provider: &config::AsrProvider) -> &'static str {
-    match provider {
-        config::AsrProvider::Qwen => "千问",
-        config::AsrProvider::Doubao => "豆包",
-        config::AsrProvider::DoubaoIme => "豆包输入法",
-        config::AsrProvider::SiliconFlow => "硅基流动",
-        config::AsrProvider::Omni => "Omni",
-    }
-}
-
-fn is_asr_provider_configured(config: &AppConfig, provider: &config::AsrProvider) -> bool {
-    match provider {
-        config::AsrProvider::Qwen => !config.asr_config.credentials.qwen_api_key.trim().is_empty(),
-        config::AsrProvider::Doubao => {
-            !config
-                .asr_config
-                .credentials
-                .doubao_app_id
-                .trim()
-                .is_empty()
-                && !config
-                    .asr_config
-                    .credentials
-                    .doubao_access_token
-                    .trim()
-                    .is_empty()
-        }
-        // DoubaoIme 凭证是首次使用时自动注册获取的，无需用户预先配置
-        config::AsrProvider::DoubaoIme => true,
-        config::AsrProvider::SiliconFlow => !config
-            .asr_config
-            .credentials
-            .sensevoice_api_key
-            .trim()
-            .is_empty(),
-        config::AsrProvider::Omni => {
-            !config.asr_config.omni.api_key.trim().is_empty()
-                && !config.asr_config.omni.endpoint.trim().is_empty()
-        }
-    }
-}
-
-fn sync_asr_provider_checks(
-    qwen_item: &CheckMenuItem<tauri::Wry>,
-    doubao_item: &CheckMenuItem<tauri::Wry>,
-    doubao_ime_item: &CheckMenuItem<tauri::Wry>,
-    omni_item: &CheckMenuItem<tauri::Wry>,
-    provider: &config::AsrProvider,
-) {
-    let qwen_checked = matches!(provider, config::AsrProvider::Qwen);
-    let doubao_checked = matches!(provider, config::AsrProvider::Doubao);
-    let doubao_ime_checked = matches!(provider, config::AsrProvider::DoubaoIme);
-    let omni_checked = matches!(provider, config::AsrProvider::Omni);
-
-    if let Err(e) = qwen_item.set_checked(qwen_checked) {
-        tracing::warn!("更新托盘千问勾选状态失败: {}", e);
-    }
-    if let Err(e) = doubao_item.set_checked(doubao_checked) {
-        tracing::warn!("更新托盘豆包勾选状态失败: {}", e);
-    }
-    if let Err(e) = doubao_ime_item.set_checked(doubao_ime_checked) {
-        tracing::warn!("更新托盘豆包输入法勾选状态失败: {}", e);
-    }
-    if let Err(e) = omni_item.set_checked(omni_checked) {
-        tracing::warn!("更新托盘 Omni 勾选状态失败: {}", e);
-    }
-}
-
-async fn restart_service_with_config(
-    app_handle: AppHandle,
-    config: AppConfig,
-) -> Result<(), String> {
-    if let Err(e) = stop_app(app_handle.clone()).await {
-        tracing::warn!("切换 ASR 引擎时停止服务失败: {}", e);
-    }
-
-    let dictionary_words = learning::store::entries_to_words(&config.dictionary);
-
-    start_app(
-        app_handle,
-        config.dashscope_api_key.clone(),
-        config.siliconflow_api_key.clone(),
-        Some(config.use_realtime_asr),
-        Some(config.enable_llm_post_process),
-        Some(config.enable_dictionary_enhancement),
-        Some(config.llm_config.clone()),
-        Some(config.smart_command_config.clone()),
-        Some(config.asr_config.clone()),
-        config.hotkey_config.clone(),
-        Some(config.dual_hotkey_config.clone()),
-        Some(config.assistant_config.clone()),
-        Some(config.enable_mute_other_apps),
-        Some(dictionary_words),
-    )
-    .await
-    .map(|_| ())
-}
-
-fn refresh_post_processor_after_toggle(app_handle: &AppHandle) {
+fn refresh_omni_client_from_config(app_handle: &AppHandle, config: &AppConfig) {
     let state = app_handle.state::<AppState>();
-    let enable_post_process = *state.enable_post_process.lock().unwrap();
-    let enable_dictionary_enhancement = *state.enable_dictionary_enhancement.lock().unwrap();
-
-    let mut processor_guard = state.post_processor.lock().unwrap();
-    if enable_post_process || enable_dictionary_enhancement {
-        if processor_guard.is_none() {
-            match load_persisted_config() {
-                Ok(config) => {
-                    let resolved = config.llm_config.resolve_polishing();
-                    if !resolved.api_key.trim().is_empty() {
-                        *processor_guard = Some(LlmPostProcessor::new(config.llm_config));
-                    } else {
-                        tracing::warn!(
-                            "托盘开启语句润色/词库增强，但 polishing API Key 未配置，将跳过后处理"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("托盘刷新 LLM 后处理器失败: {}", e);
-                }
-            }
-        }
-    } else if processor_guard.is_some() {
-        *processor_guard = None;
+    let mut omni_client_guard = state.omni_client.lock().unwrap();
+    if let Some(client) = omni_client_guard.as_mut() {
+        let dictionary = state.dictionary.lock().unwrap().clone();
+        let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
+        let omni_cfg = config.asr_config.omni.clone();
+        let omni_shared_cfg = config.asr_config.omni_shared_config.clone();
+        client.update_config(
+            dictionary,
+            &builtin_raw,
+            &config.builtin_dictionary_domains,
+            omni_shared_cfg.include_builtin_dictionary,
+            &omni_shared_cfg.custom_rules,
+            &omni_cfg.endpoint,
+            omni_shared_cfg.enable_thinking,
+            omni_cfg.thinking_supported,
+        );
+        tracing::info!("托盘已同步 Omni 内置词库配置");
     }
 }
 
-fn toggle_post_process_from_tray(
+fn toggle_builtin_dictionary_from_tray(
     app_handle: &AppHandle,
-    post_process_item: &CheckMenuItem<tauri::Wry>,
+    builtin_dictionary_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
     let (updated_config, new_value) = mutate_persisted_config_with_result(|config| {
-        let new_value = !config.enable_llm_post_process;
-        config.enable_llm_post_process = new_value;
+        let new_value = !tray_include_builtin_dictionary_enabled(config);
+        config.asr_config.omni_shared_config.include_builtin_dictionary = new_value;
         Ok(new_value)
     })?;
 
     emit_config_updated(app_handle, &updated_config);
 
-    // 磁盘保存成功后，再更新内存状态
-    {
-        let state = app_handle.state::<AppState>();
-        *state.enable_post_process.lock().unwrap() = new_value;
-    }
-
-    post_process_item
+    builtin_dictionary_item
         .set_checked(new_value)
-        .map_err(|e| format!("更新托盘语句润色勾选状态失败: {}", e))?;
+        .map_err(|e| format!("更新托盘内置词库勾选状态失败: {}", e))?;
 
-    refresh_post_processor_after_toggle(app_handle);
-
-    tracing::info!("托盘已{}语句润色", if new_value { "开启" } else { "关闭" });
-    Ok(())
-}
-
-fn toggle_dictionary_enhancement_from_tray(
-    app_handle: &AppHandle,
-    dictionary_item: &CheckMenuItem<tauri::Wry>,
-) -> Result<(), String> {
-    let (updated_config, new_value) = mutate_persisted_config_with_result(|config| {
-        let new_value = !config.enable_dictionary_enhancement;
-        config.enable_dictionary_enhancement = new_value;
-        Ok(new_value)
-    })?;
-
-    emit_config_updated(app_handle, &updated_config);
-
-    // 磁盘保存成功后，再更新内存状态
-    {
-        let state = app_handle.state::<AppState>();
-        *state.enable_dictionary_enhancement.lock().unwrap() = new_value;
-    }
-
-    dictionary_item
-        .set_checked(new_value)
-        .map_err(|e| format!("更新托盘词库增强勾选状态失败: {}", e))?;
-
-    refresh_post_processor_after_toggle(app_handle);
-
-    tracing::info!("托盘已{}词库增强", if new_value { "开启" } else { "关闭" });
-    Ok(())
-}
-
-async fn switch_asr_provider_from_tray(
-    app_handle: AppHandle,
-    target_provider: config::AsrProvider,
-    qwen_item: CheckMenuItem<tauri::Wry>,
-    doubao_item: CheckMenuItem<tauri::Wry>,
-    doubao_ime_item: CheckMenuItem<tauri::Wry>,
-    omni_item: CheckMenuItem<tauri::Wry>,
-) -> Result<(), String> {
-    // 并发互斥：防止快速连续点击导致多个 restart 并行执行
-    if TRAY_ASR_SWITCHING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        tracing::warn!("ASR 引擎切换正在进行中，忽略重复请求");
-        return Ok(());
-    }
-    let result = switch_asr_provider_from_tray_inner(
-        &app_handle,
-        target_provider,
-        &qwen_item,
-        &doubao_item,
-        &doubao_ime_item,
-        &omni_item,
-    )
-    .await;
-    TRAY_ASR_SWITCHING.store(false, Ordering::SeqCst);
-    result
-}
-
-async fn switch_asr_provider_from_tray_inner(
-    app_handle: &AppHandle,
-    target_provider: config::AsrProvider,
-    qwen_item: &CheckMenuItem<tauri::Wry>,
-    doubao_item: &CheckMenuItem<tauri::Wry>,
-    doubao_ime_item: &CheckMenuItem<tauri::Wry>,
-    omni_item: &CheckMenuItem<tauri::Wry>,
-) -> Result<(), String> {
-    let config = {
-        let _guard = CONFIG_LOCK
-            .lock()
-            .map_err(|e| format!("获取配置锁失败: {}", e))?;
-
-        let mut config = load_persisted_config()?;
-
-        if !is_asr_provider_configured(&config, &target_provider) {
-            sync_asr_provider_checks(
-                qwen_item,
-                doubao_item,
-                doubao_ime_item,
-                omni_item,
-                &config.asr_config.selection.active_provider,
-            );
-            return Err(format!(
-                "{} 未配置凭证，无法切换",
-                asr_provider_name(&target_provider)
-            ));
-        }
-
-        if config.asr_config.selection.active_provider == target_provider {
-            sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, omni_item, &target_provider);
-            return Ok(());
-        }
-
-        config.asr_config.selection.active_provider = target_provider.clone();
-        save_persisted_config_without_emit(&config)?;
-        config
-    };
-
-    emit_config_updated(app_handle, &config);
-
-    {
-        let state = app_handle.state::<AppState>();
-        *state.realtime_provider.lock().unwrap() = Some(target_provider.clone());
-    }
-
-    sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, omni_item, &target_provider);
-
-    let is_running = {
-        let state = app_handle.state::<AppState>();
-        let running = *state.is_running.lock().unwrap();
-        running
-    };
-
-    if is_running {
-        restart_service_with_config(app_handle.clone(), config).await?;
-    }
+    refresh_omni_client_from_config(app_handle, &updated_config);
 
     tracing::info!(
-        "托盘切换 ASR 引擎为: {}",
-        asr_provider_name(&target_provider)
+        "托盘已{}包含内置词库",
+        if new_value { "开启" } else { "关闭" }
     );
     Ok(())
 }
@@ -671,9 +430,14 @@ fn merge_asr_config_for_save(
     fallback_api_key: &str,
 ) -> config::AsrConfig {
     match asr_config {
-        Some(cfg) => cfg,
+        Some(mut cfg) => {
+            cfg.omni.endpoint = config::normalize_chat_completions_endpoint(&cfg.omni.endpoint);
+            cfg
+        }
         None => {
             let mut fallback = existing_asr_config.clone();
+            fallback.omni.endpoint =
+                config::normalize_chat_completions_endpoint(&fallback.omni.endpoint);
 
             if !api_key.is_empty() {
                 fallback.credentials.qwen_api_key = api_key.to_string();
@@ -840,7 +604,9 @@ mod save_config_merge_tests {
                 fallback_provider: Some(config::AsrProvider::Qwen),
             },
             language_mode: config::AsrLanguageMode::Zh,
+            omni_shared_config: config::OmniSharedConfig::default(),
             omni: config::OmniAsrConfig::default(),
+            grok: config::GrokAsrConfig::default(),
         }
     }
 
@@ -887,6 +653,29 @@ mod save_config_merge_tests {
             merged.selection.active_provider,
             config::AsrProvider::Doubao
         );
+    }
+
+    #[test]
+    fn should_normalize_omni_endpoint_when_asr_config_is_provided() {
+        let existing = build_asr_config("existing_qwen", "existing_sensevoice");
+        let mut incoming = build_asr_config("incoming_qwen", "incoming_sensevoice");
+        incoming.omni.endpoint = "https://generativelanguage.googleapis.com/v1beta/openai".into();
+
+        let merged = merge_asr_config_for_save(Some(incoming), &existing, "", "");
+
+        assert_eq!(
+            merged.omni.endpoint,
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
+    }
+
+    #[test]
+    fn tray_builtin_dictionary_toggle_should_follow_omni_shared_config() {
+        let mut config = AppConfig::new();
+        config.enable_dictionary_enhancement = true;
+        config.asr_config.omni_shared_config.include_builtin_dictionary = false;
+
+        assert!(!tray_include_builtin_dictionary_enabled(&config));
     }
 }
 
@@ -956,6 +745,7 @@ async fn handle_recording_start(
     recorder: Arc<Mutex<Option<AudioRecorder>>>,
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
+    grok_session: Arc<tokio::sync::Mutex<Option<GrokRealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
     doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     doubao_ime_credentials: Arc<Mutex<Option<DoubaoImeCredentials>>>,
@@ -963,6 +753,8 @@ async fn handle_recording_start(
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     use_realtime: bool,
     api_key: String,
+    grok_model: String,
+    grok_proxy: String,
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
@@ -1026,6 +818,20 @@ async fn handle_recording_start(
                     audio_sender_handle,
                     doubao_ime_credentials,
                     dictionary,
+                )
+                .await;
+            }
+            Some(config::AsrProvider::Grok) => {
+                handle_grok_realtime_start(
+                    app,
+                    streaming_recorder,
+                    grok_session,
+                    audio_sender_handle,
+                    api_key,
+                    grok_model,
+                    grok_proxy,
+                    dictionary,
+                    language_mode,
                 )
                 .await;
             }
@@ -1466,6 +1272,111 @@ async fn handle_qwen_realtime_start(
     }
 }
 
+async fn handle_grok_realtime_start(
+    app: AppHandle,
+    streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
+    grok_session: Arc<tokio::sync::Mutex<Option<GrokRealtimeSession>>>,
+    audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    api_key: String,
+    model: String,
+    proxy: String,
+    dictionary: Vec<String>,
+    language_mode: config::AsrLanguageMode,
+) {
+    tracing::info!("启动 Grok 实时流式转录...");
+
+    {
+        let mut session_guard = grok_session.lock().await;
+        if let Some(old_session) = session_guard.take() {
+            tracing::warn!("发现旧的 Grok 会话，先关闭它");
+            let _ = old_session.close().await;
+        }
+    }
+    {
+        if let Some(old_handle) = audio_sender_handle.lock().unwrap().take() {
+            tracing::warn!("发现旧的音频发送任务，先取消它");
+            old_handle.abort();
+        }
+    }
+
+    let realtime_client = GrokRealtimeClient::new(api_key, model, proxy, dictionary, language_mode);
+    match realtime_client.start_session().await {
+        Ok(session) => {
+            tracing::info!("Grok WebSocket 连接已建立");
+
+            let chunk_rx = {
+                let mut streaming_guard = streaming_recorder.lock().unwrap();
+                if let Some(ref mut rec) = *streaming_guard {
+                    if rec.is_recording() {
+                        tracing::warn!("发现正在进行的流式录音，先停止它");
+                        let _ = rec.stop_streaming();
+                    }
+                    match rec.start_streaming(Some(app.clone())) {
+                        Ok(rx) => Some(rx),
+                        Err(e) => {
+                            emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
+                            None
+                        }
+                    }
+                } else {
+                    emit_error_and_hide_overlay(&app, "流式录音器未初始化".to_string());
+                    None
+                }
+            };
+
+            if let Some(chunk_rx) = chunk_rx {
+                *grok_session.lock().await = Some(session);
+
+                let session_for_sender = Arc::clone(&grok_session);
+                let sender_handle = tokio::spawn(async move {
+                    tracing::info!("Grok 音频发送任务启动");
+                    let mut chunk_count = 0;
+
+                    while let Ok(chunk) = chunk_rx.recv() {
+                        let session_guard = session_for_sender.lock().await;
+                        if let Some(ref session) = *session_guard {
+                            if let Err(e) = session.send_audio_chunk(&chunk).await {
+                                tracing::error!("发送 Grok 音频块失败: {}", e);
+                                break;
+                            }
+                            chunk_count += 1;
+                            if chunk_count % 10 == 0 {
+                                tracing::debug!("已发送 {} 个 Grok 音频块", chunk_count);
+                            }
+                        } else {
+                            break;
+                        }
+                        drop(session_guard);
+                    }
+
+                    tracing::info!("Grok 音频发送任务结束，共发送 {} 个块", chunk_count);
+                });
+
+                *audio_sender_handle.lock().unwrap() = Some(sender_handle);
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                "建立 Grok WebSocket 连接失败: {}，录音已启动，将使用备用方案",
+                e
+            );
+
+            let mut streaming_guard = streaming_recorder.lock().unwrap();
+            if let Some(ref mut rec) = *streaming_guard {
+                if rec.is_recording() {
+                    tracing::warn!("发现正在进行的流式录音，先停止它");
+                    let _ = rec.stop_streaming();
+                }
+                if let Err(e) = rec.start_streaming(Some(app.clone())) {
+                    emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
+                }
+            } else {
+                emit_error_and_hide_overlay(&app, "录音器未初始化".to_string());
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn start_app(
     app_handle: AppHandle,
@@ -1523,11 +1434,14 @@ async fn start_app(
             }
             use_realtime_mode = true;
         }
+        if matches!(cfg.selection.active_provider, config::AsrProvider::Grok) {
+            if !use_realtime_mode {
+                tracing::info!("Grok ASR 只支持流式模式，已自动切换");
+            }
+            use_realtime_mode = true;
+        }
         // 强制覆盖：Omni 只支持 HTTP 模式
-        if matches!(
-            cfg.selection.active_provider,
-            config::AsrProvider::Omni
-        ) {
+        if matches!(cfg.selection.active_provider, config::AsrProvider::Omni) {
             if use_realtime_mode {
                 tracing::info!("Omni ASR 只支持 HTTP 模式，已自动切换");
             }
@@ -1572,6 +1486,9 @@ async fn start_app(
 
     let dict = dictionary.unwrap_or_default();
     tracing::info!("词库: {} 个词", dict.len());
+    let builtin_dictionary_domains = config::AppConfig::load()
+        .map(|(cfg, _)| cfg.builtin_dictionary_domains)
+        .unwrap_or_default();
 
     // 保存词库到 state（用于 Realtime 模式热更新）
     *state.dictionary.lock().unwrap() = dict.clone();
@@ -1582,6 +1499,7 @@ async fn start_app(
         *state.sensevoice_client.lock().unwrap() = None;
         *state.doubao_client.lock().unwrap() = None;
         *state.omni_client.lock().unwrap() = None;
+        *state.grok_session.lock().await = None;
 
         if let Some(ref cfg) = asr_config {
             // 初始化所有有凭证的客户端
@@ -1609,11 +1527,9 @@ async fn start_app(
             }
 
             // 初始化 Omni ASR 客户端（当 active_provider 为 Omni 时）
-            if matches!(
-                cfg.selection.active_provider,
-                config::AsrProvider::Omni
-            ) {
+            if matches!(cfg.selection.active_provider, config::AsrProvider::Omni) {
                 let omni_cfg = &cfg.omni;
+                let omni_shared_cfg = &cfg.omni_shared_config;
                 if omni_cfg.api_key.is_empty() {
                     tracing::warn!("Omni ASR: API Key 未配置，客户端未初始化");
                 } else {
@@ -1622,18 +1538,16 @@ async fn start_app(
                         omni_cfg.api_key.clone(),
                         omni_cfg.model.clone(),
                         omni_cfg.endpoint.clone(),
-                        omni_cfg.enable_thinking,
+                        omni_shared_cfg.enable_thinking,
                         omni_cfg.thinking_supported,
                         dict.clone(),
                         &builtin_raw,
-                        omni_cfg.include_builtin_dictionary,
-                        &omni_cfg.custom_rules,
+                        &builtin_dictionary_domains,
+                        omni_shared_cfg.include_builtin_dictionary,
+                        &omni_shared_cfg.custom_rules,
                     );
                     *state.omni_client.lock().unwrap() = Some(omni_client);
-                    tracing::info!(
-                        "Omni ASR 客户端已初始化: model={}",
-                        omni_cfg.model
-                    );
+                    tracing::info!("Omni ASR 客户端已初始化: model={}", omni_cfg.model);
                 }
             }
 
@@ -1774,6 +1688,7 @@ async fn start_app(
     let audio_recorder_start = Arc::clone(&state.audio_recorder);
     let streaming_recorder_start = Arc::clone(&state.streaming_recorder);
     let active_session_start = Arc::clone(&state.active_session);
+    let grok_session_start = Arc::clone(&state.grok_session);
     let doubao_session_start = Arc::clone(&state.doubao_session);
     let doubao_ime_session_start = Arc::clone(&state.doubao_ime_session);
     let doubao_ime_credentials_start = Arc::clone(&state.doubao_ime_credentials);
@@ -1789,41 +1704,65 @@ async fn start_app(
 
     // 保存当前的 provider 配置和凭证
     // 从 asr_config 中提取正确的 API Key（用于实时ASR）
-    let (asr_api_key, doubao_app_id, doubao_access_token) = if let Some(ref cfg) = asr_config {
-        *state.realtime_provider.lock().unwrap() = Some(cfg.selection.active_provider.clone());
-        match cfg.selection.active_provider {
-            config::AsrProvider::Qwen => (cfg.credentials.qwen_api_key.clone(), None, None),
-            config::AsrProvider::Doubao => (
-                String::new(),
-                Some(cfg.credentials.doubao_app_id.clone()),
-                Some(cfg.credentials.doubao_access_token.clone()),
-            ),
-            config::AsrProvider::DoubaoIme => {
-                // 豆包输入法模式：加载已保存的凭据（如果有的话）
-                if !cfg.credentials.doubao_ime_device_id.is_empty()
-                    && !cfg.credentials.doubao_ime_token.is_empty()
-                {
-                    let saved_creds = DoubaoImeCredentials {
-                        device_id: cfg.credentials.doubao_ime_device_id.clone(),
-                        token: cfg.credentials.doubao_ime_token.clone(),
-                        cdid: cfg.credentials.doubao_ime_cdid.clone(),
-                        ..Default::default()
-                    };
-                    *state.doubao_ime_credentials.lock().unwrap() = Some(saved_creds);
-                    tracing::info!("已加载保存的豆包输入法凭据");
+    let (asr_api_key, grok_model, grok_proxy, doubao_app_id, doubao_access_token) =
+        if let Some(ref cfg) = asr_config {
+            *state.realtime_provider.lock().unwrap() = Some(cfg.selection.active_provider.clone());
+            match cfg.selection.active_provider {
+                config::AsrProvider::Qwen => (
+                    cfg.credentials.qwen_api_key.clone(),
+                    String::new(),
+                    String::new(),
+                    None,
+                    None,
+                ),
+                config::AsrProvider::Doubao => (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    Some(cfg.credentials.doubao_app_id.clone()),
+                    Some(cfg.credentials.doubao_access_token.clone()),
+                ),
+                config::AsrProvider::DoubaoIme => {
+                    // 豆包输入法模式：加载已保存的凭据（如果有的话）
+                    if !cfg.credentials.doubao_ime_device_id.is_empty()
+                        && !cfg.credentials.doubao_ime_token.is_empty()
+                    {
+                        let saved_creds = DoubaoImeCredentials {
+                            device_id: cfg.credentials.doubao_ime_device_id.clone(),
+                            token: cfg.credentials.doubao_ime_token.clone(),
+                            cdid: cfg.credentials.doubao_ime_cdid.clone(),
+                            ..Default::default()
+                        };
+                        *state.doubao_ime_credentials.lock().unwrap() = Some(saved_creds);
+                        tracing::info!("已加载保存的豆包输入法凭据");
+                    }
+                    (String::new(), String::new(), String::new(), None, None)
                 }
-                (String::new(), None, None)
+                config::AsrProvider::SiliconFlow => (
+                    cfg.credentials.sensevoice_api_key.clone(),
+                    String::new(),
+                    String::new(),
+                    None,
+                    None,
+                ),
+                // Omni 不需要实时 API Key（凭据在 OmniAsrClient 中管理）
+                config::AsrProvider::Omni => {
+                    (String::new(), String::new(), String::new(), None, None)
+                }
+                config::AsrProvider::Grok => (
+                    cfg.grok.api_key.clone(),
+                    cfg.grok.model.clone(),
+                    cfg.grok.proxy.clone(),
+                    None,
+                    None,
+                ),
             }
-            config::AsrProvider::SiliconFlow => {
-                (cfg.credentials.sensevoice_api_key.clone(), None, None)
-            }
-            // Omni 不需要实时 API Key（凭据在 OmniAsrClient 中管理）
-            config::AsrProvider::Omni => (String::new(), None, None),
-        }
-    } else {
-        (String::new(), None, None)
-    };
+        } else {
+            (String::new(), String::new(), String::new(), None, None)
+        };
     let api_key_start = asr_api_key.clone();
+    let grok_model_start = grok_model;
+    let grok_proxy_start = grok_proxy;
     let doubao_app_id_start = doubao_app_id;
     let doubao_access_token_start = doubao_access_token;
     let asr_language_mode_start = asr_config
@@ -1835,6 +1774,7 @@ async fn start_app(
     let audio_recorder_stop = Arc::clone(&state.audio_recorder);
     let streaming_recorder_stop = Arc::clone(&state.streaming_recorder);
     let active_session_stop = Arc::clone(&state.active_session);
+    let grok_session_stop = Arc::clone(&state.grok_session);
     let audio_sender_handle_stop = Arc::clone(&state.audio_sender_handle);
     let post_processor_stop = Arc::clone(&state.post_processor);
     let assistant_processor_stop = Arc::clone(&state.assistant_processor);
@@ -1915,6 +1855,7 @@ async fn start_app(
         let recorder = Arc::clone(&audio_recorder_start);
         let streaming_recorder = Arc::clone(&streaming_recorder_start);
         let active_session = Arc::clone(&active_session_start);
+        let grok_session = Arc::clone(&grok_session_start);
         let doubao_session = Arc::clone(&doubao_session_start);
         let doubao_ime_session = Arc::clone(&doubao_ime_session_start);
         let doubao_ime_credentials = Arc::clone(&doubao_ime_credentials_start);
@@ -1922,6 +1863,8 @@ async fn start_app(
         let audio_sender_handle = Arc::clone(&audio_sender_handle_start);
         let use_realtime = use_realtime_start;
         let api_key = api_key_start.clone();
+        let grok_model = grok_model_start.clone();
+        let grok_proxy = grok_proxy_start.clone();
         let doubao_app_id = doubao_app_id_start.clone();
         let doubao_access_token = doubao_access_token_start.clone();
         let language_mode = asr_language_mode_start;
@@ -1943,6 +1886,7 @@ async fn start_app(
                 recorder,
                 streaming_recorder,
                 active_session,
+                grok_session,
                 doubao_session,
                 doubao_ime_session,
                 doubao_ime_credentials,
@@ -1950,6 +1894,8 @@ async fn start_app(
                 audio_sender_handle,
                 use_realtime,
                 api_key,
+                grok_model,
+                grok_proxy,
                 doubao_app_id,
                 doubao_access_token,
                 audio_mute_manager,
@@ -2022,6 +1968,7 @@ async fn start_app(
         let recorder = Arc::clone(&audio_recorder_stop);
         let streaming_recorder = Arc::clone(&streaming_recorder_stop);
         let active_session = Arc::clone(&active_session_stop);
+        let grok_session = Arc::clone(&grok_session_stop);
         let audio_sender_handle = Arc::clone(&audio_sender_handle_stop);
         let qwen_client_state = Arc::clone(&qwen_client_stop);
         let sensevoice_client_state = Arc::clone(&sensevoice_client_stop);
@@ -2059,6 +2006,7 @@ async fn start_app(
                             app,
                             streaming_recorder,
                             active_session,
+                            grok_session,
                             doubao_session_state,
                             doubao_ime_session_state,
                             realtime_provider_state,
@@ -2122,6 +2070,7 @@ async fn start_app(
                         recorder,
                         streaming_recorder,
                         active_session,
+                        grok_session,
                         doubao_session_state,
                         doubao_ime_session_state,
                         realtime_provider_state,
@@ -2174,6 +2123,7 @@ async fn handle_assistant_mode(
     recorder: Arc<Mutex<Option<AudioRecorder>>>,
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
+    grok_session: Arc<tokio::sync::Mutex<Option<GrokRealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
     doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
@@ -2247,6 +2197,19 @@ async fn handle_assistant_mode(
                     Err(anyhow::anyhow!("没有活跃的豆包输入法会话"))
                 }
             }
+            Some(config::AsrProvider::Grok) => {
+                let mut session_guard = grok_session.lock().await;
+                if let Some(ref mut session) = *session_guard {
+                    let _ = session.commit_audio().await;
+                    let res = session.wait_for_result().await;
+                    let _ = session.close().await;
+                    drop(session_guard);
+                    *grok_session.lock().await = None;
+                    res
+                } else {
+                    Err(anyhow::anyhow!("没有活跃的 Grok 会话"))
+                }
+            }
             _ => {
                 let mut session_guard = active_session.lock().await;
                 if let Some(ref mut session) = *session_guard {
@@ -2301,12 +2264,14 @@ async fn handle_assistant_mode(
 
             let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
             transcribe_with_available_clients(
+                &app,
                 qwen,
                 doubao,
                 sensevoice,
                 omni,
                 data,
                 enable_fb,
+                target_hwnd,
                 active_prov,
                 fallback_prov,
                 "(AI助手HTTP) ",
@@ -2338,7 +2303,10 @@ async fn handle_assistant_mode(
             .clone();
 
         // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
-        let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
+        let effective_active_prov = if matches!(
+            active_prov,
+            Some(config::AsrProvider::DoubaoIme | config::AsrProvider::Grok)
+        ) {
             tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
             fallback_prov.clone()
         } else {
@@ -2347,12 +2315,14 @@ async fn handle_assistant_mode(
 
         let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
         transcribe_with_available_clients(
+            &app,
             qwen,
             doubao,
             sensevoice,
             omni,
             &data,
             enable_fb,
+            target_hwnd,
             effective_active_prov,
             fallback_prov,
             "(AI助手备用) ",
@@ -2433,12 +2403,14 @@ async fn handle_assistant_mode(
 ///
 /// 根据配置的 active_provider 和 fallback_provider 选择合适的转录方式
 async fn transcribe_with_available_clients(
+    app: &AppHandle,
     qwen: Option<QwenASRClient>,
     doubao: Option<DoubaoASRClient>,
     sensevoice: Option<SenseVoiceClient>,
     omni: Option<OmniAsrClient>,
     audio_data: &[u8],
     enable_fallback: bool,
+    target_hwnd: Option<isize>,
     active_provider: Option<config::AsrProvider>,
     fallback_provider: Option<config::AsrProvider>,
     log_prefix: &str,
@@ -2447,9 +2419,12 @@ async fn transcribe_with_available_clients(
     if matches!(active_provider, Some(config::AsrProvider::Omni)) {
         if let Some(o) = omni {
             tracing::info!("{}使用 Omni ASR", log_prefix);
-            return o.transcribe_bytes(audio_data).await;
+            let screenshot = capture_omni_screenshot_context(app, target_hwnd);
+            return o.transcribe_bytes(audio_data, screenshot).await;
         } else {
-            return Err(anyhow::anyhow!("Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"));
+            return Err(anyhow::anyhow!(
+                "Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"
+            ));
         }
     }
 
@@ -2509,10 +2484,13 @@ async fn transcribe_with_available_clients(
                         // 豆包输入法目前只支持实时流式模式，不支持 HTTP 模式
                         Err(anyhow::anyhow!("豆包输入法 ASR 不支持 HTTP 模式"))
                     }
-                    // Omni 已在函数开头处理，不会到达这里
-                    Some(config::AsrProvider::Omni) => {
-                        Err(anyhow::anyhow!("Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"))
+                    Some(config::AsrProvider::Grok) => {
+                        Err(anyhow::anyhow!("Grok ASR 不支持 HTTP 模式"))
                     }
+                    // Omni 已在函数开头处理，不会到达这里
+                    Some(config::AsrProvider::Omni) => Err(anyhow::anyhow!(
+                        "Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"
+                    )),
                     None => {
                         tracing::error!("{}未配置 ASR 提供商", log_prefix);
                         Err(anyhow::anyhow!("ASR 提供商未配置"))
@@ -2551,14 +2529,54 @@ async fn transcribe_with_available_clients(
                 // 豆包输入法目前只支持实时流式模式，不支持 HTTP 模式
                 Err(anyhow::anyhow!("豆包输入法 ASR 不支持 HTTP 模式"))
             }
+            Some(config::AsrProvider::Grok) => Err(anyhow::anyhow!("Grok ASR 不支持 HTTP 模式")),
             // Omni 已在函数开头处理，不会到达这里
-            Some(config::AsrProvider::Omni) => {
-                Err(anyhow::anyhow!("Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"))
-            }
+            Some(config::AsrProvider::Omni) => Err(anyhow::anyhow!(
+                "Omni ASR 客户端未初始化，请在识别引擎设置中配置 API Key"
+            )),
             None => {
                 tracing::error!("{}未配置 ASR 提供商", log_prefix);
                 Err(anyhow::anyhow!("ASR 提供商未配置"))
             }
+        }
+    }
+}
+
+fn capture_omni_screenshot_context(
+    app: &AppHandle,
+    target_hwnd: Option<isize>,
+) -> Option<window_capture::FocusedWindowScreenshot> {
+    let (include_screenshot, debug_save_screenshot) = AppConfig::load()
+        .map(|(cfg, _)| {
+            (
+                cfg.asr_config
+                    .omni_shared_config
+                    .include_focused_window_screenshot,
+                cfg.asr_config
+                    .omni_shared_config
+                    .debug_save_focused_window_screenshot,
+            )
+        })
+        .unwrap_or((true, false));
+
+    if !include_screenshot {
+        tracing::debug!("Omni screenshot context: 配置关闭，跳过截图");
+        return None;
+    }
+
+    match window_capture::capture_focused_window_screenshot(app, target_hwnd, debug_save_screenshot)
+    {
+        Ok(Some(screenshot)) => {
+            tracing::info!("Omni screenshot context: 已捕获焦点窗口截图");
+            Some(screenshot)
+        }
+        Ok(None) => {
+            tracing::debug!("Omni screenshot context: 未获取到可用截图，继续纯音频转录");
+            None
+        }
+        Err(e) => {
+            tracing::warn!("Omni screenshot context: 截图失败，降级为纯音频: {}", e);
+            None
         }
     }
 }
@@ -2621,12 +2639,14 @@ async fn handle_http_transcription(
         let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
         let asr_start = std::time::Instant::now();
         let result = transcribe_with_available_clients(
+            &app,
             qwen,
             doubao,
             sensevoice,
             omni,
             &audio_data,
             enable_fallback,
+            target_hwnd,
             active_prov,
             fallback_prov,
             "(HTTP) ",
@@ -2653,6 +2673,7 @@ async fn handle_realtime_stop(
     app: AppHandle,
     streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
+    grok_session: Arc<tokio::sync::Mutex<Option<GrokRealtimeSession>>>,
     doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
     doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
@@ -2898,6 +2919,102 @@ async fn handle_realtime_stop(
                 }
             }
         }
+        Some(config::AsrProvider::Grok) => {
+            let mut session_guard = grok_session.lock().await;
+            if let Some(ref mut session) = *session_guard {
+                tracing::info!("Grok：发送 commit 并等待转录结果...");
+
+                if let Err(e) = session.commit_audio().await {
+                    tracing::error!("Grok 发送 commit 失败: {}", e);
+                    drop(session_guard);
+                    if let Some(audio_data) = audio_data {
+                        fallback_transcription(
+                            app,
+                            post_processor,
+                            text_inserter,
+                            Arc::clone(&qwen_client_state),
+                            Arc::clone(&sensevoice_client_state),
+                            Arc::clone(&doubao_client_state),
+                            audio_data,
+                            enable_fb,
+                            target_hwnd,
+                            Arc::clone(&usage_stats),
+                            Arc::clone(&recording_start_instant),
+                        )
+                        .await;
+                    }
+                    return;
+                }
+
+                match session.wait_for_result().await {
+                    Ok(text) => {
+                        let asr_time_ms = asr_start.elapsed().as_millis() as u64;
+                        tracing::info!("Grok 实时转录成功: {} (ASR 耗时: {}ms)", text, asr_time_ms);
+                        let _ = session.close().await;
+                        drop(session_guard);
+                        *grok_session.lock().await = None;
+                        handle_transcription_result(
+                            app,
+                            post_processor,
+                            text_inserter,
+                            Ok(text),
+                            asr_time_ms,
+                            target_hwnd,
+                            usage_stats,
+                            recording_start_instant,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Grok 等待转录结果失败: {}，尝试备用方案", e);
+                        let _ = session.close().await;
+                        drop(session_guard);
+                        *grok_session.lock().await = None;
+
+                        if let Some(audio_data) = audio_data {
+                            fallback_transcription(
+                                app,
+                                post_processor,
+                                text_inserter,
+                                Arc::clone(&qwen_client_state),
+                                Arc::clone(&sensevoice_client_state),
+                                Arc::clone(&doubao_client_state),
+                                audio_data,
+                                enable_fb,
+                                target_hwnd,
+                                Arc::clone(&usage_stats),
+                                Arc::clone(&recording_start_instant),
+                            )
+                            .await;
+                        } else {
+                            emit_error_and_hide_overlay(&app, format!("转录失败: {}", e));
+                        }
+                    }
+                }
+            } else {
+                tracing::warn!("没有活跃的 Grok WebSocket 会话，使用备用方案");
+                drop(session_guard);
+
+                if let Some(audio_data) = audio_data {
+                    fallback_transcription(
+                        app,
+                        post_processor,
+                        text_inserter,
+                        Arc::clone(&qwen_client_state),
+                        Arc::clone(&sensevoice_client_state),
+                        Arc::clone(&doubao_client_state),
+                        audio_data,
+                        enable_fb,
+                        target_hwnd,
+                        Arc::clone(&usage_stats),
+                        Arc::clone(&recording_start_instant),
+                    )
+                    .await;
+                } else {
+                    emit_error_and_hide_overlay(&app, "没有录制到音频数据".to_string());
+                }
+            }
+        }
         _ => {
             // 处理千问流式会话
             let mut session_guard = active_session.lock().await;
@@ -3033,9 +3150,12 @@ async fn fallback_transcription(
         .unwrap()
         .clone();
 
-    // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
-    let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
-        tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
+    // DoubaoIme / Grok 不支持 HTTP 模式，直接使用 fallback_provider
+    let effective_active_prov = if matches!(
+        active_prov,
+        Some(config::AsrProvider::DoubaoIme | config::AsrProvider::Grok)
+    ) {
+        tracing::info!("当前实时 provider 不支持 HTTP 备用模式，切换到 fallback provider");
         fallback_prov.clone()
     } else {
         active_prov
@@ -3044,12 +3164,14 @@ async fn fallback_transcription(
     let omni = { app.state::<AppState>().omni_client.lock().unwrap().clone() };
     let asr_start = std::time::Instant::now();
     let result = transcribe_with_available_clients(
+        &app,
         qwen,
         doubao,
         sensevoice,
         omni,
         &audio_data,
         enable_fallback,
+        target_hwnd,
         effective_active_prov,
         fallback_prov,
         "(备用) ",
@@ -3242,6 +3364,13 @@ async fn stop_app(app_handle: AppHandle) -> Result<String, String> {
         }
     }
     {
+        let mut session_guard = state.grok_session.lock().await;
+        if let Some(session) = session_guard.take() {
+            let _ = session.close().await;
+            tracing::info!("已关闭 Grok WebSocket 会话");
+        }
+    }
+    {
         let mut session_guard = state.doubao_session.lock().await;
         if let Some(mut session) = session_guard.take() {
             let _ = session.finish_audio().await;
@@ -3341,6 +3470,14 @@ async fn cancel_transcription(app_handle: AppHandle) -> Result<String, String> {
         *session_guard = None;
     }
     {
+        let mut session_guard = state.grok_session.lock().await;
+        if let Some(ref session) = *session_guard {
+            let _ = session.close().await;
+            tracing::info!("已关闭 Grok WebSocket 会话");
+        }
+        *session_guard = None;
+    }
+    {
         let mut session_guard = state.doubao_session.lock().await;
         if let Some(mut session) = session_guard.take() {
             let _ = session.finish_audio().await;
@@ -3433,6 +3570,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
     let streaming_recorder = Arc::clone(&state.streaming_recorder);
     let audio_recorder = Arc::clone(&state.audio_recorder);
     let active_session = Arc::clone(&state.active_session);
+    let grok_session = Arc::clone(&state.grok_session);
     let doubao_session = Arc::clone(&state.doubao_session);
     let doubao_ime_session = Arc::clone(&state.doubao_ime_session);
     let realtime_provider = Arc::clone(&state.realtime_provider);
@@ -3456,6 +3594,7 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
                     app,
                     streaming_recorder,
                     active_session,
+                    grok_session,
                     doubao_session,
                     doubao_ime_session,
                     realtime_provider,
@@ -3668,6 +3807,7 @@ async fn update_runtime_config(
     assistant_config: Option<config::AssistantConfig>,
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
+    builtin_dictionary_domains: Option<Vec<String>>,
 ) -> Result<String, String> {
     let state = app_handle.state::<AppState>();
 
@@ -3796,6 +3936,14 @@ async fn update_runtime_config(
         }
     }
 
+    let has_runtime_builtin_domains_update = builtin_dictionary_domains.is_some();
+    let has_dictionary_update = dictionary.is_some();
+    let runtime_builtin_domains = builtin_dictionary_domains.unwrap_or_else(|| {
+        config::AppConfig::load()
+            .map(|(cfg, _)| cfg.builtin_dictionary_domains)
+            .unwrap_or_default()
+    });
+
     // 5. 更新词库（HTTP 客户端 + state.dictionary 用于 Realtime 模式）
     if let Some(dict) = dictionary {
         // 更新 state.dictionary（Realtime 模式会在每次录音开始时读取）
@@ -3815,22 +3963,52 @@ async fn update_runtime_config(
         // 更新 Omni ASR 客户端��需要重建 prompt + 同步 endpoint/thinking）
         if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
             let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
-            let omni_cfg = match config::AppConfig::load() {
-                Ok((cfg, _)) => cfg.asr_config.omni,
-                Err(_) => config::OmniAsrConfig::default(),
+            let (omni_cfg, omni_shared_cfg) = match config::AppConfig::load() {
+                Ok((cfg, _)) => (cfg.asr_config.omni, cfg.asr_config.omni_shared_config),
+                Err(_) => (
+                    config::OmniAsrConfig::default(),
+                    config::OmniSharedConfig::default(),
+                ),
             };
             client.update_config(
                 dict.clone(),
                 &builtin_raw,
-                omni_cfg.include_builtin_dictionary,
-                &omni_cfg.custom_rules,
+                &runtime_builtin_domains,
+                omni_shared_cfg.include_builtin_dictionary,
+                &omni_shared_cfg.custom_rules,
                 &omni_cfg.endpoint,
-                omni_cfg.enable_thinking,
+                omni_shared_cfg.enable_thinking,
                 omni_cfg.thinking_supported,
             );
             tracing::info!("热更新: Omni ASR 客户端配置已更新");
         }
         updated.push("词库");
+    }
+
+    if !has_dictionary_update && has_runtime_builtin_domains_update {
+        if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
+            let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
+            let current_dictionary = state.dictionary.lock().unwrap().clone();
+            let (omni_cfg, omni_shared_cfg) = match config::AppConfig::load() {
+                Ok((cfg, _)) => (cfg.asr_config.omni, cfg.asr_config.omni_shared_config),
+                Err(_) => (
+                    config::OmniAsrConfig::default(),
+                    config::OmniSharedConfig::default(),
+                ),
+            };
+            client.update_config(
+                current_dictionary,
+                &builtin_raw,
+                &runtime_builtin_domains,
+                omni_shared_cfg.include_builtin_dictionary,
+                &omni_shared_cfg.custom_rules,
+                &omni_cfg.endpoint,
+                omni_shared_cfg.enable_thinking,
+                omni_cfg.thinking_supported,
+            );
+            tracing::info!("热更新: Omni 内置词库领域已更新");
+            updated.push("内置词库领域");
+        }
     }
 
     if updated.is_empty() {
@@ -3874,13 +4052,15 @@ async fn add_learned_word(
     if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
         let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
         let omni_cfg = updated_config.asr_config.omni.clone();
+        let omni_shared_cfg = updated_config.asr_config.omni_shared_config.clone();
         client.update_config(
             words.clone(),
             &builtin_raw,
-            omni_cfg.include_builtin_dictionary,
-            &omni_cfg.custom_rules,
+            &updated_config.builtin_dictionary_domains,
+            omni_shared_cfg.include_builtin_dictionary,
+            &omni_shared_cfg.custom_rules,
             &omni_cfg.endpoint,
-            omni_cfg.enable_thinking,
+            omni_shared_cfg.enable_thinking,
             omni_cfg.thinking_supported,
         );
     }
@@ -3936,13 +4116,15 @@ async fn delete_dictionary_entries(
     if let Some(ref mut client) = *state.omni_client.lock().unwrap() {
         let builtin_raw = state.builtin_hotwords_raw.lock().unwrap().clone();
         let omni_cfg = updated_config.asr_config.omni.clone();
+        let omni_shared_cfg = updated_config.asr_config.omni_shared_config.clone();
         client.update_config(
             dict_words.clone(),
             &builtin_raw,
-            omni_cfg.include_builtin_dictionary,
-            &omni_cfg.custom_rules,
+            &updated_config.builtin_dictionary_domains,
+            omni_shared_cfg.include_builtin_dictionary,
+            &omni_shared_cfg.custom_rules,
             &omni_cfg.endpoint,
-            omni_cfg.enable_thinking,
+            omni_shared_cfg.enable_thinking,
             omni_cfg.thinking_supported,
         );
     }
@@ -4078,7 +4260,6 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -4119,6 +4300,7 @@ pub fn run() {
                 doubao_client: Arc::new(Mutex::new(None)),
                 omni_client: Arc::new(Mutex::new(None)),
                 active_session: Arc::new(tokio::sync::Mutex::new(None)),
+                grok_session: Arc::new(tokio::sync::Mutex::new(None)),
                 doubao_session: Arc::new(tokio::sync::Mutex::new(None)),
                 doubao_ime_session: Arc::new(tokio::sync::Mutex::new(None)),
                 realtime_provider: Arc::new(Mutex::new(None)),
@@ -4145,129 +4327,46 @@ pub fn run() {
                 AppConfig::new()
             });
 
-            let state_enable_post_process = *app_state.enable_post_process.lock().unwrap();
-            let state_enable_dictionary_enhancement =
-                *app_state.enable_dictionary_enhancement.lock().unwrap();
+            let initial_include_builtin_dictionary =
+                tray_include_builtin_dictionary_enabled(&initial_config);
 
-            let initial_enable_post_process = initial_config.enable_llm_post_process;
-            let initial_enable_dictionary_enhancement =
-                initial_config.enable_dictionary_enhancement;
-            let initial_active_provider =
-                initial_config.asr_config.selection.active_provider.clone();
-
-            *app_state.enable_post_process.lock().unwrap() = initial_enable_post_process;
+            *app_state.enable_post_process.lock().unwrap() = initial_config.enable_llm_post_process;
             *app_state.enable_dictionary_enhancement.lock().unwrap() =
-                initial_enable_dictionary_enhancement;
-            *app_state.realtime_provider.lock().unwrap() = Some(initial_active_provider.clone());
-
-            if state_enable_post_process != initial_enable_post_process {
-                tracing::info!(
-                    "托盘初始化语句润色状态: {} -> {}",
-                    state_enable_post_process,
-                    initial_enable_post_process
-                );
-            }
-            if state_enable_dictionary_enhancement != initial_enable_dictionary_enhancement {
-                tracing::info!(
-                    "托盘初始化词库增强状态: {} -> {}",
-                    state_enable_dictionary_enhancement,
-                    initial_enable_dictionary_enhancement
-                );
-            }
-
+                initial_config.enable_dictionary_enhancement;
             let show_item =
                 MenuItem::with_id(app, TRAY_MENU_ID_SHOW, "显示窗口", true, None::<&str>)?;
             let quit_item =
                 MenuItem::with_id(app, TRAY_MENU_ID_QUIT, "退出程序", true, None::<&str>)?;
 
-            let post_process_item = CheckMenuItem::with_id(
+            let builtin_dictionary_item = CheckMenuItem::with_id(
                 app,
-                TRAY_MENU_ID_TOGGLE_POST_PROCESS,
-                "开启语句润色",
+                TRAY_MENU_ID_TOGGLE_BUILTIN_DICTIONARY,
+                "包含内置词库",
                 true,
-                initial_enable_post_process,
+                initial_include_builtin_dictionary,
                 None::<&str>,
-            )?;
-            let dictionary_enhancement_item = CheckMenuItem::with_id(
-                app,
-                TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT,
-                "开启词库增强",
-                true,
-                initial_enable_dictionary_enhancement,
-                None::<&str>,
-            )?;
-
-            let asr_qwen_item = CheckMenuItem::with_id(
-                app,
-                TRAY_MENU_ID_ASR_QWEN,
-                "千问",
-                true,
-                matches!(initial_active_provider, config::AsrProvider::Qwen),
-                None::<&str>,
-            )?;
-            let asr_doubao_item = CheckMenuItem::with_id(
-                app,
-                TRAY_MENU_ID_ASR_DOUBAO,
-                "豆包",
-                true,
-                matches!(initial_active_provider, config::AsrProvider::Doubao),
-                None::<&str>,
-            )?;
-            let asr_doubao_ime_item = CheckMenuItem::with_id(
-                app,
-                TRAY_MENU_ID_ASR_DOUBAO_IME,
-                "豆包输入法(免费)",
-                true,
-                matches!(initial_active_provider, config::AsrProvider::DoubaoIme),
-                None::<&str>,
-            )?;
-            let asr_omni_item = CheckMenuItem::with_id(
-                app,
-                TRAY_MENU_ID_ASR_OMNI,
-                "Omni 精准",
-                true,
-                matches!(initial_active_provider, config::AsrProvider::Omni),
-                None::<&str>,
-            )?;
-            let asr_switch_submenu = Submenu::with_items(
-                app,
-                "切换语音识别引擎",
-                true,
-                &[&asr_qwen_item, &asr_doubao_item, &asr_doubao_ime_item, &asr_omni_item],
             )?;
 
             let menu = Menu::with_items(
                 app,
                 &[
                     &show_item,
-                    &post_process_item,
-                    &dictionary_enhancement_item,
-                    &asr_switch_submenu,
+                    &builtin_dictionary_item,
                     &quit_item,
                 ],
             )?;
 
-            let post_process_item_for_event = post_process_item.clone();
-            let dictionary_enhancement_item_for_event = dictionary_enhancement_item.clone();
-            let asr_qwen_item_for_event = asr_qwen_item.clone();
-            let asr_doubao_item_for_event = asr_doubao_item.clone();
-            let asr_doubao_ime_item_for_event = asr_doubao_ime_item.clone();
-            let asr_omni_item_for_event = asr_omni_item.clone();
+            let builtin_dictionary_item_for_event = builtin_dictionary_item.clone();
 
             app.manage(TrayMenuState {
-                post_process_item: post_process_item.clone(),
-                dictionary_enhancement_item: dictionary_enhancement_item.clone(),
-                asr_qwen_item: asr_qwen_item.clone(),
-                asr_doubao_item: asr_doubao_item.clone(),
-                asr_doubao_ime_item: asr_doubao_ime_item.clone(),
-                asr_omni_item: asr_omni_item.clone(),
+                builtin_dictionary_item: builtin_dictionary_item.clone(),
             });
 
             // 创建系统托盘图标
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .tooltip("PushToTalk - AI 语音转写助手")
+                .tooltip("PushToTalk Omni - 语音转写")
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     TRAY_MENU_ID_SHOW => {
                         if let Some(window) = app.get_webview_window("main") {
@@ -4275,110 +4374,14 @@ pub fn run() {
                             let _ = window.set_focus();
                         }
                     }
-                    TRAY_MENU_ID_TOGGLE_POST_PROCESS => {
-                        if let Err(e) =
-                            toggle_post_process_from_tray(app, &post_process_item_for_event)
-                        {
-                            tracing::error!("托盘切换语句润色失败: {}", e);
-                            let _ = app.emit("error", e);
-                        }
-                    }
-                    TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT => {
-                        if let Err(e) = toggle_dictionary_enhancement_from_tray(
+                    TRAY_MENU_ID_TOGGLE_BUILTIN_DICTIONARY => {
+                        if let Err(e) = toggle_builtin_dictionary_from_tray(
                             app,
-                            &dictionary_enhancement_item_for_event,
+                            &builtin_dictionary_item_for_event,
                         ) {
-                            tracing::error!("托盘切换词库增强失败: {}", e);
+                            tracing::error!("托盘切换包含内置词库失败: {}", e);
                             let _ = app.emit("error", e);
                         }
-                    }
-                    TRAY_MENU_ID_ASR_QWEN => {
-                        let app_handle = app.clone();
-                        let asr_qwen_item = asr_qwen_item_for_event.clone();
-                        let asr_doubao_item = asr_doubao_item_for_event.clone();
-                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
-                        let asr_omni_item = asr_omni_item_for_event.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = switch_asr_provider_from_tray(
-                                app_handle.clone(),
-                                config::AsrProvider::Qwen,
-                                asr_qwen_item,
-                                asr_doubao_item,
-                                asr_doubao_ime_item,
-                                asr_omni_item,
-                            )
-                            .await
-                            {
-                                tracing::error!("托盘切换 ASR 到千问失败: {}", e);
-                                let _ = app_handle.emit("error", e);
-                            }
-                        });
-                    }
-                    TRAY_MENU_ID_ASR_DOUBAO => {
-                        let app_handle = app.clone();
-                        let asr_qwen_item = asr_qwen_item_for_event.clone();
-                        let asr_doubao_item = asr_doubao_item_for_event.clone();
-                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
-                        let asr_omni_item = asr_omni_item_for_event.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = switch_asr_provider_from_tray(
-                                app_handle.clone(),
-                                config::AsrProvider::Doubao,
-                                asr_qwen_item,
-                                asr_doubao_item,
-                                asr_doubao_ime_item,
-                                asr_omni_item,
-                            )
-                            .await
-                            {
-                                tracing::error!("托盘切换 ASR 到豆包失败: {}", e);
-                                let _ = app_handle.emit("error", e);
-                            }
-                        });
-                    }
-                    TRAY_MENU_ID_ASR_DOUBAO_IME => {
-                        let app_handle = app.clone();
-                        let asr_qwen_item = asr_qwen_item_for_event.clone();
-                        let asr_doubao_item = asr_doubao_item_for_event.clone();
-                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
-                        let asr_omni_item = asr_omni_item_for_event.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = switch_asr_provider_from_tray(
-                                app_handle.clone(),
-                                config::AsrProvider::DoubaoIme,
-                                asr_qwen_item,
-                                asr_doubao_item,
-                                asr_doubao_ime_item,
-                                asr_omni_item,
-                            )
-                            .await
-                            {
-                                tracing::error!("托盘切换 ASR 到豆包输入法失败: {}", e);
-                                let _ = app_handle.emit("error", e);
-                            }
-                        });
-                    }
-                    TRAY_MENU_ID_ASR_OMNI => {
-                        let app_handle = app.clone();
-                        let asr_qwen_item = asr_qwen_item_for_event.clone();
-                        let asr_doubao_item = asr_doubao_item_for_event.clone();
-                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
-                        let asr_omni_item = asr_omni_item_for_event.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = switch_asr_provider_from_tray(
-                                app_handle.clone(),
-                                config::AsrProvider::Omni,
-                                asr_qwen_item,
-                                asr_doubao_item,
-                                asr_doubao_ime_item,
-                                asr_omni_item,
-                            )
-                            .await
-                            {
-                                tracing::error!("托盘切换 ASR 到 Omni 失败: {}", e);
-                                let _ = app_handle.emit("error", e);
-                            }
-                        });
                     }
                     TRAY_MENU_ID_QUIT => {
                         app.exit(0);

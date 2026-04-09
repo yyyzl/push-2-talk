@@ -1,7 +1,7 @@
 {
-  "productName": "PushToTalk",
+  "productName": "PushToTalk Omni",
   "version": "1.5.9",
-  "identifier": "com.pushtotalk.app",
+  "identifier": "com.pushtotalk.omni",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "PushToTalk",
+        "title": "PushToTalk Omni",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
@@ -22,7 +22,7 @@
         "focusable": true
       },
       {
-        "title": "词库学习",
+        "title": "识别通知",
         "label": "notification",
         "url": "notification.html",
         "width": 360,
@@ -55,7 +55,7 @@
     ],
     "security": {
       "csp": null,
-      "capabilities": ["default", "updater"]
+      "capabilities": ["default"]
     }
   },
   "bundle": {
@@ -75,22 +75,6 @@
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
     },
-    "createUpdaterArtifacts": true
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcxRkY5MzUyRkE3NzY5REEKUldUYWFYZjZVcFAvY1dlaGVac2tkcWF6Y2I3WUJOcWFweUlpSTkzS3A3RVVIZVVPeUp6T1RIeTUK",
-      "endpoints": [
-        "https://gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
-        "https://hk.gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
-        "https://cdn.jsdelivr.net/gh/yyyzl/push-2-talk@latest/latest.json",
-        "https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
-        "https://cdn.gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
-        "https://edgeone.gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
-    }
+    "createUpdaterArtifacts": false
   }
 }

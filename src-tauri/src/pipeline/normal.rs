@@ -15,7 +15,6 @@ use crate::config::{self, AppConfig};
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::text_inserter::TextInserter;
-use crate::tnl::TnlEngine;
 
 /// 普通模式处理管道
 ///
@@ -67,39 +66,20 @@ impl NormalPipeline {
             asr_time_ms
         );
 
-        // 2. 读取 Omni 模式跳过标记和 TNL 开关
-        let (tnl_enabled, omni_skip_tnl, omni_skip_post_processing) = AppConfig::load()
+        // 2. 读取 Omni 模式跳过标记
+        let omni_skip_post_processing = AppConfig::load()
             .map(|(c, _)| {
                 let is_omni = matches!(
                     c.asr_config.selection.active_provider,
                     config::AsrProvider::Omni
                 );
-                let skip_tnl = is_omni && c.asr_config.omni.skip_tnl;
                 let skip_post = is_omni && c.asr_config.omni.skip_post_processing;
-                (c.tnl_config.enabled, skip_tnl, skip_post)
+                skip_post
             })
-            .unwrap_or((true, false, false));
+            .unwrap_or(false);
 
-        // 3. TNL 技术规范化（如果启用且 Omni 未跳过）
-        let (text, tnl_changed) = if tnl_enabled && !omni_skip_tnl {
-            let engine = TnlEngine::new(dictionary.clone());
-            let tnl_result = engine.normalize(&asr_text);
-            if tnl_result.changed {
-                tracing::info!(
-                    "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
-                    asr_text,
-                    tnl_result.text,
-                    tnl_result.elapsed_us,
-                    tnl_result.applied.len()
-                );
-            }
-            (tnl_result.text, tnl_result.changed)
-        } else {
-            if omni_skip_tnl {
-                tracing::info!("NormalPipeline: Omni 模式跳过 TNL");
-            }
-            (asr_text.clone(), false)
-        };
+        // 3. Omni-only 分支不再引入本地 TNL 规范化层
+        let text = asr_text.clone();
 
         // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL 后文本（text）
 
@@ -154,13 +134,7 @@ impl NormalPipeline {
         // - 有 LLM 处理 → 使用 LLM 返回的 original_text
         // - 无 LLM 处理但 TNL 改变了文本 → 设置原文以便前端显示双栏
         // - 无 LLM 处理且 TNL 未改变文本 → 不显示双栏（original_text = None）
-        let history_original = if original_text.is_some() {
-            original_text
-        } else if tnl_changed {
-            Some(asr_text)
-        } else {
-            None
-        };
+        let history_original = original_text;
 
         Ok(PipelineResult::success(
             final_text,

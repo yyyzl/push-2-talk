@@ -6,6 +6,7 @@ export type TopStatusBarProps = {
   recordingTime: number;
   formatTime: (seconds: number) => string;
   usageStats?: UsageStats;
+  globalNotice?: string | null;
 };
 
 export function TopStatusBar({
@@ -13,6 +14,7 @@ export function TopStatusBar({
   recordingTime,
   formatTime,
   usageStats,
+  globalNotice,
 }: TopStatusBarProps) {
   const isRecording = status === "recording";
   const isTranscribing = status === "transcribing";
@@ -22,6 +24,15 @@ export function TopStatusBar({
 
   return (
     <div className="relative border-b border-[var(--stone)] bg-[var(--paper)] font-sans">
+      <div
+        className={`overflow-hidden transition-all duration-200 ${
+          globalNotice ? "max-h-10 opacity-100" : "max-h-0 opacity-0"
+        }`}
+      >
+        {globalNotice ? (
+          <div className="px-6 py-2 text-xs text-[var(--steel)]">{globalNotice}</div>
+        ) : null}
+      </div>
       {/* ── Main status bar content (always stable, never shifts) ── */}
       <div className="px-6 py-3 flex items-center justify-between">
         <div
@@ -65,9 +76,9 @@ export function TopStatusBar({
               : isTranscribing
                 ? "语音识别中..."
                 : isPolishing
-                  ? "文本润色中..."
+                  ? "结果整理中..."
                   : isAssistantProcessing
-                    ? "AI 助手处理中..."
+                    ? "结果处理中..."
                     : status === "running"
                       ? "运行中"
                       : "已停止"}

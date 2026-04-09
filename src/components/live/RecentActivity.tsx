@@ -34,32 +34,17 @@ export function RecentActivity({ history, onCopyText, onOpenHistory }: RecentAct
         ) : (
           items.map((r) => {
             const badge =
-              r.mode === "assistant"
+              r.success
                 ? {
-                    // AI 助手模式：白底+蓝色边框
-                    bg: "bg-white border border-[rgba(59,130,246,0.5)]",
-                    fg: "text-blue-500",
-                    text: "AI 助手"
+                    bg: "bg-white border border-[rgba(106,155,204,0.4)]",
+                    fg: "text-[var(--steel)]",
+                    text: "Omni 转写",
                   }
-                : r.success && r.polishedText
-                  ? {
-                      // 润色后：白底+橙色边框，与原始转写视觉重量一致
-                      bg: "bg-white border border-[rgba(217,119,87,0.5)]",
-                      fg: "text-[var(--crail)]",
-                      text: r.presetName || "智能润色"
-                    }
-                  : r.success
-                    ? {
-                        // 原始转写：白底+灰边框
-                        bg: "bg-white border border-stone-300",
-                        fg: "text-stone-600",
-                        text: "原始转写"
-                      }
-                    : {
-                        bg: "bg-white border border-red-200",
-                        fg: "text-red-600",
-                        text: "失败"
-                      };
+                : {
+                    bg: "bg-white border border-red-200",
+                    fg: "text-red-600",
+                    text: "失败",
+                  };
 
             const text = r.polishedText ?? r.originalText ?? r.errorMessage ?? "";
 

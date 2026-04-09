@@ -135,7 +135,7 @@ export function ConfigToggle({
         disabled={disabled || isSyncing}
         onClick={() => void handleToggle()}
         className={[
-          "relative rounded-full transition-all duration-300",
+          "relative shrink-0 rounded-full transition-all duration-300",
           styles.track,
           trackColor,
           isError ? "ring-2 ring-red-200" : "",

@@ -162,6 +162,36 @@ impl OpenAiClient {
         Self { config, client }
     }
 
+    fn build_request_body(&self, messages: &[Message], options: &ChatOptions) -> Value {
+        let messages_json: Vec<Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role.as_str(),
+                    "content": m.content
+                })
+            })
+            .collect();
+
+        let mut request_body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages_json,
+            "max_tokens": options.max_tokens,
+            "temperature": options.temperature
+        });
+
+        if let Some(reasoning_effort) = gemini_min_reasoning_effort(&self.config.model) {
+            tracing::info!(
+                "[DEBUG] Gemini reasoning_effort injected: model={}, reasoning_effort={}",
+                self.config.model,
+                reasoning_effort
+            );
+            request_body["reasoning_effort"] = Value::String(reasoning_effort.to_string());
+        }
+
+        request_body
+    }
+
     /// 通用聊天方法
     ///
     /// 支持自定义 system prompt 和用户消息
@@ -183,23 +213,7 @@ impl OpenAiClient {
             return Ok(String::new());
         }
 
-        // 构建 OpenAI 兼容格式的消息
-        let messages_json: Vec<Value> = messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role.as_str(),
-                    "content": m.content
-                })
-            })
-            .collect();
-
-        let request_body = serde_json::json!({
-            "model": self.config.model,
-            "messages": messages_json,
-            "max_tokens": options.max_tokens,
-            "temperature": options.temperature
-        });
+        let request_body = self.build_request_body(messages, &options);
 
         // 打印完整请求信息用于调试
         tracing::info!(
@@ -256,6 +270,27 @@ impl OpenAiClient {
     }
 }
 
+fn gemini_min_reasoning_effort(model: &str) -> Option<&'static str> {
+    let model = model.trim().to_ascii_lowercase();
+    if !model.starts_with("gemini-") {
+        return None;
+    }
+
+    if model.starts_with("gemini-2.5-pro") {
+        return Some("low");
+    }
+
+    if model.starts_with("gemini-2.5") {
+        return Some("none");
+    }
+
+    if model.contains("pro") {
+        return Some("low");
+    }
+
+    Some("minimal")
+}
+
 // ============================================================================
 // 测试
 // ============================================================================
@@ -303,5 +338,78 @@ mod tests {
         );
         assert_eq!(config.api_key, "sk-xxx");
         assert_eq!(config.model, "gpt-4");
+    }
+
+    fn create_test_client(endpoint: &str, model: &str) -> OpenAiClient {
+        OpenAiClient::new(OpenAiClientConfig::new(endpoint, "test-key", model))
+    }
+
+    #[test]
+    fn test_gemini_25_flash_uses_reasoning_effort_none() {
+        let client = create_test_client(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "gemini-2.5-flash",
+        );
+
+        let body = client.build_request_body(&[Message::user("hi")], &ChatOptions::default());
+
+        assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn test_gemini_25_pro_uses_reasoning_effort_low() {
+        let client = create_test_client(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "gemini-2.5-pro",
+        );
+
+        let body = client.build_request_body(&[Message::user("hi")], &ChatOptions::default());
+
+        assert_eq!(body["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn test_gemini_3_flash_uses_reasoning_effort_minimal() {
+        let client = create_test_client(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "gemini-3-flash",
+        );
+
+        let body = client.build_request_body(&[Message::user("hi")], &ChatOptions::default());
+
+        assert_eq!(body["reasoning_effort"], "minimal");
+    }
+
+    #[test]
+    fn test_gemini_3_pro_uses_reasoning_effort_low() {
+        let client = create_test_client(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "gemini-3-pro",
+        );
+
+        let body = client.build_request_body(&[Message::user("hi")], &ChatOptions::default());
+
+        assert_eq!(body["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn test_gemini_proxy_endpoint_still_uses_reasoning_effort() {
+        let client = create_test_client(
+            "https://api.example.com/v1/chat/completions",
+            "gemini-3-flash",
+        );
+
+        let body = client.build_request_body(&[Message::user("hi")], &ChatOptions::default());
+
+        assert_eq!(body["reasoning_effort"], "minimal");
+    }
+
+    #[test]
+    fn test_non_gemini_request_has_no_reasoning_effort() {
+        let client = create_test_client("https://api.openai.com/v1/chat/completions", "gpt-4o");
+
+        let body = client.build_request_body(&[Message::user("hi")], &ChatOptions::default());
+
+        assert!(body.get("reasoning_effort").is_none());
     }
 }

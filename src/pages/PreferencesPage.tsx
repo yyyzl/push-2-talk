@@ -1,10 +1,7 @@
-import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle } from "lucide-react";
-import { useState } from "react";
-import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
-import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../components/common";
+import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX } from "lucide-react";
+import type { AppStatus, UpdateStatus } from "../types";
+import { Toggle, ThemeSelector } from "../components/common";
 import { RedDot } from "../components/common/RedDot";
-import { SettingsModal } from "../components/modals/SettingsModal";
-import { normalizeLearningConfig } from "../constants";
 
 export type PreferencesPageProps = {
   status: AppStatus;
@@ -23,12 +20,6 @@ export type PreferencesPageProps = {
   currentVersion: string;
   onCheckUpdate: () => void;
   onDownloadAndInstall: () => void;
-
-  sharedConfig: SharedLlmConfig;
-  learningConfig: LearningConfig;
-  setLearningConfig: (next: LearningConfig) => void;
-  onSetLearningEnabled: (enabled: boolean) => Promise<void>;
-  onNavigateToModels?: () => void;
 };
 
 export function PreferencesPage({
@@ -44,35 +35,8 @@ export function PreferencesPage({
   currentVersion,
   onCheckUpdate,
   onDownloadAndInstall,
-  sharedConfig,
-  learningConfig,
-  setLearningConfig,
-  onSetLearningEnabled,
-  onNavigateToModels,
 }: PreferencesPageProps) {
   const canInstallUpdate = updateStatus === "available" || updateStatus === "downloading";
-
-  // 自动学习配置状态
-  const learningEnabled = learningConfig.enabled;
-  const [learningConfigModalOpen, setLearningConfigModalOpen] = useState(false);
-
-  // 切换自动学习开关
-  const handleToggleLearning = async () => {
-    const newValue = !learningEnabled;
-    const previousLearningConfig = learningConfig;
-    const updatedLearningConfig = normalizeLearningConfig({
-      ...learningConfig,
-      enabled: newValue,
-    });
-    setLearningConfig(updatedLearningConfig);
-
-    try {
-      await onSetLearningEnabled(newValue);
-    } catch (error) {
-      console.error("保存自动学习配置失败:", error);
-      setLearningConfig(previousLearningConfig); // 回滚
-    }
-  };
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 font-sans">
@@ -131,78 +95,6 @@ export function PreferencesPage({
             variant="orange"
           />
         </div>
-
-        <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
-          <div className="flex items-center gap-3">
-            <div
-              className={[
-                "p-2 rounded-xl",
-                learningEnabled
-                  ? "bg-[rgba(120,140,93,0.12)] text-[var(--sage)]"
-                  : "bg-white border border-[var(--stone)] text-stone-500",
-              ].join(" ")}
-            >
-              <GraduationCap size={16} />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <div className="text-sm font-bold text-[var(--ink)]">自动词库学习</div>
-                <Tooltip content="AI 自动识别语音中的专业术语、人名和地名，学习后会自动添加到个人词库中，提高后续识别准确率。">
-                  <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
-                </Tooltip>
-              </div>
-              <div className="text-[11px] text-stone-400 font-semibold">
-                {learningEnabled ? "AI 自动识别专业术语" : "手动管理词库"}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {learningEnabled && (
-              <button
-                onClick={() => setLearningConfigModalOpen(true)}
-                className="p-2 rounded-xl text-stone-400 hover:bg-white hover:text-[var(--ink)] hover:shadow-sm border border-transparent hover:border-[var(--stone)] transition-all"
-                title="配置自动学习"
-              >
-                <Settings2 size={18} />
-              </button>
-            )}
-            <div className="h-6 w-px bg-[var(--stone)] mx-1" />
-            <Toggle
-              checked={learningEnabled}
-              onCheckedChange={handleToggleLearning}
-              disabled={status === "recording" || status === "transcribing"}
-              size="sm"
-              variant="green"
-            />
-          </div>
-        </div>
-
-        <SettingsModal
-          open={learningConfigModalOpen}
-          onDismiss={() => setLearningConfigModalOpen(false)}
-          title="自动词库学习配置"
-        >
-          <div className="space-y-4">
-            <div className="p-4 bg-[rgba(120,140,93,0.08)] border border-[rgba(120,140,93,0.15)] rounded-2xl">
-              <p className="text-sm text-[var(--ink)] leading-relaxed">
-                开启此功能后，AI 将自动分析您的语音输入，识别并提取专业术语、人名和地名，自动添加到您的个人词库中，提高后续识别的准确率。
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <h4 className="text-xs font-bold text-stone-500 uppercase tracking-widest">LLM 连接配置</h4>
-              <LlmConnectionConfig
-                sharedConfig={sharedConfig}
-                featureName="learning"
-                onNavigateToModels={() => {
-                  setLearningConfigModalOpen(false);
-                  onNavigateToModels?.();
-                }}
-              />
-            </div>
-          </div>
-        </SettingsModal>
 
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
           <div className="flex items-center gap-3">

@@ -4,18 +4,22 @@
 // 包含转录规则、内置词库、用户自定义词库等信息。
 
 use crate::dictionary_utils::entries_to_words;
+use std::collections::HashSet;
 
 /// 角色定义
-const BASE_ROLE: &str = "你是一个专业的语音转录助手。\
-你的唯一任务是将用户的语音精确转录为文字。";
+const BASE_ROLE: &str =
+"跳过思考，直接输出答案。\n
+你是一个专业的语音转录助手。你的唯一任务是将用户的语音精确转录为文字。\n
+";
 
 /// 默认转录规则
 const DEFAULT_RULES: &str = "\n\n## 转录规则\n\
-1. 忠实转录，不添加、删除或修改实际说出的内容\n\
-2. 正确添加标点符号\n\
-3. 英文单词和专业术语保持原文拼写和大小写\n\
-4. 数字使用阿拉伯数字\n\
-5. 只输出转录文本，不加任何解释或前缀";
+1. 忠实转录是第一原则和前提\n\
+2. 保持语句通顺、逻辑合理\n\
+3. 添加正确的标点符号\n\
+4. 英文单词和专业术语保持原文拼写和大小写\n\
+5. 数字使用阿拉伯数字\n\
+6. 只输出转录文本，不加任何解释或前缀";
 
 /// 构建 Omni ASR 的 system prompt
 ///
@@ -28,6 +32,7 @@ const DEFAULT_RULES: &str = "\n\n## 转录规则\n\
 pub fn build(
     user_dictionary: &[String],
     builtin_raw: &str,
+    selected_builtin_domains: &[String],
     include_builtin: bool,
     custom_rules: &str,
 ) -> String {
@@ -47,7 +52,7 @@ pub fn build(
 
     // 内置词库（按领域解析并格式化）
     if include_builtin && !builtin_raw.trim().is_empty() {
-        let domains = format_builtin_domains(builtin_raw);
+        let domains = format_builtin_domains(builtin_raw, selected_builtin_domains);
         if !domains.is_empty() {
             prompt.push_str("\n\n## 专业词汇表（按领域分类）\n");
             prompt.push_str(&domains);
@@ -82,8 +87,18 @@ pub fn build(
 ///
 ///   ### 编程
 ///   Rust, TypeScript
-fn format_builtin_domains(raw: &str) -> String {
+fn format_builtin_domains(raw: &str, selected_builtin_domains: &[String]) -> String {
     let mut result = String::new();
+    let selected_domain_set: HashSet<&str> = selected_builtin_domains
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|domain| !domain.is_empty())
+        .collect();
+
+    if selected_domain_set.is_empty() {
+        return result;
+    }
 
     for line in raw.lines() {
         let line = line.trim();
@@ -93,6 +108,9 @@ fn format_builtin_domains(raw: &str) -> String {
 
         // 解析 【领域】:[词1,词2,...] 格式
         if let Some((domain, words_part)) = parse_domain_line(line) {
+            if !selected_domain_set.contains(domain.trim()) {
+                continue;
+            }
             if !result.is_empty() {
                 result.push('\n');
             }
@@ -147,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_build_minimal_prompt() {
-        let prompt = build(&[], "", false, "");
+        let prompt = build(&[], "", &[], false, "");
         assert!(prompt.contains("专业的语音转录助手"));
         assert!(prompt.contains("转录规则"));
         assert!(prompt.contains("直接输出转录文本"));
@@ -157,19 +175,22 @@ mod tests {
     }
 
     #[test]
+    fn test_build_starts_with_no_thinking_instruction() {
+        let prompt = build(&[], "", &[], false, "");
+        assert!(prompt.starts_with("始终以非思考模式响应"));
+    }
+
+    #[test]
     fn test_build_with_custom_rules() {
-        let prompt = build(&[], "", false, "金额用阿拉伯数字+单位");
+        let prompt = build(&[], "", &[], false, "金额用阿拉伯数字+单位");
         assert!(prompt.contains("额外规则"));
         assert!(prompt.contains("金额用阿拉伯数字+单位"));
     }
 
     #[test]
     fn test_build_with_user_dictionary() {
-        let dict = vec![
-            "Claude".to_string(),
-            "PushToTalk|auto".to_string(),
-        ];
-        let prompt = build(&dict, "", false, "");
+        let dict = vec!["Claude".to_string(), "PushToTalk|auto".to_string()];
+        let prompt = build(&dict, "", &[], false, "");
         assert!(prompt.contains("用户自定义词汇"));
         assert!(prompt.contains("- Claude"));
         assert!(prompt.contains("- PushToTalk"));
@@ -178,13 +199,25 @@ mod tests {
     }
 
     #[test]
-    fn test_format_builtin_domains() {
+    fn test_format_builtin_domains_should_only_include_selected_domains() {
         let raw = "【AI】:[OpenAI,GPT-4,Claude]\n【编程】:[Rust,TypeScript]";
-        let result = format_builtin_domains(raw);
+        let result = format_builtin_domains(raw, &["AI".to_string()]);
         assert!(result.contains("### AI"));
         assert!(result.contains("OpenAI, GPT-4, Claude"));
-        assert!(result.contains("### 编程"));
-        assert!(result.contains("Rust, TypeScript"));
+        assert!(!result.contains("### 编程"));
+        assert!(!result.contains("Rust, TypeScript"));
+    }
+
+    #[test]
+    fn test_build_with_builtin_domains_should_respect_switch_and_selection() {
+        let raw = "【AI】:[OpenAI,GPT-4]\n【编程】:[Rust,TypeScript]";
+
+        let enabled_prompt = build(&[], raw, &["AI".to_string()], true, "");
+        assert!(enabled_prompt.contains("### AI"));
+        assert!(!enabled_prompt.contains("### 编程"));
+
+        let disabled_prompt = build(&[], raw, &["AI".to_string()], false, "");
+        assert!(!disabled_prompt.contains("### AI"));
     }
 
     #[test]

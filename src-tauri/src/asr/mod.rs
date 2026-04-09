@@ -13,5 +13,6 @@ pub use http::{DoubaoASRClient, QwenASRClient, SenseVoiceClient};
 pub use omni::OmniAsrClient;
 pub use race_strategy::{transcribe_doubao_sensevoice_race, transcribe_with_fallback_clients};
 pub use realtime::{
-    DoubaoRealtimeClient, DoubaoRealtimeSession, QwenRealtimeClient, RealtimeSession,
+    DoubaoRealtimeClient, DoubaoRealtimeSession, GrokRealtimeClient, GrokRealtimeSession,
+    QwenRealtimeClient, RealtimeSession,
 };

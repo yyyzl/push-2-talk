@@ -1,5 +1,5 @@
 import type { HotkeyKey, AsrConfig, AsrProvider } from '../types';
-import { FALLBACK_ASR_PROVIDER, ASR_PROVIDERS } from '../constants';
+import { ASR_PROVIDERS } from '../constants';
 
 // 将 DOM KeyboardEvent 映射为 HotkeyKey
 export const mapDomKeyToHotkeyKey = (e: KeyboardEvent): HotkeyKey | null => {
@@ -80,23 +80,7 @@ export const isValidHotkeyCombo = (keys: HotkeyKey[]): boolean => {
 
 // 验证 ASR 配置是否有效
 export const isAsrConfigValid = (config: AsrConfig): boolean => {
-  const provider = config.selection.active_provider;
-
-  if (provider === 'qwen') {
-    return config.credentials.qwen_api_key.trim() !== '';
-  } else if (provider === 'doubao') {
-    return config.credentials.doubao_app_id.trim() !== '' &&
-           config.credentials.doubao_access_token.trim() !== '';
-  } else if (provider === 'doubao_ime') {
-    // 豆包输入法 ASR 无需用户配置，首次使用时自动注册
-    return true;
-  } else if (provider === 'siliconflow') {
-    return config.credentials.sensevoice_api_key.trim() !== '';
-  } else if (provider === 'omni') {
-    return (config.omni?.api_key ?? '').trim() !== '' && (config.omni?.endpoint ?? '').trim() !== '';
-  }
-
-  return false;
+  return (config.omni?.api_key ?? '').trim() !== '' && (config.omni?.endpoint ?? '').trim() !== '';
 };
 
 /**
@@ -106,24 +90,28 @@ export const isAsrConfigValid = (config: AsrConfig): boolean => {
 export const normalizeAsrConfigWithFallback = (
   config: AsrConfig,
 ): { config: AsrConfig; didFallback: boolean } => {
+  const omniConfig: AsrConfig = {
+    ...config,
+    selection: {
+      ...config.selection,
+      active_provider: "omni",
+      enable_fallback: false,
+      fallback_provider: null,
+    },
+  };
+
+  if (isAsrConfigValid(omniConfig)) {
+    return {
+      config: omniConfig,
+      didFallback: config.selection.active_provider !== "omni",
+    };
+  }
+
   if (isAsrConfigValid(config)) {
     return { config, didFallback: false };
   }
 
-  const fallbackConfig: AsrConfig = {
-    ...config,
-    selection: {
-      ...config.selection,
-      active_provider: FALLBACK_ASR_PROVIDER,
-    },
-  };
-
-  if (isAsrConfigValid(fallbackConfig)) {
-    return { config: fallbackConfig, didFallback: true };
-  }
-
-  // 回退也无效，返回原配置
-  return { config, didFallback: false };
+  return { config: omniConfig, didFallback: config.selection.active_provider !== "omni" };
 };
 
 /** 获取 ASR Provider 的中文显示名称 */

@@ -1,17 +1,19 @@
 import type { Dispatch, SetStateAction } from "react";
-import { ArrowRight, Plus, HelpCircle, Sparkles } from "lucide-react";
+import { ArrowRight, HelpCircle, Plus } from "lucide-react";
 import type {
   AsrConfig,
-  AsrProvider,
   DictionaryEntry,
   DualHotkeyConfig,
   HotkeyKey,
-  LlmConfig,
 } from "../../types";
 import type { AppPage } from "../../pages/types";
-import { ASR_PROVIDERS } from "../../constants";
+import {
+  ASR_PROVIDERS,
+  DEFAULT_OMNI_ASR_CONFIG,
+  DEFAULT_OMNI_SHARED_CONFIG,
+} from "../../constants";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../../utils";
-import { ConfigSelect, ConfigToggle, Tooltip } from "../common";
+import { Toggle, Tooltip } from "../common";
 import { useConfigSave } from "../../contexts/ConfigSaveContext";
 
 // 首页词库最多显示的词条数（约两行）
@@ -20,16 +22,6 @@ const DICTIONARY_DISPLAY_LIMIT = 7;
 export type RightPanelProps = {
   asrConfig: AsrConfig;
   setAsrConfig: Dispatch<SetStateAction<AsrConfig>>;
-
-  useRealtime: boolean;
-  setUseRealtime: Dispatch<SetStateAction<boolean>>;
-
-  enablePostProcess: boolean;
-  setEnablePostProcess: Dispatch<SetStateAction<boolean>>;
-  enableDictionaryEnhancement: boolean;
-  setEnableDictionaryEnhancement: Dispatch<SetStateAction<boolean>>;
-  llmConfig: LlmConfig;
-  setLlmConfig: Dispatch<SetStateAction<LlmConfig>>;
 
   dualHotkeyConfig: DualHotkeyConfig;
 
@@ -45,14 +37,6 @@ export type RightPanelProps = {
 export function RightPanel({
   asrConfig,
   setAsrConfig,
-  useRealtime,
-  setUseRealtime,
-  enablePostProcess,
-  setEnablePostProcess,
-  enableDictionaryEnhancement,
-  setEnableDictionaryEnhancement,
-  llmConfig,
-  setLlmConfig,
   dualHotkeyConfig,
   dictionary,
   newWord,
@@ -66,61 +50,35 @@ export function RightPanel({
       ? dualHotkeyConfig.dictation.release_mode_keys
       : (["f2"] as HotkeyKey[]);
 
-  const { saveImmediately, isExternalSyncing } = useConfigSave();
-  // 只在外部配置同步时传入状态，用户本地操作让各组件自行管理 internalStatus
-  const externalOnlySyncStatus = isExternalSyncing
-    ? ("syncing" as const)
-    : undefined;
+  const { saveImmediately } = useConfigSave();
+  const omniConfig = asrConfig.omni ?? DEFAULT_OMNI_ASR_CONFIG;
+  const omniSharedConfig = {
+    ...DEFAULT_OMNI_SHARED_CONFIG,
+    ...(asrConfig.omni_shared_config ?? {}),
+  };
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
-      {/* ASR 引擎选择 */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">
-            语音识别引擎
+            当前引擎
           </label>
         </div>
-        <ConfigSelect
-          value={asrConfig.selection.active_provider}
-          onChange={(newProvider) => {
-            setAsrConfig((prev) => ({
-              ...prev,
-              selection: { ...prev.selection, active_provider: newProvider },
-            }));
-          }}
-          onCommit={async (newProvider) => {
-            await saveImmediately({
-              asrConfig: {
-                ...asrConfig,
-                selection: { ...asrConfig.selection, active_provider: newProvider },
-              },
-            });
-          }}
-          disabled={isRunning}
-          syncStatus={externalOnlySyncStatus}
-          options={[
-            {
-              value: "qwen" as AsrProvider,
-              label: `${ASR_PROVIDERS.qwen.name} · ${ASR_PROVIDERS.qwen.model}`,
-            },
-            {
-              value: "doubao" as AsrProvider,
-              label: `${ASR_PROVIDERS.doubao.name} · ${ASR_PROVIDERS.doubao.model}`,
-            },
-            {
-              value: "doubao_ime" as AsrProvider,
-              label: `${ASR_PROVIDERS.doubao_ime.name} · ${ASR_PROVIDERS.doubao_ime.model}`,
-            },
-            {
-              value: "omni" as AsrProvider,
-              label: `${ASR_PROVIDERS.omni.name} · ${ASR_PROVIDERS.omni.model}`,
-            },
-          ]}
-        />
+        <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm space-y-2">
+          <div className="text-sm font-bold text-[var(--ink)]">
+            {ASR_PROVIDERS.omni.name}
+          </div>
+          <div className="text-xs text-stone-500">
+            {omniConfig.model}
+            {omniSharedConfig.enable_thinking ? " · 深度思考" : ""}
+          </div>
+          <div className="text-[11px] text-stone-400 break-all">
+            {omniConfig.endpoint}
+          </div>
+        </div>
       </div>
 
-      {/* 快捷键显示 */}
       <div className="space-y-3">
         <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">
           快捷键
@@ -138,153 +96,87 @@ export function RightPanel({
               {formatHotkeyKeysDisplay(releaseModeKeys)}
             </kbd>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-500">按住唤起快捷助手</span>
-            <kbd className="px-2 py-1 bg-[var(--panel)] border border-[var(--stone)] rounded text-[10px] font-bold mono">
-              {formatHotkeyDisplay(dualHotkeyConfig.assistant)}
-            </kbd>
-          </div>
         </div>
       </div>
 
-      {/* 语句润色（热更新，不需要重启服务） */}
       <div className="space-y-3">
-        <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold">语句润色</span>
-              <Tooltip content="使用 AI 对识别结果进行智能优化，如纠错、润色、翻译等">
-                <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
-              </Tooltip>
-            </div>
-            <ConfigToggle
-              checked={enablePostProcess}
-              onCheckedChange={setEnablePostProcess}
-              onCommit={async (checked) => {
-                await saveImmediately({ enablePostProcess: checked });
-              }}
-              disabled={isRunning}
-              syncStatus={externalOnlySyncStatus}
-              size="sm"
-              variant="orange"
-            />
+        <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold">公共转录配置</span>
+            <Tooltip content="作用于所有 Omni 服务商预设，不会因为切换连接配置而变化。">
+              <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+            </Tooltip>
           </div>
-          <select
-            value={llmConfig.active_preset_id}
-            onChange={(e) => {
-              const id = e.target.value;
-              setLlmConfig((prev) => ({ ...prev, active_preset_id: id }));
-            }}
-            disabled={!enablePostProcess || isRunning}
-            className="w-full text-[10px] font-bold text-stone-500 bg-[var(--paper)] rounded-lg px-2 py-2 outline-none border border-[var(--stone)] disabled:opacity-50"
-          >
-            {llmConfig.presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          {/* 虚线分割线 */}
-          <div className="my-3 border-t border-dashed border-stone-200" />
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-bold text-stone-700">词库增强</span>
-              <Tooltip content="将个人词库注入提示词，用于同音词纠错与专业术语优先匹配；可独立于语句润色开关单独生效（仍会调用 LLM）">
-                <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
-              </Tooltip>
-            </div>
-            <ConfigToggle
-              checked={enableDictionaryEnhancement}
-              onCheckedChange={setEnableDictionaryEnhancement}
-              onCommit={async (checked) => {
-                await saveImmediately({ enableDictionaryEnhancement: checked });
-              }}
-              disabled={isRunning}
-              syncStatus={externalOnlySyncStatus}
-              size="sm"
-              variant="orange"
-            />
-          </div>
-          {(() => {
-            const pid = llmConfig.shared.polishing_provider_id || llmConfig.shared.default_provider_id;
-            const provider = llmConfig.shared.providers?.find(p => p.id === pid);
-            return !provider?.api_key && !llmConfig.shared.api_key;
-          })() && (enablePostProcess || enableDictionaryEnhancement) && (
-            <div className="mt-3 text-[10px] font-bold text-amber-600">
-              LLM API Key 未配置，请到 Presets 中设置
-            </div>
-          )}
-        </div>
-      </div>
 
-      {/* 实时/HTTP 模式切换（需要重启服务） */}
-      <div className="space-y-3">
-        {asrConfig.selection.active_provider === "doubao_ime" ? (
-          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
-            <div className="flex items-center gap-2 text-emerald-700">
-              <Sparkles size={14} className="flex-shrink-0" />
-              <div>
-                <div className="text-xs font-bold">豆包输入法专属模式</div>
-                <div className="text-[10px] text-emerald-600 font-medium mt-0.5">
-                  自动使用流式模式，无需配置
-                </div>
-              </div>
-            </div>
+          <div className="rounded-xl border border-dashed border-stone-200 bg-stone-50 px-3 py-2 text-[11px] text-stone-500">
+            作用于所有 Omni 服务商预设
           </div>
-        ) : asrConfig.selection.active_provider === "omni" ? (
-          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
-            <div className="flex items-center gap-2 text-violet-700">
-              <Sparkles size={14} className="flex-shrink-0" />
-              <div>
-                <div className="text-xs font-bold">Omni 精准模式</div>
-                <div className="text-[10px] text-violet-600 font-medium mt-0.5">
-                  {asrConfig.omni?.model ?? "LongCat-Flash-Omni-2603"}
-                  {asrConfig.omni?.enable_thinking ? " · 深度思考" : ""}
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm flex items-center justify-between">
+
+          <div className="flex items-center justify-between">
             <div>
-              <div className="flex items-center gap-1.5">
-                <div className="text-xs font-bold text-stone-700">
-                  {useRealtime ? "实时流式模式" : "HTTP模式"}
-                </div>
-                <Tooltip content="HTTP模式: 录完后一次性上传音频文件，网络不稳定时更可靠。语音较长时，识别较慢
-                实时流式模式: 边录制边上传，网络不稳定时可能会丢失部分结果。语音较长时，识别较快">
-                  <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
-                </Tooltip>
-              </div>
-              <div className="text-[10px] text-stone-400 font-semibold">
-                {useRealtime ? "边录边传，延迟更低" : "录完再传，更稳定"}
+              <div className="text-xs font-bold text-stone-700">深度思考模式</div>
+              <div className="text-[11px] text-stone-400">
+                {omniConfig.thinking_supported
+                  ? (omniSharedConfig.enable_thinking ? "已启用" : "未启用")
+                  : "当前预设暂不支持"}
               </div>
             </div>
-            <ConfigToggle
-              checked={useRealtime}
-              onCheckedChange={(checked) => {
-                setUseRealtime(checked);
-              }}
-              onCommit={async (checked) => {
-                await saveImmediately({ useRealtime: checked });
+            <div className={`px-2 py-1 rounded-full text-[10px] font-bold ${omniConfig.thinking_supported ? "bg-sky-50 text-sky-700 border border-sky-200" : "bg-stone-100 text-stone-400 border border-stone-200"}`}>
+              {omniConfig.thinking_supported ? "Shared" : "Unsupported"}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-bold text-stone-700">包含内置词库</div>
+                <div className="text-[11px] text-stone-400">
+                {omniSharedConfig.include_builtin_dictionary ? "已应用词库页所选领域并注入 Omni prompt" : "未应用词库页所选领域"}
+                </div>
+              </div>
+            <Toggle
+              checked={omniSharedConfig.include_builtin_dictionary}
+              onCheckedChange={async (checked) => {
+                const nextConfig = {
+                  ...asrConfig,
+                  omni_shared_config: {
+                    ...omniSharedConfig,
+                    include_builtin_dictionary: checked,
+                  },
+                };
+                setAsrConfig(nextConfig);
+                await saveImmediately({ asrConfig: nextConfig });
               }}
               disabled={isRunning}
-              syncStatus={externalOnlySyncStatus}
-              size="sm"
-              variant="amber"
+              size="xs"
+              variant="blue"
+              aria-label="切换内置词库注入"
             />
           </div>
-        )}
+
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs font-bold text-stone-700">焦点窗口截图</div>
+              <div className="text-[11px] text-stone-400">
+                {omniSharedConfig.include_focused_window_screenshot
+                  ? "已将焦点窗口截图作为 Omni 辅助线索"
+                  : "仅发送语音，不附带截图"}
+              </div>
+            </div>
+            <div className={`px-2 py-1 rounded-full text-[10px] font-bold ${omniSharedConfig.include_focused_window_screenshot ? "bg-sky-50 text-sky-700 border border-sky-200" : "bg-stone-100 text-stone-400 border border-stone-200"}`}>
+              {omniSharedConfig.include_focused_window_screenshot ? "Enabled" : "Disabled"}
+            </div>
+          </div>
+
+        </div>
       </div>
 
-      {/* 个人词库 */}
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <label className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">
             个人词库
           </label>
           <Tooltip content="添加专业术语、人名、地名等自定义词汇，提高语音识别准确率
-          备注：豆包（含输入法模式）暂不支持词库增强">
+          这些词条会直接参与 Omni prompt 构建。">
             <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
           </Tooltip>
         </div>
@@ -331,7 +223,7 @@ export function RightPanel({
 
       <div className="mt-auto text-center">
         <p className="text-[10px] text-stone-300 mono uppercase tracking-widest">
-          PushToTalk
+          PushToTalk Omni
         </p>
       </div>
     </aside>

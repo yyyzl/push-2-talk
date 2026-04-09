@@ -2,6 +2,7 @@ import type { AppPage } from "../../pages/types";
 import type { UpdateStatus } from "../../types";
 import {
   GraduationCap,
+  HelpCircle,
   History,
   Keyboard,
   LayoutDashboard,
@@ -9,10 +10,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   SlidersHorizontal,
-  Sparkles,
-  MessageSquare,
-  HelpCircle,
-  Zap,
 } from "lucide-react";
 import { RedDot } from "../common/RedDot";
 
@@ -66,11 +63,10 @@ export function Sidebar({
       <div className={headerClass}>
         <div className={navTextClass}>
           <p className="text-[10px] text-stone-300 mono uppercase tracking-widest">
-            PushToTalk
+            PushToTalk Omni
           </p>
-          {/* <div className="text-sm font-bold tracking-tight lowercase">pushtotalk</div> */}
           <div className="text-[11px] text-[var(--stone-dark)] font-semibold">
-            AI 语音助手
+            Omni 语音识别
           </div>
         </div>
       </div>
@@ -101,33 +97,6 @@ export function Sidebar({
         >
           <Mic className="shrink-0 w-5 h-5" />
           <span className={navTextClass}>语音识别引擎</span>
-        </button>
-
-        <button
-          onClick={() => onNavigate("models")}
-          className={navItem("models")}
-          title="LLM 模型配置"
-        >
-          <Zap className="shrink-0 w-5 h-5" />
-          <span className={navTextClass}>LLM 模型配置</span>
-        </button>
-
-        <button
-          onClick={() => onNavigate("llm")}
-          className={navItem("llm")}
-          title="语句润色预设"
-        >
-          <Sparkles className="shrink-0 w-5 h-5" />
-          <span className={navTextClass}>语句润色</span>
-        </button>
-
-        <button
-          onClick={() => onNavigate("assistant")}
-          className={navItem("assistant")}
-          title="快捷助手"
-        >
-          <MessageSquare className="shrink-0 w-5 h-5" />
-          <span className={navTextClass}>AI 助手</span>
         </button>
 
         <button

@@ -17,7 +17,6 @@ use windows::Win32::Storage::FileSystem::{
 };
 
 pub const CACHE_FILENAME: &str = "builtin_hotwords_cache.txt";
-const EMBEDDED_HOTWORDS: &str = include_str!("../../hotwords.txt");
 pub const HOTWORDS_ENDPOINTS: &[&str] = &[
     "https://gh-proxy.org/https://raw.githubusercontent.com/yyyzl/HotWordsLex/main/output/hotwords_latest.txt",
     "https://hk.gh-proxy.org/https://raw.githubusercontent.com/yyyzl/HotWordsLex/main/output/hotwords_latest.txt",
@@ -32,7 +31,7 @@ pub const MIN_VALID_LINE_COUNT: usize = 1;
 
 pub fn cache_path() -> Result<PathBuf> {
     let config_dir = dirs::config_dir().ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
-    let app_dir = config_dir.join("PushToTalk");
+    let app_dir = config_dir.join("PushToTalkOmni");
     std::fs::create_dir_all(&app_dir)?;
     Ok(app_dir.join(CACHE_FILENAME))
 }
@@ -41,8 +40,8 @@ pub fn load_builtin_hotwords() -> String {
     let path = match cache_path() {
         Ok(path) => path,
         Err(err) => {
-            tracing::warn!("获取内置词库缓存路径失败，回退 embedded: {}", err);
-            return EMBEDDED_HOTWORDS.to_string();
+            tracing::warn!("获取内置词库缓存路径失败，返回空词库: {}", err);
+            return String::new();
         }
     };
     load_builtin_hotwords_from_path(path)
@@ -54,14 +53,14 @@ pub(crate) fn load_builtin_hotwords_from_path(path: PathBuf) -> String {
             if validate_hotwords(&content).is_ok() {
                 content
             } else {
-                tracing::warn!("缓存词库校验失败，删除缓存并回退 embedded");
+                tracing::warn!("缓存词库校验失败，删除缓存并返回空词库");
                 if let Err(err) = std::fs::remove_file(&path) {
                     tracing::warn!("删除损坏缓存失败: {}", err);
                 }
-                EMBEDDED_HOTWORDS.to_string()
+                String::new()
             }
         }
-        Err(_) => EMBEDDED_HOTWORDS.to_string(),
+        Err(_) => String::new(),
     }
 }
 
@@ -316,23 +315,21 @@ mod tests {
     }
 
     #[test]
-    fn load_builtin_hotwords_should_fallback_to_embedded_when_cache_missing() {
+    fn load_builtin_hotwords_should_return_empty_when_cache_missing() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let result = load_builtin_hotwords_from_path(temp.path().join("missing.txt"));
-        assert!(!result.trim().is_empty());
-        assert!(result.contains("【"));
+        assert!(result.is_empty());
     }
 
     #[test]
-    fn load_builtin_hotwords_should_fallback_to_embedded_when_cache_corrupted() {
+    fn load_builtin_hotwords_should_return_empty_when_cache_corrupted() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let corrupt_path = temp.path().join("builtin_hotwords_cache.txt");
         std::fs::write(&corrupt_path, "corrupted garbage content").expect("write corrupt file");
 
         let result = load_builtin_hotwords_from_path(corrupt_path.clone());
 
-        assert!(result.contains("【"));
-        assert!(!result.contains("corrupted"));
+        assert!(result.is_empty());
         assert!(!corrupt_path.exists());
     }
 

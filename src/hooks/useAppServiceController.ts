@@ -17,6 +17,8 @@ import {
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_OMNI_ASR_CONFIG,
+  DEFAULT_OMNI_SHARED_CONFIG,
   FALLBACK_ASR_PROVIDER,
   VALID_ASR_PROVIDERS,
   normalizeLearningConfig,
@@ -25,38 +27,29 @@ import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplay
 import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
 import {
   fetchBuiltinDomains,
-  getBuiltinWordsForDomains,
   normalizeBuiltinDictionaryDomains,
   setBuiltinDomainsSnapshot,
 } from "../utils/builtinDictionary";
 
-const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
+const DICTIONARY_STORAGE_KEY = "pushtotalk_omni_dictionary";
 
 const buildRuntimeDictionary = (
   dictionaryEntries: DictionaryEntry[],
-  builtinDomains: string[],
 ): string[] => {
-  const userWords = entriesToWords(dictionaryEntries);
-  const builtinWords = getBuiltinWordsForDomains(builtinDomains);
-  if (builtinWords.length === 0) return userWords;
-
-  const merged = new Set<string>();
-  const result: string[] = [];
-
-  for (const word of userWords) {
-    if (merged.has(word)) continue;
-    merged.add(word);
-    result.push(word);
-  }
-
-  for (const word of builtinWords) {
-    if (merged.has(word)) continue;
-    merged.add(word);
-    result.push(word);
-  }
-
-  return result;
+  return entriesToWords(dictionaryEntries);
 };
+
+const normalizeOmniAsrConfig = (config: AsrConfig): AsrConfig => ({
+  ...config,
+  omni_shared_config: {
+    ...DEFAULT_OMNI_SHARED_CONFIG,
+    ...(config.omni_shared_config ?? {}),
+  },
+  omni: {
+    ...DEFAULT_OMNI_ASR_CONFIG,
+    ...(config.omni ?? {}),
+  },
+});
 
 type SaveConfigGatewayOverrides = {
   apiKey?: string;
@@ -261,8 +254,9 @@ export function useAppServiceController({
           llmConfig: updates.llmConfig,
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
+          builtinDictionaryDomains,
           dictionary: updates.dictionary
-            ? buildRuntimeDictionary(updates.dictionary, builtinDictionaryDomains)
+            ? buildRuntimeDictionary(updates.dictionary)
             : undefined,
         });
         return true;
@@ -288,7 +282,7 @@ export function useAppServiceController({
       const finalStorageDictionary =
         storageDictionaryFromOverrides ?? entriesToStorageFormat(finalDictionaryEntries);
       const finalTheme = (overrides.theme ?? theme) || "light";
-      const finalAsrConfig = overrides.asrConfig ?? asrConfig;
+      const finalAsrConfig = normalizeOmniAsrConfig(overrides.asrConfig ?? asrConfig);
       const finalLearningConfig = normalizeLearningConfig(
         overrides.learningConfig ?? learningConfig,
       );
@@ -312,10 +306,7 @@ export function useAppServiceController({
         enableMuteOtherApps: overrides.enableMuteOtherApps ?? enableMuteOtherApps,
         dictionaryEntries: finalDictionaryEntries,
         storageDictionary: finalStorageDictionary,
-        runtimeDictionary: buildRuntimeDictionary(
-          finalDictionaryEntries,
-          finalBuiltinDictionaryDomains,
-        ),
+        runtimeDictionary: buildRuntimeDictionary(finalDictionaryEntries),
         builtinDictionaryDomains: finalBuiltinDictionaryDomains,
         theme: finalTheme,
       };
@@ -391,12 +382,14 @@ export function useAppServiceController({
         backendCreds?.sensevoice_api_key?.trim() ||
         backendCreds?.doubao_app_id?.trim() ||
         backendCreds?.doubao_access_token?.trim() ||
-        config.asr_config?.omni?.api_key?.trim()
+        config.asr_config?.omni?.api_key?.trim() ||
+        config.asr_config?.grok?.api_key?.trim()
       );
 
       if (!backendHasAnyCredential) {
         try {
-          const savedCache = localStorage.getItem('pushtotalk_asr_cache');
+          const savedCache = localStorage.getItem('pushtotalk_asr_cache')
+            ?? localStorage.getItem('pushtotalk_omni_asr_cache');
           if (savedCache) {
             console.log('[迁移] 检测到后端配置为空且发现 localStorage 配置，开始迁移');
             const parsedCache = JSON.parse(savedCache);
@@ -406,7 +399,7 @@ export function useAppServiceController({
                 ? parsedCache.active_provider
                 : FALLBACK_ASR_PROVIDER;
 
-            const migratedAsrConfig: AsrConfig = {
+            const migratedAsrConfig = normalizeOmniAsrConfig({
               credentials: {
                 qwen_api_key: parsedCache.qwen?.api_key || '',
                 sensevoice_api_key: parsedCache.siliconflow?.api_key || '',
@@ -423,7 +416,9 @@ export function useAppServiceController({
                 fallback_provider: null,
               },
               language_mode: parsedCache.language_mode === 'zh' ? 'zh' : 'auto',
-            };
+              omni_shared_config: DEFAULT_OMNI_SHARED_CONFIG,
+              omni: DEFAULT_OMNI_ASR_CONFIG,
+            });
 
             let localDictionary: string[] = [];
             try {
@@ -464,6 +459,8 @@ export function useAppServiceController({
 
             console.log('[迁移] 配置已保存到后端，清理 localStorage');
             localStorage.removeItem('pushtotalk_asr_cache');
+            localStorage.removeItem('pushtotalk_omni_asr_cache');
+            localStorage.removeItem('pushtotalk_dictionary');
             localStorage.removeItem(DICTIONARY_STORAGE_KEY);
             config = await invoke<AppConfig>("load_config");
           }
@@ -478,7 +475,7 @@ export function useAppServiceController({
 
       const loadedAsrConfig: AsrConfig | null = config.asr_config
         ? {
-            ...config.asr_config,
+            ...normalizeOmniAsrConfig(config.asr_config),
             language_mode: config.asr_config.language_mode === "zh" ? "zh" : "auto",
           }
         : null;
@@ -601,10 +598,7 @@ export function useAppServiceController({
           asrConfig: effectiveAsrConfig,
           dualHotkeyConfig: loadedDualHotkeyConfig,
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-          dictionary: buildRuntimeDictionary(
-            loadedDictionary,
-            loadedBuiltinDictionaryDomains
-          ),
+          dictionary: buildRuntimeDictionary(loadedDictionary),
           theme: config.theme || "light",
         });
         setStatus("running");

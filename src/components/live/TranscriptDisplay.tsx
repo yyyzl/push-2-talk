@@ -1,34 +1,24 @@
 import { useState, useRef, useEffect, type MouseEvent, type RefObject } from "react";
-import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp, BookOpen } from "lucide-react";
+import { Activity, ChevronDown, ChevronUp, Copy, Mic } from "lucide-react";
 
 export type TranscriptDisplayProps = {
   transcript: string;
   originalTranscript: string | null;
-  currentMode: string | null;
   asrTime: number | null;
-  llmTime: number | null;
   totalTime: number | null;
-  activePresetName: string | null;
   transcriptEndRef: RefObject<HTMLDivElement>;
   onCopy: (text: string, e?: MouseEvent) => void;
   variant?: "default" | "compact";
-  enablePostProcess: boolean;
-  enableDictionaryEnhancement: boolean;
 };
 
 export function TranscriptDisplay({
   transcript,
   originalTranscript,
-  currentMode,
   asrTime,
-  llmTime,
   totalTime,
-  activePresetName,
   transcriptEndRef,
   onCopy,
   variant = "default",
-  enablePostProcess,
-  enableDictionaryEnhancement,
 }: TranscriptDisplayProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -42,24 +32,6 @@ export function TranscriptDisplay({
   const realtimeCompactText = transcript
     ? transcript.replace(/\s+/g, " ").trim()
     : "";
-
-  // Determine display icon and label based on mode and config
-  const getStatusConfig = () => {
-    if (currentMode === "assistant") {
-      return { Icon: MessageSquare, label: "AI 助手" };
-    }
-    // Priority: PostProcess (Polishing) > Dictionary Enhancement
-    if (enablePostProcess) {
-      return { Icon: Sparkles, label: `${activePresetName || "智能"}润色` };
-    }
-    if (enableDictionaryEnhancement) {
-      return { Icon: BookOpen, label: "词库增强" };
-    }
-    // Fallback
-    return { Icon: Sparkles, label: `${activePresetName || "智能"}润色` };
-  };
-
-  const { Icon: StatusIcon, label: statusLabel } = getStatusConfig();
 
   // 检测实际溢出（仅在内容变化时检测，展开/收起时保持状态）
   useEffect(() => {
@@ -144,11 +116,7 @@ export function TranscriptDisplay({
           <div className="flex items-center gap-3">
             <label className="text-xs font-bold text-stone-400 uppercase tracking-wider flex items-center gap-1">
               <Activity size={14} />
-              {originalTranscript
-                ? currentMode === "assistant"
-                  ? "AI 助手"
-                  : "转写结果"
-                : "实时转写内容"}
+              {originalTranscript ? "转写结果" : "实时转写内容"}
             </label>
             {transcript && !originalTranscript && (
               <button
@@ -165,11 +133,6 @@ export function TranscriptDisplay({
               {asrTime !== null && (
                 <span className="text-xs text-[var(--steel)] bg-[rgba(106,155,204,0.12)] px-2 py-1 rounded-md" title="语音转录耗时">
                   ASR {(asrTime / 1000).toFixed(2)}s
-                </span>
-              )}
-              {llmTime !== null && (
-                <span className="text-xs text-[var(--crail)] bg-[rgba(217,119,87,0.12)] px-2 py-1 rounded-md" title="LLM 润色耗时">
-                  LLM {(llmTime / 1000).toFixed(2)}s
                 </span>
               )}
               {totalTime !== null && (
@@ -189,7 +152,7 @@ export function TranscriptDisplay({
             <div className="flex flex-col border-r border-[var(--stone)] ">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs text-stone-400 flex items-center gap-1">
-                  <Mic size={12} /> {currentMode === "assistant" ? "用户问题" : "原始转录"}
+                  <Mic size={12} /> 原始转录
                 </div>
                 <button
                   onClick={(e) => onCopy(originalTranscript, e)}
@@ -206,9 +169,8 @@ export function TranscriptDisplay({
 
             <div className="flex flex-col">
               <div className="flex items-center justify-between mb-2">
-                <div className="text-xs text-[var(--crail)] flex items-center gap-1">
-                  <StatusIcon size={12} />
-                  {statusLabel}
+                <div className="text-xs text-[var(--steel)] flex items-center gap-1">
+                  Omni 结果
                 </div>
                 <button
                   onClick={(e) => onCopy(transcript, e)}

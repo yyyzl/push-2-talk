@@ -1,4 +1,4 @@
-import { MessageSquare, Clock, Copy, History, Trash2, Sparkles, Mic } from "lucide-react";
+import { Clock, Copy, History, Mic, Trash2 } from "lucide-react";
 import type { HistoryRecord } from "../types";
 import { formatTimestamp } from "../utils";
 import type { MouseEvent as ReactMouseEvent } from "react";
@@ -55,15 +55,9 @@ export function HistoryPage({ history, onCopyText, onClear }: HistoryPageProps) 
                   </span>
                   {record.success ? (
                     <div className="flex items-center gap-2">
-                      {record.mode === "assistant" ? (
-                        <span className="text-[10px] bg-[rgba(59,130,246,0.12)] text-blue-500 px-1.5 py-0.5 rounded">
-                          AI 助手
-                        </span>
-                      ) : record.presetName && (
-                        <span className="text-[10px] bg-[rgba(217,119,87,0.12)] text-[var(--crail)] px-1.5 py-0.5 rounded">
-                          {record.presetName}
-                        </span>
-                      )}
+                      <span className="text-[10px] bg-[rgba(106,155,204,0.12)] text-[var(--steel)] px-1.5 py-0.5 rounded">
+                        Omni 转写
+                      </span>
                       <span className="text-[10px] bg-stone-50 text-stone-600 px-1.5 py-0.5 rounded">
                         {(record.totalTimeMs / 1000).toFixed(1)}s
                       </span>
@@ -74,12 +68,12 @@ export function HistoryPage({ history, onCopyText, onClear }: HistoryPageProps) 
                 </div>
 
                 {record.success ? (
-                  record.polishedText ? (
-                    <div className="grid grid-cols-2 gap-3">
+                  <div className={`grid gap-3 ${record.polishedText ? "grid-cols-2" : "grid-cols-1"}`}>
+                    {record.polishedText && (
                       <div className="flex flex-col min-h-0 bg-stone-50/60 rounded-xl p-3 border border-stone-200">
                         <div className="flex items-center justify-between mb-2">
                           <div className="text-xs font-semibold text-stone-500 tracking-wide flex items-center gap-1.5">
-                            <Mic size={12} /> {record.mode === "assistant" ? "语音指令" : "原始转写"}
+                            <Mic size={12} /> 原始转写
                           </div>
                           <button
                             onClick={(e) => onCopyText(record.originalText, e)}
@@ -91,34 +85,13 @@ export function HistoryPage({ history, onCopyText, onClear }: HistoryPageProps) 
                         </div>
                         <p className="text-xs text-stone-600 line-clamp-4 leading-relaxed">{record.originalText}</p>
                       </div>
+                    )}
 
-                      <div className={`flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] ${record.mode === "assistant"
-                          ? "bg-[rgba(59,130,246,0.08)]"
-                          : "bg-[rgba(217,119,87,0.08)]"
-                        }`}>
-                        <div className="flex items-center justify-between mb-2">
-                          <div className={`text-xs font-semibold tracking-wide flex items-center gap-1.5 ${record.mode === "assistant" ? "text-blue-500" : "text-[var(--crail)]"
-                            }`}>
-                            {record.mode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
-                            {record.mode === "assistant" ? "AI 助手" : (record.presetName || "润色后")}
-                          </div>
-                          <button
-                            onClick={(e) => onCopyText(record.polishedText!, e)}
-                            className="p-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-500 hover:text-[var(--steel)] transition-colors shadow-sm"
-                            title="复制处理后文本"
-                          >
-                            <Copy size={13} />
-                          </button>
-                        </div>
-                        <p className="text-xs text-stone-800 line-clamp-4 leading-relaxed font-semibold">{record.polishedText}</p>
-                      </div>
-                    </div>
-                  ) : (
                     <div className="flex flex-col bg-stone-50/60 rounded-xl p-3 border border-stone-200">
                       <div className="flex items-center justify-between mb-2">
-                        <div className="text-xs font-semibold text-stone-500 tracking-wide">转写结果</div>
+                        <div className="text-xs font-semibold tracking-wide text-[var(--steel)]">Omni 结果</div>
                         <button
-                          onClick={(e) => onCopyText(record.originalText, e)}
+                          onClick={(e) => onCopyText(record.polishedText ?? record.originalText, e)}
                           className="px-2.5 py-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-700 hover:text-[var(--steel)] transition-colors flex items-center gap-1.5 shadow-sm"
                           title="复制文本"
                         >
@@ -126,9 +99,9 @@ export function HistoryPage({ history, onCopyText, onClear }: HistoryPageProps) 
                           <span className="text-xs font-medium">复制</span>
                         </button>
                       </div>
-                      <p className="text-sm text-stone-800 line-clamp-5 leading-relaxed">{record.originalText}</p>
+                      <p className="text-sm text-stone-800 line-clamp-5 leading-relaxed">{record.polishedText ?? record.originalText}</p>
                     </div>
-                  )
+                  </div>
                 ) : (
                   <p className="text-sm text-red-700 line-clamp-3">{record.errorMessage}</p>
                 )}

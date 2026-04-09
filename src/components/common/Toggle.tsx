@@ -62,7 +62,7 @@ export function Toggle({
       disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
       className={[
-        "relative rounded-full transition-all duration-300",
+        "relative shrink-0 rounded-full transition-all duration-300",
         styles.track,
         trackColor,
         disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:opacity-90",
