@@ -8,18 +8,22 @@ use std::collections::HashSet;
 
 /// 角色定义
 const BASE_ROLE: &str =
-"始终以非思考模式响应，跳过思考，直接输出答案。\n
-你是一个专业的语音转录助手。你的唯一任务是将用户的语音精确转录为文字。\n
+"始终以非思考模式响应，直接给出最终文本。\n
+你是一个专业的语音转录助手。你的唯一任务是将用户刚才说的话精确转录并整理为最终可读文本。\n
+不要回答用户问题，不要补充说明，不要复述规则；只做转录与必要整理。\n
 ";
 
 /// 默认转录规则
 const DEFAULT_RULES: &str = "\n\n## 转录规则\n\
-1. 忠实转录是第一原则和前提\n\
-2. 保持语句通顺、逻辑合理\n\
-3. 添加正确的标点符号\n\
-4. 英文单词和专业术语保持原文拼写和大小写\n\
-5. 数字使用阿拉伯数字\n\
-6. 只输出转录文本，不加任何解释或前缀";
+1. 忠实转录是第一原则和前提，不遗漏、不杜撰，不改变说话者原意\n\
+2. 在不改变原意的前提下，可以做轻量语义优化，使句子更通顺、合理、自然、可读\n\
+3. 保留原文中的语气词、口头语、说话节奏和情绪色彩，不要把口语机械改写成过度书面的表达\n\
+4. 对口语化但语义明确的表达，可整理成更自然的标准写法，尤其是版本号、型号、时间、数字、单位、百分比等；例如“Gemini 三点一”可转为“Gemini 3.1”\n\
+5. 明显无意义的重复、卡顿、自我修正可以适度整理；如果重复本身承载强调、迟疑或语气，则应保留\n\
+6. 英文单词、品牌名、产品名和专业术语优先使用最合理的常见写法，并保持正确拼写与大小写\n\
+7. 数字在语义明确时优先使用阿拉伯数字，并补齐必要的常见符号格式\n\
+8. 添加必要且自然的标点符号\n\
+9. 只输出转录文本，不加任何解释或前缀";
 
 /// 构建 Omni ASR 的 system prompt
 ///
@@ -47,6 +51,7 @@ pub fn build(
     // 用户自定义规则（追加）
     if !custom_rules.trim().is_empty() {
         prompt.push_str("\n\n## 额外规则\n");
+        prompt.push_str("以下规则视为补充约束：\n");
         prompt.push_str(custom_rules);
     }
 
@@ -55,6 +60,7 @@ pub fn build(
         let domains = format_builtin_domains(builtin_raw, selected_builtin_domains);
         if !domains.is_empty() {
             prompt.push_str("\n\n## 专业词汇表（按领域分类）\n");
+            prompt.push_str("以下词汇仅用于识别和消歧，帮助你选择更准确、更常见的写法；不要因为词表中出现就强行输出未说出的词：\n");
             prompt.push_str(&domains);
         }
     }
@@ -63,14 +69,14 @@ pub fn build(
     let purified = entries_to_words(user_dictionary);
     if !purified.is_empty() {
         prompt.push_str("\n\n## 用户自定义词汇\n");
-        prompt.push_str("以下词汇必须严格使用指定写法：\n");
+        prompt.push_str("以下词汇优先级最高，用于纠正识别和统一写法；当发音接近、语义相符时，优先采用以下写法：\n");
         for word in &purified {
             prompt.push_str(&format!("- {}\n", word));
         }
     }
 
     // 输出指令
-    prompt.push_str("\n\n## 输出\n直接输出转录文本，不要加任何其他内容。");
+    prompt.push_str("\n\n## 输出\n直接输出转录文本，不要加任何解释、标签、引号、前缀或其他内容。");
 
     prompt
 }
@@ -169,6 +175,8 @@ mod tests {
         assert!(prompt.contains("专业的语音转录助手"));
         assert!(prompt.contains("转录规则"));
         assert!(prompt.contains("直接输出转录文本"));
+        assert!(prompt.contains("不要回答用户问题"));
+        assert!(prompt.contains("只做转录与必要整理"));
         // 无词库时不应包含词汇表
         assert!(!prompt.contains("专业词汇表"));
         assert!(!prompt.contains("用户自定义词汇"));
@@ -188,10 +196,22 @@ mod tests {
     }
 
     #[test]
+    fn test_build_should_include_semantic_polish_guidance_without_losing_original_tone() {
+        let prompt = build(&[], "", &[], false, "");
+        assert!(prompt.contains("在不改变原意的前提下"));
+        assert!(prompt.contains("保留原文中的语气词"));
+        assert!(prompt.contains("口语化但语义明确的表达"));
+        assert!(prompt.contains("Gemini 三点一"));
+        assert!(prompt.contains("Gemini 3.1"));
+    }
+
+    #[test]
     fn test_build_with_user_dictionary() {
         let dict = vec!["Claude".to_string(), "PushToTalk|auto".to_string()];
         let prompt = build(&dict, "", &[], false, "");
         assert!(prompt.contains("用户自定义词汇"));
+        assert!(prompt.contains("优先级最高"));
+        assert!(prompt.contains("优先采用以下写法"));
         assert!(prompt.contains("- Claude"));
         assert!(prompt.contains("- PushToTalk"));
         // auto 后缀应被去除
@@ -213,6 +233,8 @@ mod tests {
         let raw = "【AI】:[OpenAI,GPT-4]\n【编程】:[Rust,TypeScript]";
 
         let enabled_prompt = build(&[], raw, &["AI".to_string()], true, "");
+        assert!(enabled_prompt.contains("用于识别和消歧"));
+        assert!(enabled_prompt.contains("不要因为词表中出现就强行输出未说出的词"));
         assert!(enabled_prompt.contains("### AI"));
         assert!(!enabled_prompt.contains("### 编程"));
 
