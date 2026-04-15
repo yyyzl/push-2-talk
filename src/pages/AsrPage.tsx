@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, KeyboardEvent, SetStateAction } from "react";
 import { AlertCircle } from "lucide-react";
 import type { AsrConfig, OmniAsrConfig, OmniSharedConfig } from "../types";
 import {
@@ -31,6 +31,43 @@ export function AsrPage({
   const omniSharedConfig: OmniSharedConfig =
     { ...DEFAULT_OMNI_SHARED_CONFIG, ...(asrConfig.omni_shared_config ?? {}) };
   const activeOmniPresetKey = omniConfig.active_profile_key || DEFAULT_OMNI_ASR_CONFIG.active_profile_key;
+  const activeOmniPreset = OMNI_ENDPOINT_PRESETS.find((preset) => preset.profileKey === activeOmniPresetKey)
+    ?? OMNI_ENDPOINT_PRESETS[0];
+  const activeOmniTabId = `omni-provider-tab-${activeOmniPreset.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const activeOmniPanelId = "omni-provider-config-panel";
+  const getOmniPresetTabId = (label: string) => `omni-provider-tab-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+
+  const focusOmniPresetTab = (presetKey: string) => {
+    if (typeof document === "undefined") return;
+    const preset = OMNI_ENDPOINT_PRESETS.find((item) => item.profileKey === presetKey);
+    if (!preset) return;
+    const tab = document.getElementById(getOmniPresetTabId(preset.label));
+    tab?.focus();
+  };
+
+  const handleOmniPresetTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    presetIndex: number,
+  ) => {
+    let targetIndex: number | null = null;
+
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      targetIndex = (presetIndex + 1) % OMNI_ENDPOINT_PRESETS.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      targetIndex = (presetIndex - 1 + OMNI_ENDPOINT_PRESETS.length) % OMNI_ENDPOINT_PRESETS.length;
+    } else if (event.key === "Home") {
+      targetIndex = 0;
+    } else if (event.key === "End") {
+      targetIndex = OMNI_ENDPOINT_PRESETS.length - 1;
+    }
+
+    if (targetIndex === null) return;
+
+    event.preventDefault();
+    const targetPreset = OMNI_ENDPOINT_PRESETS[targetIndex];
+    switchPreset(targetPreset.profileKey);
+    focusOmniPresetTab(targetPreset.profileKey);
+  };
 
   const updateOmniConfig = (patch: Partial<OmniAsrConfig>) => {
     setAsrConfig((prev) => ({
@@ -135,7 +172,7 @@ export function AsrPage({
         <div className="space-y-4">
           <h4 className="text-sm font-bold text-stone-700">Omni 主模型</h4>
           <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-            <section className="space-y-3 p-4 bg-[var(--paper)] rounded-2xl border border-[var(--stone)]">
+            <div className="space-y-3 p-4 bg-[var(--paper)] rounded-2xl border border-[var(--stone)]">
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-3">
                   <h5 className="text-sm font-bold text-[var(--ink)]">服务商连接配置</h5>
@@ -157,68 +194,90 @@ export function AsrPage({
 
               <div className="space-y-2">
                 <label className="text-xs font-bold text-stone-500">服务商预设</label>
-                <div className="flex flex-wrap gap-2">
-                  {OMNI_ENDPOINT_PRESETS.map((preset) => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      disabled={isRunning}
-                      onClick={() => switchPreset(preset.profileKey)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors disabled:opacity-60 ${
-                        activeOmniPresetKey === preset.profileKey
-                          ? "bg-violet-100 border-violet-300 text-violet-700"
-                          : "bg-white border-stone-200 text-stone-500 hover:border-stone-300"
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
+                <div
+                  role="tablist"
+                  aria-label="Omni 服务商预设"
+                  className="flex flex-wrap gap-2"
+                >
+                  {OMNI_ENDPOINT_PRESETS.map((preset, presetIndex) => {
+                    const selected = activeOmniPresetKey === preset.profileKey;
+                    const tabId = getOmniPresetTabId(preset.label);
+
+                    return (
+                      <button
+                        key={preset.label}
+                        id={tabId}
+                        type="button"
+                        role="tab"
+                        aria-selected={selected}
+                        aria-controls={activeOmniPanelId}
+                        tabIndex={selected ? 0 : -1}
+                        disabled={isRunning}
+                        onClick={() => switchPreset(preset.profileKey)}
+                        onKeyDown={(event) => handleOmniPresetTabKeyDown(event, presetIndex)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors disabled:opacity-60 ${
+                          selected
+                            ? "bg-violet-100 border-violet-300 text-violet-700"
+                            : "bg-white border-stone-200 text-stone-500 hover:border-stone-300"
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-stone-500">请求 URL</label>
-                <input
-                  type="text"
-                  value={omniConfig.endpoint}
-                  disabled={isRunning}
-                  onChange={(e) => updateOmniEndpoint(e.target.value)}
-                  placeholder="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-                  className="w-full px-3 py-2 bg-white border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] transition-colors disabled:opacity-60"
-                />
-                <p className="text-[11px] text-stone-400">
-                  支持 OpenAI 兼容地址，填写 base URL 或完整 /chat/completions 均可
-                </p>
-              </div>
+              <section
+                id={activeOmniPanelId}
+                role="tabpanel"
+                aria-labelledby={activeOmniTabId}
+                className="space-y-3"
+              >
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-stone-500">请求 URL</label>
+                  <input
+                    type="text"
+                    value={omniConfig.endpoint}
+                    disabled={isRunning}
+                    onChange={(e) => updateOmniEndpoint(e.target.value)}
+                    placeholder="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                    className="w-full px-3 py-2 bg-white border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] transition-colors disabled:opacity-60"
+                  />
+                  <p className="text-[11px] text-stone-400">
+                    支持 OpenAI 兼容地址，填写 base URL 或完整 /chat/completions 均可
+                  </p>
+                </div>
 
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-stone-500">API Key</label>
-                <ApiKeyInput
-                  value={omniConfig.api_key}
-                  onChange={(val) => updateOmniConfig({ api_key: val })}
-                  show={showApiKey}
-                  onToggleShow={() => setShowApiKey(!showApiKey)}
-                  disabled={isRunning}
-                  placeholder="sk-..."
-                />
-              </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-stone-500">API Key</label>
+                  <ApiKeyInput
+                    value={omniConfig.api_key}
+                    onChange={(val) => updateOmniConfig({ api_key: val })}
+                    show={showApiKey}
+                    onToggleShow={() => setShowApiKey(!showApiKey)}
+                    disabled={isRunning}
+                    placeholder="sk-..."
+                  />
+                </div>
 
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-stone-500">模型名称</label>
-                <input
-                  type="text"
-                  value={omniConfig.model}
-                  disabled={isRunning}
-                  onChange={(e) => updateOmniConfig({ model: e.target.value })}
-                  placeholder="例如 gemini-3-flash、LongCat-Flash-Omni-2603"
-                  className="w-full px-3 py-2 bg-white border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] transition-colors disabled:opacity-60"
-                />
-              </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-stone-500">模型名称</label>
+                  <input
+                    type="text"
+                    value={omniConfig.model}
+                    disabled={isRunning}
+                    onChange={(e) => updateOmniConfig({ model: e.target.value })}
+                    placeholder="例如 gemini-3-flash、LongCat-Flash-Omni-2603"
+                    className="w-full px-3 py-2 bg-white border border-[var(--stone)] rounded-xl text-sm focus:outline-none focus:border-[var(--steel)] transition-colors disabled:opacity-60"
+                  />
+                </div>
 
-              <div className="rounded-xl border border-dashed border-stone-300 bg-white/70 px-3 py-2 text-[11px] text-stone-500">
-                当前模型：<span className="font-semibold text-stone-700">{omniConfig.model}</span>
-              </div>
-            </section>
+                <div className="rounded-xl border border-dashed border-stone-300 bg-white/70 px-3 py-2 text-[11px] text-stone-500">
+                  当前模型：<span className="font-semibold text-stone-700">{omniConfig.model}</span>
+                </div>
+              </section>
+            </div>
 
             <section className="space-y-3 p-4 bg-stone-950 rounded-2xl border border-stone-800 text-stone-100">
               <div className="space-y-1">

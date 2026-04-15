@@ -192,6 +192,15 @@ export const OMNI_ENDPOINT_PRESETS: {
     },
   },
   {
+    label: "Qwen",
+    profileKey: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    defaults: {
+      endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      api_key: '', model: 'qwen3.5-omni-plus',
+      thinking_supported: false, skip_post_processing: true,
+    },
+  },
+  {
     label: "自定义",
     profileKey: OMNI_CUSTOM_PRESET_KEY,
     defaults: {

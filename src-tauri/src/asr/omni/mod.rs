@@ -111,6 +111,7 @@ impl OmniAsrClient {
         );
 
         let request_body = Self::build_request_body(
+            &self.endpoint,
             &self.model,
             &self.system_prompt,
             self.thinking_supported,
@@ -182,29 +183,60 @@ impl OmniAsrClient {
             content_type,
             Self::preview_text(&response_text)
         );
-        let result = Self::parse_response_json(&response_text)?;
-        tracing::info!("Omni ASR: 响应: {}", serde_json::to_string_pretty(&result)?);
+        let text = if Self::is_dashscope_compatible_endpoint(&self.endpoint) {
+            if let Some(streamed_text) = Self::extract_streamed_text(&response_text)? {
+                tracing::info!(
+                    "Omni ASR: 使用 DashScope SSE 增量内容聚合转录结果，chars={}",
+                    streamed_text.chars().count()
+                );
+                streamed_text
+            } else {
+                let result = Self::parse_response_json(&response_text)?;
+                tracing::info!("Omni ASR: 响应: {}", serde_json::to_string_pretty(&result)?);
 
-        // 如有 reasoning_content，记录日志（不影响转录结果）
-        if let Some(reasoning) = result
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|choice| choice.get("message"))
-            .and_then(|msg| msg.get("reasoning_content"))
-            .and_then(|r| r.as_str())
-        {
-            let preview: String = reasoning.chars().take(100).collect();
-            tracing::info!(
-                "Omni ASR: thinking 推理过程 ({} 字符): {}",
-                reasoning.chars().count(),
-                preview
-            );
-        }
+                if let Some(reasoning) = result
+                    .get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|choice| choice.get("message"))
+                    .and_then(|msg| msg.get("reasoning_content"))
+                    .and_then(|r| r.as_str())
+                {
+                    let preview: String = reasoning.chars().take(100).collect();
+                    tracing::info!(
+                        "Omni ASR: thinking 推理过程 ({} 字符): {}",
+                        reasoning.chars().count(),
+                        preview
+                    );
+                }
 
-        // 解析 choices[0].message.content
-        // content 可能是 string 或 array of {type, text}
-        let text = Self::extract_content_text(&result)?;
+                Self::extract_content_text(&result)?
+            }
+        } else {
+            let result = Self::parse_response_json(&response_text)?;
+            tracing::info!("Omni ASR: 响应: {}", serde_json::to_string_pretty(&result)?);
+
+            // 如有 reasoning_content，记录日志（不影响转录结果）
+            if let Some(reasoning) = result
+                .get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|choice| choice.get("message"))
+                .and_then(|msg| msg.get("reasoning_content"))
+                .and_then(|r| r.as_str())
+            {
+                let preview: String = reasoning.chars().take(100).collect();
+                tracing::info!(
+                    "Omni ASR: thinking 推理过程 ({} 字符): {}",
+                    reasoning.chars().count(),
+                    preview
+                );
+            }
+
+            // 解析 choices[0].message.content
+            // content 可能是 string 或 array of {type, text}
+            Self::extract_content_text(&result)?
+        };
         let text = Self::finalize_transcript_text(&text);
 
         tracing::info!("Omni ASR: 转录完成: {}", text);
@@ -263,6 +295,10 @@ impl OmniAsrClient {
     /// 1. content 为字符串: `"content": "转录文本"`
     /// 2. content 为数组: `"content": [{"type": "text", "text": "转录文本"}]`
     fn extract_content_text(result: &serde_json::Value) -> Result<String> {
+        if let Some(error_message) = Self::extract_api_error_message(result) {
+            anyhow::bail!("Omni ASR: {}", error_message);
+        }
+
         let content = result
             .get("choices")
             .and_then(|c| c.as_array())
@@ -342,12 +378,172 @@ impl OmniAsrClient {
     }
 
     fn extract_sse_json(text: &str) -> Option<String> {
-        text.lines()
+        let payloads: Vec<&str> = text
+            .lines()
             .map(str::trim)
             .filter(|line| line.starts_with("data:"))
             .map(|line| line.trim_start_matches("data:").trim())
-            .find(|payload| !payload.is_empty() && *payload != "[DONE]")
-            .map(ToString::to_string)
+            .filter(|payload| !payload.is_empty() && *payload != "[DONE]")
+            .collect();
+
+        if payloads.is_empty() {
+            return None;
+        }
+
+        let mut aggregated_delta = String::new();
+        let mut saw_delta = false;
+        let mut last_message_payload: Option<String> = None;
+
+        for payload in &payloads {
+            let Ok(value) = serde_json::from_str::<Value>(payload) else {
+                continue;
+            };
+
+            if value.get("error").is_some() {
+                return Some((*payload).to_string());
+            }
+
+            if let Some(delta_content) = value
+                .get("choices")
+                .and_then(|choices| choices.as_array())
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("delta"))
+                .and_then(|delta| delta.get("content"))
+            {
+                saw_delta = Self::append_text_content(delta_content, &mut aggregated_delta)
+                    || saw_delta;
+            }
+
+            if value
+                .get("choices")
+                .and_then(|choices| choices.as_array())
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("message"))
+                .is_some()
+            {
+                last_message_payload = Some((*payload).to_string());
+            }
+        }
+
+        if saw_delta {
+            return Some(
+                serde_json::json!({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": aggregated_delta
+                            }
+                        }
+                    ]
+                })
+                .to_string(),
+            );
+        }
+
+        if let Some(payload) = last_message_payload {
+            return Some(payload);
+        }
+
+        payloads.first().map(|payload| (*payload).to_string())
+    }
+
+    fn extract_streamed_text(text: &str) -> Result<Option<String>> {
+        let mut aggregated = String::new();
+        let mut saw_sse_chunk = false;
+
+        for line in text.lines().map(str::trim) {
+            if !line.starts_with("data:") {
+                continue;
+            }
+
+            let payload = line.trim_start_matches("data:").trim();
+            if payload.is_empty() {
+                continue;
+            }
+
+            saw_sse_chunk = true;
+            if payload == "[DONE]" {
+                continue;
+            }
+
+            let chunk: Value = serde_json::from_str(payload).map_err(|err| {
+                anyhow::anyhow!(
+                    "Omni ASR: 解析 SSE chunk 失败: {}, payload={}",
+                    err,
+                    Self::preview_text(payload)
+                )
+            })?;
+
+            if let Some(error_message) = Self::extract_api_error_message(&chunk) {
+                anyhow::bail!("Omni ASR: {}", error_message);
+            }
+
+            let Some(choice) = chunk
+                .get("choices")
+                .and_then(|choices| choices.as_array())
+                .and_then(|choices| choices.first())
+            else {
+                continue;
+            };
+
+            if let Some(delta_content) = choice
+                .get("delta")
+                .and_then(|delta| delta.get("content"))
+            {
+                if Self::append_text_content(delta_content, &mut aggregated) {
+                    continue;
+                }
+            }
+
+            if let Some(message_content) = choice
+                .get("message")
+                .and_then(|message| message.get("content"))
+            {
+                Self::append_text_content(message_content, &mut aggregated);
+            }
+        }
+
+        if !saw_sse_chunk || aggregated.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(aggregated))
+    }
+
+    fn append_text_content(content: &Value, aggregated: &mut String) -> bool {
+        if let Some(text) = content.as_str() {
+            aggregated.push_str(text);
+            return true;
+        }
+
+        if let Some(items) = content.as_array() {
+            let mut appended = false;
+            for item in items {
+                if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                        aggregated.push_str(text);
+                        appended = true;
+                    }
+                } else if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                    aggregated.push_str(text);
+                    appended = true;
+                }
+            }
+            return appended;
+        }
+
+        false
+    }
+
+    fn extract_api_error_message(result: &Value) -> Option<String> {
+        let error = result.get("error")?;
+        let message = error.get("message").and_then(|value| value.as_str())?;
+        let code = error.get("code").and_then(|value| value.as_str());
+
+        Some(match code {
+            Some(code) if !code.is_empty() => format!("API 返回错误 [{}]: {}", code, message),
+            _ => format!("API 返回错误: {}", message),
+        })
     }
 
     fn preview_text(text: &str) -> String {
@@ -393,7 +589,18 @@ impl OmniAsrClient {
         model.trim().to_ascii_lowercase().contains("longcat")
     }
 
+    fn is_qwen_model(model: &str) -> bool {
+        model.trim().to_ascii_lowercase().contains("qwen")
+    }
+
+    fn is_dashscope_compatible_endpoint(endpoint: &str) -> bool {
+        let endpoint = endpoint.trim().to_ascii_lowercase();
+        endpoint.contains("dashscope.aliyuncs.com/compatible-mode/")
+            || endpoint.contains("dashscope-intl.aliyuncs.com/compatible-mode/")
+    }
+
     fn build_request_body(
+        endpoint: &str,
         model: &str,
         system_prompt: &str,
         thinking_supported: bool,
@@ -401,26 +608,38 @@ impl OmniAsrClient {
         audio_data: &[u8],
         screenshot: Option<&FocusedWindowScreenshot>,
     ) -> Value {
+        let is_dashscope_compatible = Self::is_dashscope_compatible_endpoint(endpoint);
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         let audio_format = if audio_data.len() >= 4 && &audio_data[..4] == WAV_MAGIC {
             "wav"
         } else {
             "wav"
         };
+        let is_qwen_model = Self::is_qwen_model(model);
 
-        // LongCat 不支持 audio+image 混合请求，截图对它无效
-        let effective_screenshot = if Self::is_longcat_model(model) && screenshot.is_some() {
-            tracing::info!("Omni ASR: LongCat 模型不支持 audio+image 混合请求，跳过截图");
+        // LongCat 与 Qwen 均不走 audio+image 混合请求。
+        let effective_screenshot = if (Self::is_longcat_model(model) || is_qwen_model)
+            && screenshot.is_some()
+        {
+            tracing::info!(
+                "Omni ASR: 模型 {} 不使用 audio+image 混合请求，跳过截图",
+                model
+            );
             None
         } else {
             screenshot
+        };
+        let audio_payload = if is_qwen_model {
+            format!("data:;base64,{}", audio_base64)
+        } else {
+            audio_base64
         };
 
         let mut content = vec![serde_json::json!({
             "type": "input_audio",
             "input_audio": {
                 "type": "base64",
-                "data": audio_base64,
+                "data": audio_payload,
                 "format": audio_format
             }
         })];
@@ -454,12 +673,19 @@ impl OmniAsrClient {
                     "content": content
                 }
             ],
-            "stream": false,
             "temperature": 0.01,
             "top_p": 0.1,
-            "top_k": 1,
-            "output_modalities": ["text"]
+            "top_k": 1
         });
+
+        if is_dashscope_compatible {
+            request_body["stream"] = Value::Bool(true);
+            request_body["stream_options"] = serde_json::json!({ "include_usage": true });
+            request_body["modalities"] = serde_json::json!(["text"]);
+        } else {
+            request_body["stream"] = Value::Bool(false);
+            request_body["output_modalities"] = serde_json::json!(["text"]);
+        }
 
         if let Some(reasoning_effort) = Self::gemini_min_reasoning_effort(model) {
             tracing::info!(
@@ -471,10 +697,14 @@ impl OmniAsrClient {
         }
 
         if thinking_supported {
-            request_body["chat_template_kwargs"] =
-                serde_json::json!({"enable_thinking": enable_thinking});
-            if enable_thinking {
-                request_body["thinking"] = serde_json::json!({"type": "enabled"});
+            if is_dashscope_compatible {
+                request_body["enable_thinking"] = serde_json::json!(enable_thinking);
+            } else {
+                request_body["chat_template_kwargs"] =
+                    serde_json::json!({"enable_thinking": enable_thinking});
+                if enable_thinking {
+                    request_body["thinking"] = serde_json::json!({"type": "enabled"});
+                }
             }
         }
 
@@ -515,6 +745,7 @@ impl OmniAsrClient {
 mod tests {
     use super::OmniAsrClient;
     use crate::window_capture::FocusedWindowScreenshot;
+    use base64::{engine::general_purpose, Engine as _};
     use serde_json::Value;
 
     #[test]
@@ -544,6 +775,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_qwen_stream_delta_response_into_message_content() {
+        let parsed = OmniAsrClient::parse_response_json(
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"世界\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n"
+            ),
+        )
+        .expect("qwen stream should parse");
+
+        let text = OmniAsrClient::extract_content_text(&parsed)
+            .expect("qwen stream delta should become message.content text");
+        assert_eq!(text, "你好世界");
+    }
+
+    #[test]
+    fn extract_content_text_surfaces_api_error_message() {
+        let result = serde_json::json!({
+            "error": {
+                "code": "invalid_parameter_error",
+                "message": "<400> InternalError.Algo.InvalidParameter: The provided URL does not appear to be valid."
+            },
+            "id": "chatcmpl-demo"
+        });
+
+        let error = OmniAsrClient::extract_content_text(&result).expect_err("error response should fail");
+        assert!(error
+            .to_string()
+            .contains("invalid_parameter_error"));
+        assert!(error
+            .to_string()
+            .contains("The provided URL does not appear to be valid"));
+    }
+
+    #[test]
     fn strips_trailing_period_in_transcript() {
         assert_eq!(OmniAsrClient::finalize_transcript_text("你好。"), "你好");
     }
@@ -557,6 +824,7 @@ mod tests {
     #[test]
     fn build_request_body_without_screenshot_keeps_audio_only_payload() {
         let request = OmniAsrClient::build_request_body(
+            "https://example.com/v1/chat/completions",
             "demo-model",
             "system prompt",
             false,
@@ -579,12 +847,37 @@ mod tests {
     }
 
     #[test]
+    fn build_request_body_for_qwen_uses_streaming_modalities_and_audio_data_url() {
+        let request = OmniAsrClient::build_request_body(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "qwen3.5-omni-plus",
+            "system prompt",
+            false,
+            false,
+            b"RIFFdemo",
+            None,
+        );
+
+        let content = request["messages"][1]["content"]
+            .as_array()
+            .expect("user content should be an array");
+        let expected_audio = format!("data:;base64,{}", general_purpose::STANDARD.encode(b"RIFFdemo"));
+
+        assert_eq!(request["stream"], Value::Bool(true));
+        assert_eq!(request["stream_options"]["include_usage"], Value::Bool(true));
+        assert_eq!(request["modalities"], serde_json::json!(["text"]));
+        assert!(request.get("output_modalities").is_none());
+        assert_eq!(content[0]["input_audio"]["data"], Value::String(expected_audio));
+    }
+
+    #[test]
     fn build_request_body_with_screenshot_adds_image_context_prompt() {
         let screenshot = FocusedWindowScreenshot {
             mime_type: "image/png".to_string(),
             data_base64: "ZmFrZS1pbWFnZQ==".to_string(),
         };
         let request = OmniAsrClient::build_request_body(
+            "https://example.com/v1/chat/completions",
             "demo-model",
             "system prompt",
             false,
@@ -609,8 +902,36 @@ mod tests {
     }
 
     #[test]
+    fn build_request_body_for_qwen_skips_screenshot_to_avoid_audio_image_mix() {
+        let screenshot = FocusedWindowScreenshot {
+            mime_type: "image/png".to_string(),
+            data_base64: "ZmFrZS1pbWFnZQ==".to_string(),
+        };
+        let request = OmniAsrClient::build_request_body(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "qwen3.5-omni-plus",
+            "system prompt",
+            false,
+            false,
+            b"RIFFdemo",
+            Some(&screenshot),
+        );
+
+        let content = request["messages"][1]["content"]
+            .as_array()
+            .expect("user content should be an array");
+
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], Value::String("input_audio".to_string()));
+        assert_eq!(content[1]["type"], Value::String("text".to_string()));
+        let prompt = content[1]["text"].as_str().expect("text prompt");
+        assert!(!prompt.contains("截图"));
+    }
+
+    #[test]
     fn build_request_body_for_gemini_3_flash_injects_minimal_reasoning() {
         let request = OmniAsrClient::build_request_body(
+            "https://example.com/v1/chat/completions",
             "gemini-3-flash",
             "system prompt",
             false,
@@ -627,6 +948,7 @@ mod tests {
     #[test]
     fn build_request_body_for_gemini_25_flash_injects_none_reasoning() {
         let request = OmniAsrClient::build_request_body(
+            "https://example.com/v1/chat/completions",
             "gemini-2.5-flash",
             "system prompt",
             false,
@@ -641,6 +963,7 @@ mod tests {
     #[test]
     fn build_request_body_for_non_gemini_omits_reasoning_effort() {
         let request = OmniAsrClient::build_request_body(
+            "https://example.com/v1/chat/completions",
             "LongCat-Flash-Omni-2603",
             "system prompt",
             false,
@@ -659,6 +982,7 @@ mod tests {
             data_base64: "ZmFrZS1pbWFnZQ==".to_string(),
         };
         let request = OmniAsrClient::build_request_body(
+            "https://example.com/v1/chat/completions",
             "LongCat-Flash-Omni-2603",
             "system prompt",
             false,
@@ -679,6 +1003,43 @@ mod tests {
         let prompt = content[1]["text"].as_str().expect("text prompt");
         assert!(prompt.contains("请转录这段语音"));
         assert!(!prompt.contains("截图"));
+    }
+
+    #[test]
+    fn build_request_body_for_dashscope_uses_streaming_shape_without_legacy_fields() {
+        let request = OmniAsrClient::build_request_body(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "qwen-omni-turbo",
+            "system prompt",
+            false,
+            true,
+            b"RIFFdemo",
+            None,
+        );
+
+        assert_eq!(request["stream"], Value::Bool(true));
+        assert_eq!(request["stream_options"]["include_usage"], Value::Bool(true));
+        assert_eq!(request["modalities"], serde_json::json!(["text"]));
+        assert!(request.get("output_modalities").is_none());
+        assert!(request.get("chat_template_kwargs").is_none());
+        assert!(request.get("thinking").is_none());
+        assert!(request.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn extract_streamed_text_merges_delta_content_and_skips_usage_only_chunks() {
+        let response = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}],\"usage\":{\"total_tokens\":10}}\n",
+            "data: {\"choices\":[],\"usage\":{\"total_tokens\":10}}\n",
+            "data: [DONE]\n"
+        );
+
+        let text = OmniAsrClient::extract_streamed_text(response)
+            .expect("streamed text should parse")
+            .expect("streamed text should exist");
+
+        assert_eq!(text, "你好");
     }
 
     #[test]
