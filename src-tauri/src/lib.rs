@@ -4146,7 +4146,7 @@ async fn dismiss_learning_suggestion(id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 显示通知窗口并定位到鼠标所在屏幕的悬浮窗上方
+/// 显示通知窗口并定位到鼠标所在屏幕底部居中，与录音悬浮球保持同一基线
 #[tauri::command]
 async fn show_notification_window(app_handle: AppHandle) -> Result<(), String> {
     if let Some(notification) = app_handle.get_webview_window("notification") {
@@ -4161,23 +4161,19 @@ async fn show_notification_window(app_handle: AppHandle) -> Result<(), String> {
                 let monitor_pos = monitor.position();
                 let screen_size = monitor.size();
                 let scale_factor = monitor.scale_factor();
-
-                // 通知窗口尺寸（tauri.conf.json 中是逻辑像素，需转换为物理像素）
-                let window_width = (360.0 * scale_factor) as i32;
-                let window_height = (600.0 * scale_factor) as i32;
-
-                // 悬浮窗底部边距 100px + 悬浮窗高度 80px + 间隔 80px = 260px（逻辑像素）
-                // 通知窗口底部距离屏幕底部的距离（物理像素）
-                let bottom_offset = (260.0 * scale_factor) as i32;
+                let notification_size = notification
+                    .outer_size()
+                    .unwrap_or(tauri::PhysicalSize::new(
+                        (360.0 * scale_factor) as u32,
+                        (80.0 * scale_factor) as u32,
+                    ));
 
                 // 水平居中
-                let x = monitor_pos.x + (screen_size.width as i32 - window_width) / 2;
-                // 垂直方向：在悬浮窗上方约 150px
-                let y = monitor_pos.y + screen_size.height as i32 - window_height - bottom_offset;
-
-                // 确保不超出屏幕顶部（至少留 50 逻辑像素）
-                let top_margin = (50.0 * scale_factor) as i32;
-                let y = y.max(monitor_pos.y + top_margin);
+                let x =
+                    monitor_pos.x + (screen_size.width as i32 - notification_size.width as i32) / 2;
+                let y = monitor_pos.y + screen_size.height as i32
+                    - notification_size.height as i32
+                    - (100.0 * scale_factor) as i32;
 
                 notification
                     .set_position(tauri::PhysicalPosition::new(x, y))

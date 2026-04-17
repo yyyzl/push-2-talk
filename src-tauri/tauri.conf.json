@@ -26,7 +26,7 @@
         "label": "notification",
         "url": "notification.html",
         "width": 360,
-        "height": 600,
+        "height": 80,
         "decorations": false,
         "transparent": true,
         "shadow": false,
