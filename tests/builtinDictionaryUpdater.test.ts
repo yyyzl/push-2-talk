@@ -9,7 +9,7 @@ test("builtin updater 应在 setup 阶段初始化而非 start_app", async () =>
   assert.match(source, /setup\(move \|app\|/);
   assert.match(source, /builtin_hotwords_raw/);
   const startAppBlock = source.match(
-    /async fn start_app[\s\S]*?\n}\n\n#\[tauri::command\]\nasync fn stop_app/
+    /async fn start_app[\s\S]*?\n}\n\n#\[tauri::command\]/
   );
   assert.ok(startAppBlock, "应能匹配到 start_app 函数体");
   assert.doesNotMatch(

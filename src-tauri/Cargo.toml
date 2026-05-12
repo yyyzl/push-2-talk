@@ -1,6 +1,6 @@
 [package]
 name = "push-to-talk"
-version = "1.6.1"
+version = "1.6.2"
 description = "A push-to-talk speech-to-text application"
 authors = ["you"]
 license = ""
@@ -32,6 +32,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
+async-trait = "0.1"
 cpal = "0.15"
 hound = "3.5"
 arboard = "3.4"
@@ -57,6 +58,7 @@ rphonetic = "3.0.6"       # 英文音标匹配（Double Metaphone）
 # WebSocket 实时 ASR 支持
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 futures-util = "0.3"
+tokio-util = "0.7"
 crossbeam-channel = "0.5"
 
 # 豆包输入法 ASR 支持 (Protobuf + Opus)

@@ -16,6 +16,7 @@ mod learning;
 mod llm_post_processor;
 mod openai_client;
 mod pipeline;
+mod search;
 mod streaming_recorder;
 mod text_inserter;
 mod tnl;
@@ -28,7 +29,9 @@ use asr::{
     DoubaoRealtimeClient, DoubaoRealtimeSession, QwenASRClient, QwenRealtimeClient,
     RealtimeSession, SenseVoiceClient,
 };
-use assistant_processor::AssistantProcessor;
+use assistant_processor::{
+    AssistantProcessor, AssistantStreamEvent, TurnOutcome, WebSearchPreference,
+};
 use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
 use config::{AppConfig, CONFIG_LOCK};
@@ -48,6 +51,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
+use tokio_util::sync::CancellationToken;
 
 // ================== Windows 鼠标位置检测 ==================
 #[cfg(target_os = "windows")]
@@ -150,6 +154,8 @@ struct AppState {
     conversation_session: Arc<Mutex<Option<ConversationSession>>>,
     /// AI 助手模式：是否正在处理中（追问期间阻止重复触发）
     is_assistant_processing: Arc<AtomicBool>,
+    /// AI 助手模式：当前生成取消令牌
+    assistant_cancel_token: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 // ================== 多轮对话数据结构 ==================
@@ -171,6 +177,8 @@ pub(crate) struct ConversationTurn {
     pub assistant_response: String,
     pub asr_time_ms: u64,
     pub llm_time_ms: u64,
+    pub search_time_ms: Option<u64>,
+    pub tool_calls: Vec<search::AssistantToolCall>,
 }
 
 /// 多轮对话会话（替代 PendingAssistantResult）
@@ -178,6 +186,13 @@ pub(crate) struct ConversationTurn {
 pub(crate) struct ConversationSession {
     pub id: String,
     pub turns: Vec<ConversationTurn>,
+    pub pending_turn: Option<TurnPendingPayload>,
+    pub draft_turn_id: Option<String>,
+    pub draft_assistant_response: String,
+    pub draft_tool_calls: Vec<search::AssistantToolCall>,
+    pub draft_status: String,
+    pub draft_warning: Option<String>,
+    pub draft_web_search_enabled: Option<bool>,
     /// 首轮锁定的提示词模式
     pub system_prompt_mode: PromptMode,
     /// 首轮触发时的目标窗口句柄
@@ -196,6 +211,10 @@ struct ConversationTurnPayload {
     assistant_response: String,
     asr_time_ms: u64,
     llm_time_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_time_ms: Option<u64>,
+    #[serde(default)]
+    tool_calls: Vec<search::AssistantToolCall>,
 }
 
 /// 完整会话状态 payload（用于 pull 模式）
@@ -203,11 +222,25 @@ struct ConversationTurnPayload {
 struct ConversationStatePayload {
     session_id: String,
     turns: Vec<ConversationTurnPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_turn: Option<TurnPendingPayload>,
+    #[serde(default)]
+    draft_assistant_response: String,
+    #[serde(default)]
+    draft_tool_calls: Vec<search::AssistantToolCall>,
+    #[serde(default)]
+    is_processing: bool,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_search_enabled: Option<bool>,
 }
 
 /// 追问录音完成后立即发出（前端显示用户消息 + loading）
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 struct TurnPendingPayload {
+    turn_id: String,
     user_instruction: String,
     selected_text: Option<String>,
     has_selection: bool,
@@ -228,11 +261,374 @@ struct TurnErrorPayload {
     error_message: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct TurnDeltaPayload {
+    session_id: String,
+    turn_id: String,
+    content_delta: String,
+    draft_assistant_response: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct TurnWarningPayload {
+    session_id: String,
+    turn_id: String,
+    message: String,
+}
+
+fn emit_assistant_stream_event(
+    app: &AppHandle,
+    session_id: &str,
+    turn_id: &str,
+    event: AssistantStreamEvent,
+    draft_assistant_response: Option<String>,
+) {
+    match event {
+        AssistantStreamEvent::Delta { content_delta } => {
+            let _ = app.emit(
+                "assistant_turn_delta",
+                TurnDeltaPayload {
+                    session_id: session_id.to_string(),
+                    turn_id: turn_id.to_string(),
+                    draft_assistant_response: draft_assistant_response
+                        .unwrap_or_else(|| content_delta.clone()),
+                    content_delta,
+                },
+            );
+        }
+        AssistantStreamEvent::ToolCallStarted {
+            id,
+            name,
+            query,
+            round,
+        } => {
+            let _ = app.emit(
+                "assistant_tool_call_started",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "id": id,
+                    "name": name,
+                    "query": query,
+                    "round": round,
+                }),
+            );
+        }
+        AssistantStreamEvent::ToolCallFinished { call } => {
+            let _ = app.emit(
+                "assistant_tool_call_finished",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "call": call,
+                }),
+            );
+        }
+        AssistantStreamEvent::Warning { message } => {
+            let _ = app.emit(
+                "assistant_turn_warning",
+                TurnWarningPayload {
+                    session_id: session_id.to_string(),
+                    turn_id: turn_id.to_string(),
+                    message,
+                },
+            );
+        }
+    }
+}
+
+fn load_search_runtime_config() -> config::SearchConfig {
+    config::AppConfig::load()
+        .map(|(cfg, _)| cfg.search_config)
+        .unwrap_or_else(|e| {
+            tracing::warn!("加载联网搜索配置失败，使用默认值: {}", e);
+            config::SearchConfig::default()
+        })
+}
+
+fn resolve_pending_web_search_enabled(
+    processor: &AssistantProcessor,
+    prompt_mode: &PromptMode,
+    preference: WebSearchPreference,
+    search_config: &config::SearchConfig,
+) -> bool {
+    processor.is_web_search_requested(prompt_mode, preference, Some(search_config))
+        && search::SearchRegistry::runtime_unavailable_reason(search_config).is_none()
+}
+
+fn register_assistant_cancel_token(state: &AppState) -> CancellationToken {
+    let token = CancellationToken::new();
+    *state.assistant_cancel_token.lock().unwrap() = Some(token.clone());
+    token
+}
+
+fn clear_assistant_cancel_token_after_turn(state: &AppState, token: &CancellationToken) {
+    let mut guard = state.assistant_cancel_token.lock().unwrap();
+    if token.is_cancelled() {
+        if guard
+            .as_ref()
+            .map(|current| current.is_cancelled())
+            .unwrap_or(false)
+        {
+            *guard = None;
+        }
+    } else {
+        *guard = None;
+    }
+}
+
+fn finish_assistant_turn_processing(
+    state: &AppState,
+    turn_id: &str,
+    cancel_token: &CancellationToken,
+) {
+    let active_turn_id = state
+        .conversation_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|session| session.draft_turn_id.clone());
+    if active_turn_id
+        .as_deref()
+        .is_some_and(|active| active != turn_id)
+    {
+        return;
+    }
+
+    state.is_assistant_processing.store(false, Ordering::SeqCst);
+    clear_assistant_cancel_token_after_turn(state, cancel_token);
+}
+
+fn log_assistant_turn_cancelled(context: &str, err: &anyhow::Error) {
+    tracing::info!("{context}已取消: {}", err);
+}
+
+fn new_assistant_turn_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn set_conversation_pending(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    pending: TurnPendingPayload,
+    web_search_enabled: bool,
+) -> bool {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return false;
+    };
+    if session.id != session_id {
+        return false;
+    }
+
+    session.pending_turn = Some(pending);
+    session.draft_turn_id = Some(turn_id.to_string());
+    session.draft_assistant_response.clear();
+    session.draft_tool_calls.clear();
+    session.draft_status = "processing".to_string();
+    session.draft_warning = None;
+    session.draft_web_search_enabled = Some(web_search_enabled);
+    true
+}
+
+fn update_conversation_draft_from_event(
+    app: &AppHandle,
+    session_id: &str,
+    turn_id: &str,
+    event: &AssistantStreamEvent,
+) -> Option<String> {
+    let state = app.state::<AppState>();
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return None;
+    };
+    if session.id != session_id || session.draft_turn_id.as_deref() != Some(turn_id) {
+        return None;
+    }
+
+    match event {
+        AssistantStreamEvent::Delta { content_delta } => {
+            session.draft_assistant_response.push_str(content_delta);
+        }
+        AssistantStreamEvent::ToolCallStarted {
+            id,
+            name,
+            query,
+            round,
+        } => {
+            let started = search::AssistantToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                query: query.clone(),
+                status: "searching".to_string(),
+                results: Vec::new(),
+                error: None,
+                elapsed_ms: 0,
+                round: *round,
+            };
+            session.draft_tool_calls.retain(|call| call.id != *id);
+            session.draft_tool_calls.push(started);
+        }
+        AssistantStreamEvent::ToolCallFinished { call } => {
+            session.draft_tool_calls.retain(|item| item.id != call.id);
+            session.draft_tool_calls.push(call.clone());
+        }
+        AssistantStreamEvent::Warning { message } => {
+            session.draft_warning = Some(message.clone());
+        }
+    }
+    Some(session.draft_assistant_response.clone())
+}
+
+fn emit_and_record_assistant_stream_event(
+    app: &AppHandle,
+    session_id: &str,
+    turn_id: &str,
+    event: AssistantStreamEvent,
+) {
+    let draft_assistant_response =
+        update_conversation_draft_from_event(app, session_id, turn_id, &event);
+    emit_assistant_stream_event(app, session_id, turn_id, event, draft_assistant_response);
+}
+
+fn push_completed_turn_if_active(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    turn: ConversationTurn,
+) -> bool {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return false;
+    };
+    if session.id != session_id || session.draft_turn_id.as_deref() != Some(turn_id) {
+        return false;
+    }
+    if session.draft_status == "cancelled" {
+        return false;
+    }
+
+    session.turns.push(turn);
+    session.pending_turn = None;
+    session.draft_turn_id = None;
+    session.draft_assistant_response.clear();
+    session.draft_tool_calls.clear();
+    session.draft_status = "idle".to_string();
+    session.draft_warning = None;
+    session.draft_web_search_enabled = None;
+    true
+}
+
+fn mark_conversation_error(state: &AppState, session_id: &str, turn_id: &str, message: String) {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return;
+    };
+    if session.id != session_id || session.draft_turn_id.as_deref() != Some(turn_id) {
+        return;
+    }
+    session.pending_turn = None;
+    session.draft_turn_id = None;
+    session.draft_assistant_response.clear();
+    session.draft_tool_calls.clear();
+    session.draft_status = "error".to_string();
+    session.draft_warning = Some(message);
+    session.draft_web_search_enabled = None;
+}
+
+fn mark_active_conversation_cancelled(
+    state: &AppState,
+) -> (
+    String,
+    Option<String>,
+    String,
+    Vec<search::AssistantToolCall>,
+) {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return (String::new(), None, String::new(), Vec::new());
+    };
+    session.draft_status = "cancelled".to_string();
+    session.draft_warning = Some("已停止生成".to_string());
+    (
+        session.id.clone(),
+        session.draft_turn_id.clone(),
+        session.draft_assistant_response.clone(),
+        session.draft_tool_calls.clone(),
+    )
+}
+
+fn to_turn_payload(turn: &ConversationTurn) -> ConversationTurnPayload {
+    ConversationTurnPayload {
+        user_instruction: turn.user_instruction.clone(),
+        selected_text: turn.selected_text.clone(),
+        has_selection: turn.selected_text.is_some(),
+        assistant_response: turn.assistant_response.clone(),
+        asr_time_ms: turn.asr_time_ms,
+        llm_time_ms: turn.llm_time_ms,
+        search_time_ms: turn.search_time_ms,
+        tool_calls: turn.tool_calls.clone(),
+    }
+}
+
+fn turn_from_outcome(
+    user_instruction: String,
+    selected_text: Option<String>,
+    asr_time_ms: u64,
+    outcome: TurnOutcome,
+) -> ConversationTurn {
+    ConversationTurn {
+        user_instruction,
+        selected_text,
+        assistant_response: outcome.assistant_response,
+        asr_time_ms,
+        llm_time_ms: outcome.llm_time_ms,
+        search_time_ms: outcome.search_time_ms,
+        tool_calls: outcome.tool_calls,
+    }
+}
+
 /// 将会话历史格式化并发送 transcription_complete 事件（用于 History 记录）
 fn emit_conversation_history(app: &AppHandle, session: &ConversationSession, inserted: bool) {
-    let formatted = assistant_processor::format_conversation_for_copy(&session.turns);
+    if session.turns.is_empty() {
+        tracing::debug!("AI 助手会话没有已完成轮次，跳过历史记录事件");
+        return;
+    }
+
     let total_asr: u64 = session.turns.iter().map(|t| t.asr_time_ms).sum();
     let total_llm: u64 = session.turns.iter().map(|t| t.llm_time_ms).sum();
+    let total_search: u64 = session.turns.iter().filter_map(|t| t.search_time_ms).sum();
+    let tool_calls_summary: Vec<search::ToolCallSummary> = session
+        .turns
+        .iter()
+        .flat_map(|turn| turn.tool_calls.iter().map(|call| call.summary()))
+        .collect();
+    let mut citation_remap = std::collections::HashMap::new();
+    let mut citations = Vec::new();
+    let mut next_citation_index = 1_u32;
+
+    for (turn_idx, turn) in session.turns.iter().enumerate() {
+        for call in &turn.tool_calls {
+            for item in &call.results {
+                let mut renumbered = item.clone();
+                renumbered.index = next_citation_index;
+                citation_remap.insert(format!("{turn_idx}:{}", item.id), next_citation_index);
+                citations.push(renumbered);
+                next_citation_index += 1;
+            }
+        }
+    }
+
+    let formatted = assistant_processor::format_conversation_for_copy_with_citation_remap(
+        &session.turns,
+        &citation_remap,
+    );
+    let web_searched = !tool_calls_summary.is_empty();
+    let search_failed = web_searched
+        && tool_calls_summary
+            .iter()
+            .all(|summary| summary.status != "success" || summary.results_count == 0);
 
     let result = TranscriptionResult {
         text: formatted,
@@ -240,10 +636,14 @@ fn emit_conversation_history(app: &AppHandle, session: &ConversationSession, ins
         selected_text: session.turns.first().and_then(|t| t.selected_text.clone()),
         asr_time_ms: total_asr,
         llm_time_ms: Some(total_llm),
-        total_time_ms: total_asr + total_llm,
+        total_time_ms: total_asr + total_llm + total_search,
         mode: Some("assistant".to_string()),
         inserted: Some(inserted),
         tnl_diagnostics: None,
+        citations: web_searched.then_some(citations),
+        tool_calls_summary: web_searched.then_some(tool_calls_summary),
+        web_searched,
+        search_failed,
     };
     let _ = app.emit("transcription_complete", result);
 }
@@ -260,6 +660,7 @@ const BUILTIN_DICTIONARY_UPDATE_INTERVAL_SECS: u64 = 6 * 60 * 60;
 struct TrayMenuState {
     post_process_item: CheckMenuItem<tauri::Wry>,
     dictionary_enhancement_item: CheckMenuItem<tauri::Wry>,
+    web_search_item: CheckMenuItem<tauri::Wry>,
     asr_qwen_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_ime_item: CheckMenuItem<tauri::Wry>,
@@ -269,6 +670,7 @@ const TRAY_MENU_ID_SHOW: &str = "show";
 const TRAY_MENU_ID_QUIT: &str = "quit";
 const TRAY_MENU_ID_TOGGLE_POST_PROCESS: &str = "tray_toggle_post_process";
 const TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT: &str = "tray_toggle_dictionary_enhancement";
+const TRAY_MENU_ID_TOGGLE_WEB_SEARCH: &str = "tray_toggle_web_search";
 const TRAY_MENU_ID_ASR_QWEN: &str = "tray_asr_qwen";
 const TRAY_MENU_ID_ASR_DOUBAO: &str = "tray_asr_doubao";
 const TRAY_MENU_ID_ASR_DOUBAO_IME: &str = "tray_asr_doubao_ime";
@@ -292,6 +694,12 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
         .set_checked(config.enable_dictionary_enhancement)
     {
         tracing::warn!("同步托盘词库增强状态失败: {}", e);
+    }
+    if let Err(e) = tray_state
+        .web_search_item
+        .set_checked(config.assistant_config.enable_web_search)
+    {
+        tracing::warn!("同步托盘联网搜索状态失败: {}", e);
     }
 
     sync_asr_provider_checks(
@@ -635,6 +1043,42 @@ fn toggle_dictionary_enhancement_from_tray(
     Ok(())
 }
 
+fn toggle_web_search_from_tray(
+    app_handle: &AppHandle,
+    web_search_item: &CheckMenuItem<tauri::Wry>,
+) -> Result<(), String> {
+    let (updated_config, new_value) = mutate_persisted_config_with_result(|config| {
+        let new_value = !config.assistant_config.enable_web_search;
+        config.assistant_config.enable_web_search = new_value;
+        Ok(new_value)
+    })?;
+
+    emit_config_updated(app_handle, &updated_config);
+
+    {
+        let state = app_handle.state::<AppState>();
+        let mut processor_guard = state.assistant_processor.lock().unwrap();
+        if updated_config
+            .assistant_config
+            .is_valid_with_shared(&updated_config.llm_config.shared)
+        {
+            *processor_guard = Some(AssistantProcessor::new(
+                updated_config.assistant_config.clone(),
+                &updated_config.llm_config.shared,
+            ));
+        } else {
+            *processor_guard = None;
+        }
+    }
+
+    web_search_item
+        .set_checked(new_value)
+        .map_err(|e| format!("更新托盘联网搜索勾选状态失败: {}", e))?;
+
+    tracing::info!("托盘已{}联网搜索", if new_value { "开启" } else { "关闭" });
+    Ok(())
+}
+
 async fn switch_asr_provider_from_tray(
     app_handle: AppHandle,
     target_provider: config::AsrProvider,
@@ -775,6 +1219,7 @@ async fn save_config(
     hotkey_config: Option<config::HotkeyConfig>,
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
+    search_config: Option<config::SearchConfig>,
     learning_config: Option<config::LearningConfig>,
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
@@ -855,6 +1300,7 @@ async fn save_config(
             smart_command_config: smart_command_config
                 .unwrap_or_else(|| existing.smart_command_config.clone()),
             assistant_config: final_assistant_config,
+            search_config: search_config.unwrap_or_else(|| existing.search_config.clone()),
             learning_config: learning_config.unwrap_or_else(|| existing.learning_config.clone()),
             tnl_config: existing.tnl_config.clone(),
             close_action: close_action.or_else(|| existing.close_action.clone()),
@@ -2473,12 +2919,34 @@ async fn handle_assistant_mode(
             return;
         }
 
+        let turn_id = new_assistant_turn_id();
+        let web_search_preference = WebSearchPreference::UseConfig;
+        let search_config = load_search_runtime_config();
+        let web_search_enabled = resolve_pending_web_search_enabled(
+            &processor,
+            &prompt_mode,
+            web_search_preference,
+            &search_config,
+        );
+
         // 发送 turn_pending 事件（前端立即显示用户消息 + loading）
         let pending_payload = TurnPendingPayload {
+            turn_id: turn_id.clone(),
             user_instruction: user_instruction.clone(),
             selected_text: selected_text.clone(),
             has_selection: selected_text.is_some(),
         };
+        if !set_conversation_pending(
+            &state,
+            &session_id,
+            &turn_id,
+            pending_payload.clone(),
+            web_search_enabled,
+        ) {
+            tracing::warn!("AI 助手: 追问 pending 写入失败，会话已变化");
+            state.is_assistant_processing.store(false, Ordering::SeqCst);
+            return;
+        }
         let _ = app.emit("assistant_turn_pending", pending_payload);
 
         // 隐藏 overlay
@@ -2499,74 +2967,78 @@ async fn handle_assistant_mode(
 
         // 调用 LLM（追问模式）
         let _ = app.emit("post_processing", "assistant");
-        let llm_start = std::time::Instant::now();
+        let cancel_token = register_assistant_cancel_token(&state);
+        let stream_app = app.clone();
+        let stream_session_id = session_id.clone();
+        let stream_turn_id = turn_id.clone();
 
         let result = processor
-            .process_followup(
+            .process_turn(
                 &history,
                 &user_instruction,
                 selected_text.as_deref(),
                 &prompt_mode,
+                Some(search_config),
+                web_search_preference,
+                cancel_token.clone(),
+                move |event| {
+                    emit_and_record_assistant_stream_event(
+                        &stream_app,
+                        &stream_session_id,
+                        &stream_turn_id,
+                        event,
+                    )
+                },
             )
             .await;
 
-        let llm_time_ms = llm_start.elapsed().as_millis() as u64;
-
         match result {
-            Ok(response_text) => {
-                let turn = ConversationTurn {
-                    user_instruction: user_instruction.clone(),
-                    selected_text: selected_text.clone(),
-                    assistant_response: response_text,
+            Ok(outcome) => {
+                let turn = turn_from_outcome(
+                    user_instruction.clone(),
+                    selected_text.clone(),
                     asr_time_ms,
-                    llm_time_ms,
-                };
+                    outcome,
+                );
 
-                // Push to session
-                {
-                    let mut lock = state.conversation_session.lock().unwrap();
-                    if let Some(ref mut session) = *lock {
-                        session.turns.push(turn.clone());
-                    } else {
-                        // 用户在处理期间关闭了面板，丢弃结果
-                        tracing::warn!("AI 助手: 追问完成但会话已关闭，丢弃结果");
-                        state.is_assistant_processing.store(false, Ordering::SeqCst);
-                        return;
-                    }
+                if !push_completed_turn_if_active(&state, &session_id, &turn_id, turn.clone()) {
+                    tracing::warn!(
+                        "AI 助手: 追问完成但会话已关闭、已取消或已被新请求替换，丢弃结果"
+                    );
+                    finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+                    return;
                 }
 
                 // 发送 turn_complete 事件
                 let payload = TurnCompletePayload {
                     session_id,
-                    turn: ConversationTurnPayload {
-                        user_instruction: turn.user_instruction,
-                        selected_text: turn.selected_text,
-                        has_selection: selected_text.is_some(),
-                        assistant_response: turn.assistant_response,
-                        asr_time_ms: turn.asr_time_ms,
-                        llm_time_ms: turn.llm_time_ms,
-                    },
+                    turn: to_turn_payload(&turn),
                     is_followup: true,
                 };
                 let _ = app.emit("assistant_turn_complete", payload);
                 tracing::info!(
                     "AI 助手追问完成 (ASR: {}ms, LLM: {}ms)",
                     asr_time_ms,
-                    llm_time_ms
+                    turn.llm_time_ms
                 );
             }
             Err(e) => {
-                // 发送 turn_error 事件（不写入 turns，用户可重试）
-                let error_payload = TurnErrorPayload {
-                    session_id,
-                    error_message: format!("{}", e),
-                };
-                let _ = app.emit("assistant_turn_error", error_payload);
-                tracing::error!("AI 助手追问失败: {}", e);
+                if cancel_token.is_cancelled() {
+                    log_assistant_turn_cancelled("AI 助手追问", &e);
+                } else {
+                    // 发送 turn_error 事件（不写入 turns，用户可重试）
+                    let error_payload = TurnErrorPayload {
+                        session_id: session_id.clone(),
+                        error_message: format!("{}", e),
+                    };
+                    mark_conversation_error(&state, &session_id, &turn_id, format!("{}", e));
+                    let _ = app.emit("assistant_turn_error", error_payload);
+                    tracing::error!("AI 助手追问失败: {}", e);
+                }
             }
         }
 
-        state.is_assistant_processing.store(false, Ordering::SeqCst);
+        finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
     } else {
         // =================== 新会话路径 ===================
 
@@ -2593,69 +3065,125 @@ async fn handle_assistant_mode(
             }
         }
 
-        // 调用 LLM（首轮：复用现有 process / process_with_context）
-        let _ = app.emit("post_processing", "assistant");
-        let llm_start = std::time::Instant::now();
+        let session_id = uuid::Uuid::new_v4().to_string();
 
-        let result = if let Some(ref text) = selected_text {
-            processor
-                .process_with_context(&user_instruction, text)
-                .await
-        } else {
-            processor.process(&user_instruction).await
+        // 创建空 session 并显示面板，让后续 streaming delta 有承载对象
+        {
+            let mut lock = state.conversation_session.lock().unwrap();
+            // 安全清理：如果有旧会话未关闭，补发历史事件
+            if let Some(old_session) = lock.take() {
+                tracing::warn!(
+                    "AI 助手: 新会话覆盖了旧会话 (id={}), 补发完成事件",
+                    old_session.id
+                );
+                emit_conversation_history(&app, &old_session, false);
+            }
+            let session = ConversationSession {
+                id: session_id.clone(),
+                turns: Vec::new(),
+                pending_turn: None,
+                draft_turn_id: None,
+                draft_assistant_response: String::new(),
+                draft_tool_calls: Vec::new(),
+                draft_status: "idle".to_string(),
+                draft_warning: None,
+                draft_web_search_enabled: None,
+                system_prompt_mode: prompt_mode.clone(),
+                target_hwnd,
+                created_at: std::time::Instant::now(),
+            };
+            *lock = Some(session);
+        }
+
+        show_result_panel_window(&app).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let turn_id = new_assistant_turn_id();
+        let web_search_preference = WebSearchPreference::UseConfig;
+        let search_config = load_search_runtime_config();
+        let web_search_enabled = resolve_pending_web_search_enabled(
+            &processor,
+            &prompt_mode,
+            web_search_preference,
+            &search_config,
+        );
+        let pending_payload = TurnPendingPayload {
+            turn_id: turn_id.clone(),
+            user_instruction: user_instruction.clone(),
+            selected_text: selected_text.clone(),
+            has_selection: selected_text.is_some(),
         };
 
-        let llm_time_ms = llm_start.elapsed().as_millis() as u64;
+        if state
+            .is_assistant_processing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            tracing::warn!("AI 助手: 已有请求在处理中，忽略新会话触发");
+            return;
+        }
+
+        if !set_conversation_pending(
+            &state,
+            &session_id,
+            &turn_id,
+            pending_payload.clone(),
+            web_search_enabled,
+        ) {
+            tracing::warn!("AI 助手: 新会话 pending 写入失败，会话已变化");
+            state.is_assistant_processing.store(false, Ordering::SeqCst);
+            return;
+        }
+        let _ = app.emit("assistant_turn_pending", pending_payload);
+
+        // 调用 LLM（首轮统一走 agentic process_turn）
+        let _ = app.emit("post_processing", "assistant");
+        let cancel_token = register_assistant_cancel_token(&state);
+        let stream_app = app.clone();
+        let stream_session_id = session_id.clone();
+        let stream_turn_id = turn_id.clone();
+
+        let result = processor
+            .process_turn(
+                &[],
+                &user_instruction,
+                selected_text.as_deref(),
+                &prompt_mode,
+                Some(search_config),
+                web_search_preference,
+                cancel_token.clone(),
+                move |event| {
+                    emit_and_record_assistant_stream_event(
+                        &stream_app,
+                        &stream_session_id,
+                        &stream_turn_id,
+                        event,
+                    )
+                },
+            )
+            .await;
 
         match result {
-            Ok(response_text) => {
-                let turn = ConversationTurn {
-                    user_instruction: user_instruction.clone(),
-                    selected_text: selected_text.clone(),
-                    assistant_response: response_text,
+            Ok(outcome) => {
+                let turn = turn_from_outcome(
+                    user_instruction.clone(),
+                    selected_text.clone(),
                     asr_time_ms,
-                    llm_time_ms,
-                };
+                    outcome,
+                );
 
-                let session_id = uuid::Uuid::new_v4().to_string();
-
-                // 创建 session 并存入 AppState
-                {
-                    let mut lock = state.conversation_session.lock().unwrap();
-                    // 安全清理：如果有旧会话未关闭，补发历史事件
-                    if let Some(old_session) = lock.take() {
-                        tracing::warn!(
-                            "AI 助手: 新会话覆盖了旧会话 (id={}), 补发完成事件",
-                            old_session.id
-                        );
-                        emit_conversation_history(&app, &old_session, false);
-                    }
-                    let session = ConversationSession {
-                        id: session_id.clone(),
-                        turns: vec![turn.clone()],
-                        system_prompt_mode: prompt_mode,
-                        target_hwnd,
-                        created_at: std::time::Instant::now(),
-                    };
-                    *lock = Some(session);
+                if !push_completed_turn_if_active(&state, &session_id, &turn_id, turn.clone()) {
+                    tracing::warn!(
+                        "AI 助手: 首轮完成但会话已关闭、已取消或已被新请求替换，丢弃结果"
+                    );
+                    finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+                    return;
                 }
-
-                // 显示结果面板（居中定位，仅首轮）
-                show_result_panel_window(&app).await;
-                // 等待 WebView 激活后再发送事件
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
                 // 发送 turn_complete 事件
                 let payload = TurnCompletePayload {
-                    session_id,
-                    turn: ConversationTurnPayload {
-                        user_instruction: turn.user_instruction,
-                        selected_text: turn.selected_text,
-                        has_selection: selected_text.is_some(),
-                        assistant_response: turn.assistant_response,
-                        asr_time_ms: turn.asr_time_ms,
-                        llm_time_ms: turn.llm_time_ms,
-                    },
+                    session_id: session_id.clone(),
+                    turn: to_turn_payload(&turn),
                     is_followup: false,
                 };
                 let _ = app.emit("assistant_turn_complete", payload);
@@ -2663,15 +3191,25 @@ async fn handle_assistant_mode(
                 tracing::info!(
                     "AI 助手新会话创建完成 (ASR: {}ms, LLM: {}ms)",
                     asr_time_ms,
-                    llm_time_ms
+                    turn.llm_time_ms
                 );
             }
             Err(e) => {
                 let _ = recording_start_instant.lock().unwrap().take();
-                tracing::error!("AI 助手处理失败: {}", e);
-                let _ = app.emit("error", format!("AI 助手处理失败: {}", e));
+                if cancel_token.is_cancelled() {
+                    log_assistant_turn_cancelled("AI 助手处理", &e);
+                } else {
+                    tracing::error!("AI 助手处理失败: {}", e);
+                    let error_payload = TurnErrorPayload {
+                        session_id: session_id.clone(),
+                        error_message: format!("{}", e),
+                    };
+                    mark_conversation_error(&state, &session_id, &turn_id, format!("{}", e));
+                    let _ = app.emit("assistant_turn_error", error_payload);
+                }
             }
         }
+        finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
     }
 }
 
@@ -3338,6 +3876,14 @@ struct TranscriptionResult {
     inserted: Option<bool>, // 新增：是否已自动插入
     #[serde(skip_serializing_if = "Option::is_none")]
     tnl_diagnostics: Option<tnl::TnlDiagnostics>, // 可选：TNL 候选/替换诊断
+    #[serde(skip_serializing_if = "Option::is_none")]
+    citations: Option<Vec<search::SearchResultItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls_summary: Option<Vec<search::ToolCallSummary>>,
+    #[serde(default)]
+    web_searched: bool,
+    #[serde(default)]
+    search_failed: bool,
 }
 
 /// 处理转录结果（听写模式专用，使用 NormalPipeline）
@@ -3413,6 +3959,10 @@ async fn handle_transcription_result(
                 mode: Some(format!("{:?}", result.mode).to_lowercase()),
                 inserted: Some(result.inserted),
                 tnl_diagnostics: result.tnl_diagnostics,
+                citations: None,
+                tool_calls_summary: None,
+                web_searched: false,
+                search_failed: false,
             };
 
             // 发送完成事件
@@ -4158,7 +4708,7 @@ async fn dismiss_learning_suggestion(id: String) -> Result<(), String> {
 /// 粘贴 AI 助手最新回复到原窗口
 ///
 /// 取出会话，检查目标窗口是否有效：
-/// - 有效：隐藏面板 → 恢复焦点 → Ctrl+V 粘贴 → 触发学习观察
+/// - 有效：隐藏面板 → 恢复焦点 → Ctrl+V 粘贴
 /// - 无效：复制到剪贴板（降级）
 /// 粘贴 = 会话结束
 #[tauri::command]
@@ -4190,18 +4740,6 @@ async fn paste_latest_reply(
             // 粘贴文本
             clipboard_manager::insert_text_with_context(&result_text, has_selection, None)
                 .map_err(|e| format!("粘贴失败: {}", e))?;
-
-            // 触发学习观察
-            if let Ok((config, _)) = config::AppConfig::load() {
-                if config.learning_config.enabled {
-                    learning::coordinator::start_learning_observation(
-                        app.clone(),
-                        result_text.clone(),
-                        hwnd,
-                        config.learning_config,
-                    );
-                }
-            }
 
             // 发送完成事件（粘贴 = 已插入）
             emit_conversation_history(&app, &session, true);
@@ -4254,20 +4792,24 @@ async fn get_conversation_state(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<ConversationStatePayload>, String> {
     let lock = state.conversation_session.lock().unwrap();
-    Ok(lock.as_ref().map(|session| ConversationStatePayload {
-        session_id: session.id.clone(),
-        turns: session
-            .turns
-            .iter()
-            .map(|t| ConversationTurnPayload {
-                user_instruction: t.user_instruction.clone(),
-                selected_text: t.selected_text.clone(),
-                has_selection: t.selected_text.is_some(),
-                assistant_response: t.assistant_response.clone(),
-                asr_time_ms: t.asr_time_ms,
-                llm_time_ms: t.llm_time_ms,
-            })
-            .collect(),
+    let is_processing = state.is_assistant_processing.load(Ordering::SeqCst);
+    Ok(lock.as_ref().map(|session| {
+        let status = if is_processing && session.pending_turn.is_some() {
+            "processing".to_string()
+        } else {
+            session.draft_status.clone()
+        };
+        ConversationStatePayload {
+            session_id: session.id.clone(),
+            turns: session.turns.iter().map(to_turn_payload).collect(),
+            pending_turn: session.pending_turn.clone(),
+            draft_assistant_response: session.draft_assistant_response.clone(),
+            draft_tool_calls: session.draft_tool_calls.clone(),
+            is_processing,
+            status,
+            warning_message: session.draft_warning.clone(),
+            web_search_enabled: session.draft_web_search_enabled,
+        }
     }))
 }
 
@@ -4280,6 +4822,18 @@ async fn dismiss_conversation(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    if state.is_assistant_processing.load(Ordering::SeqCst) {
+        if let Some(token) = state.assistant_cancel_token.lock().unwrap().take() {
+            token.cancel();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while state.is_assistant_processing.load(Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        state.is_assistant_processing.store(false, Ordering::SeqCst);
+    }
     if let Some(session) = state.conversation_session.lock().unwrap().take() {
         emit_conversation_history(&app, &session, false);
     }
@@ -4294,6 +4848,7 @@ async fn dismiss_conversation(
 #[tauri::command]
 async fn send_text_question(
     text: String,
+    web_search_enabled: Option<bool>,
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
@@ -4327,74 +4882,150 @@ async fn send_text_question(
         return Err("正在处理中，请稍候".into());
     }
 
-    // 4. 发 pending 事件（前端立即显示用户消息 + loading）
+    // 4. 注册取消令牌并发 pending 事件（前端立即显示用户消息 + loading）
+    let turn_id = new_assistant_turn_id();
+    let cancel_token = register_assistant_cancel_token(&state);
+    let web_search_preference = match web_search_enabled {
+        Some(true) => WebSearchPreference::Enabled,
+        Some(false) => WebSearchPreference::Disabled,
+        None => WebSearchPreference::UseConfig,
+    };
+    let search_config = load_search_runtime_config();
+    let web_search_allowed = resolve_pending_web_search_enabled(
+        &processor,
+        &prompt_mode,
+        web_search_preference,
+        &search_config,
+    );
     let pending_payload = TurnPendingPayload {
+        turn_id: turn_id.clone(),
         user_instruction: text.clone(),
         selected_text: None,
         has_selection: false,
     };
+    if !set_conversation_pending(
+        &state,
+        &session_id,
+        &turn_id,
+        pending_payload.clone(),
+        web_search_allowed,
+    ) {
+        finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+        return Err("当前对话会话已变化，请重试".into());
+    }
     let _ = app.emit("assistant_turn_pending", pending_payload);
 
-    // 5. 调用 LLM（追问模式，asr_time_ms = 0）
-    let llm_start = std::time::Instant::now();
+    tokio::spawn(run_text_question_task(
+        app,
+        session_id,
+        turn_id,
+        history,
+        prompt_mode,
+        text,
+        processor,
+        cancel_token,
+        web_search_preference,
+    ));
+
+    Ok(())
+}
+
+async fn run_text_question_task(
+    app: AppHandle,
+    session_id: String,
+    turn_id: String,
+    history: Vec<ConversationTurn>,
+    prompt_mode: PromptMode,
+    text: String,
+    processor: AssistantProcessor,
+    cancel_token: CancellationToken,
+    web_search_preference: WebSearchPreference,
+) {
+    let search_config = load_search_runtime_config();
+    let stream_app = app.clone();
+    let stream_session_id = session_id.clone();
+    let stream_turn_id = turn_id.clone();
 
     let result = processor
-        .process_followup(&history, &text, None, &prompt_mode)
+        .process_turn(
+            &history,
+            &text,
+            None,
+            &prompt_mode,
+            Some(search_config),
+            web_search_preference,
+            cancel_token.clone(),
+            move |event| {
+                emit_and_record_assistant_stream_event(
+                    &stream_app,
+                    &stream_session_id,
+                    &stream_turn_id,
+                    event,
+                )
+            },
+        )
         .await;
 
-    let llm_time_ms = llm_start.elapsed().as_millis() as u64;
-
+    let state = app.state::<AppState>();
     match result {
-        Ok(response_text) => {
-            let turn = ConversationTurn {
-                user_instruction: text,
-                selected_text: None,
-                assistant_response: response_text,
-                asr_time_ms: 0,
-                llm_time_ms,
-            };
-
-            // 推入 session
-            {
-                let mut lock = state.conversation_session.lock().unwrap();
-                if let Some(ref mut session) = *lock {
-                    session.turns.push(turn.clone());
-                } else {
-                    // 用户在处理期间关闭了面板，丢弃结果
-                    tracing::warn!("AI 助手: 文本追问完成但会话已关闭，丢弃结果");
-                    state.is_assistant_processing.store(false, Ordering::SeqCst);
-                    return Ok(());
-                }
+        Ok(outcome) => {
+            let turn = turn_from_outcome(text, None, 0, outcome);
+            if push_completed_turn_if_active(&state, &session_id, &turn_id, turn.clone()) {
+                let payload = TurnCompletePayload {
+                    session_id: session_id.clone(),
+                    turn: to_turn_payload(&turn),
+                    is_followup: true,
+                };
+                let _ = app.emit("assistant_turn_complete", payload);
+                tracing::info!("AI 助手文本追问完成 (LLM: {}ms)", turn.llm_time_ms);
+            } else {
+                tracing::warn!(
+                    "AI 助手: 文本追问完成但会话已关闭、已取消或已被新请求替换，丢弃结果"
+                );
             }
-
-            // 发送 turn_complete 事件
-            let payload = TurnCompletePayload {
-                session_id,
-                turn: ConversationTurnPayload {
-                    user_instruction: turn.user_instruction,
-                    selected_text: turn.selected_text,
-                    has_selection: false,
-                    assistant_response: turn.assistant_response,
-                    asr_time_ms: 0,
-                    llm_time_ms: turn.llm_time_ms,
-                },
-                is_followup: true,
-            };
-            let _ = app.emit("assistant_turn_complete", payload);
-            tracing::info!("AI 助手文本追问完成 (LLM: {}ms)", llm_time_ms);
         }
         Err(e) => {
-            let error_payload = TurnErrorPayload {
-                session_id,
-                error_message: format!("{}", e),
-            };
-            let _ = app.emit("assistant_turn_error", error_payload);
-            tracing::error!("AI 助手文本追问失败: {}", e);
+            if cancel_token.is_cancelled() {
+                log_assistant_turn_cancelled("AI 助手文本追问", &e);
+            } else {
+                let message = format!("{}", e);
+                mark_conversation_error(&state, &session_id, &turn_id, message.clone());
+                let error_payload = TurnErrorPayload {
+                    session_id: session_id.clone(),
+                    error_message: message,
+                };
+                let _ = app.emit("assistant_turn_error", error_payload);
+                tracing::error!("AI 助手文本追问失败: {}", e);
+            }
         }
     }
 
+    finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+}
+
+#[tauri::command]
+async fn cancel_assistant_generation(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(token) = state.assistant_cancel_token.lock().unwrap().take() {
+        token.cancel();
+    }
     state.is_assistant_processing.store(false, Ordering::SeqCst);
 
+    let (session_id, turn_id, partial_content, tool_calls) =
+        mark_active_conversation_cancelled(&state);
+
+    let _ = app.emit(
+        "assistant_turn_cancelled",
+        serde_json::json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "partial_content": partial_content,
+            "tool_calls": tool_calls,
+            "message": "已停止生成",
+        }),
+    );
     Ok(())
 }
 
@@ -4547,6 +5178,13 @@ async fn test_llm_provider(
         .map_err(|e| format!("测试请求失败: {e}"))
 }
 
+#[tauri::command]
+async fn test_search_provider(provider: config::SearchProviderConfig) -> Result<u32, String> {
+    search::SearchRegistry::test_provider(provider)
+        .await
+        .map_err(|e| format!("搜索引擎连接测试失败: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 初始化日志
@@ -4626,6 +5264,7 @@ pub fn run() {
                 builtin_dictionary_updater_started: Arc::clone(&builtin_dictionary_updater_started),
                 conversation_session: Arc::new(Mutex::new(None)),
                 is_assistant_processing: Arc::new(AtomicBool::new(false)),
+                assistant_cancel_token: Arc::new(Mutex::new(None)),
             };
 
             let initial_config = load_persisted_config().unwrap_or_else(|e| {
@@ -4640,6 +5279,7 @@ pub fn run() {
             let initial_enable_post_process = initial_config.enable_llm_post_process;
             let initial_enable_dictionary_enhancement =
                 initial_config.enable_dictionary_enhancement;
+            let initial_enable_web_search = initial_config.assistant_config.enable_web_search;
             let initial_active_provider =
                 initial_config.asr_config.selection.active_provider.clone();
 
@@ -4684,6 +5324,14 @@ pub fn run() {
                 initial_enable_dictionary_enhancement,
                 None::<&str>,
             )?;
+            let web_search_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_TOGGLE_WEB_SEARCH,
+                "联网搜索 (Beta)",
+                true,
+                initial_enable_web_search,
+                None::<&str>,
+            )?;
 
             let asr_qwen_item = CheckMenuItem::with_id(
                 app,
@@ -4722,6 +5370,7 @@ pub fn run() {
                     &show_item,
                     &post_process_item,
                     &dictionary_enhancement_item,
+                    &web_search_item,
                     &asr_switch_submenu,
                     &quit_item,
                 ],
@@ -4729,6 +5378,7 @@ pub fn run() {
 
             let post_process_item_for_event = post_process_item.clone();
             let dictionary_enhancement_item_for_event = dictionary_enhancement_item.clone();
+            let web_search_item_for_event = web_search_item.clone();
             let asr_qwen_item_for_event = asr_qwen_item.clone();
             let asr_doubao_item_for_event = asr_doubao_item.clone();
             let asr_doubao_ime_item_for_event = asr_doubao_ime_item.clone();
@@ -4736,6 +5386,7 @@ pub fn run() {
             app.manage(TrayMenuState {
                 post_process_item: post_process_item.clone(),
                 dictionary_enhancement_item: dictionary_enhancement_item.clone(),
+                web_search_item: web_search_item.clone(),
                 asr_qwen_item: asr_qwen_item.clone(),
                 asr_doubao_item: asr_doubao_item.clone(),
                 asr_doubao_ime_item: asr_doubao_ime_item.clone(),
@@ -4767,6 +5418,13 @@ pub fn run() {
                             &dictionary_enhancement_item_for_event,
                         ) {
                             tracing::error!("托盘切换词库增强失败: {}", e);
+                            let _ = app.emit("error", e);
+                        }
+                    }
+                    TRAY_MENU_ID_TOGGLE_WEB_SEARCH => {
+                        if let Err(e) = toggle_web_search_from_tray(app, &web_search_item_for_event)
+                        {
+                            tracing::error!("托盘切换联网搜索失败: {}", e);
                             let _ = app.emit("error", e);
                         }
                     }
@@ -4899,9 +5557,11 @@ pub fn run() {
             copy_latest_reply,
             copy_full_conversation,
             dismiss_conversation,
+            cancel_assistant_generation,
             send_text_question,
             show_notification_window,
             test_llm_provider,
+            test_search_provider,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

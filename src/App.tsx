@@ -13,6 +13,7 @@ import type {
   DualHotkeyConfig,
   LearningConfig,
   LlmConfig,
+  SearchConfig,
   UsageStats,
 } from "./types";
 import type { AppPage } from "./pages/types";
@@ -21,6 +22,7 @@ import {
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_SEARCH_CONFIG,
 } from "./constants";
 import { loadUsageStats } from "./utils";
 import { TopStatusBar } from "./components/layout/TopStatusBar";
@@ -157,6 +159,7 @@ function App() {
   // hotkeyConfig 已迁移到 dualHotkeyConfig，不再单独使用
   const [dualHotkeyConfig, setDualHotkeyConfig] = useState<DualHotkeyConfig>(DEFAULT_DUAL_HOTKEY_CONFIG);
   const [assistantConfig, setAssistantConfig] = useState<AssistantConfig>(DEFAULT_ASSISTANT_CONFIG);
+  const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
 
   // 创建 ref 用于在 useHotkeyRecording 中访问 wrappedSaveImmediately
   const saveImmediatelyRef = useRef<((overrides?: ConfigOverrides) => Promise<void>) | null>(null);
@@ -306,6 +309,7 @@ function App() {
     setEnableDictionaryEnhancement,
     setLlmConfig,
     setAssistantConfig,
+    setSearchConfig,
     setLearningConfig,
     setEnableMuteOtherApps,
     setTheme,
@@ -366,6 +370,8 @@ function App() {
     setLlmConfig,
     assistantConfig,
     setAssistantConfig,
+    searchConfig,
+    setSearchConfig,
     asrConfig,
     dualHotkeyConfig,
     setDualHotkeyConfig,
@@ -596,6 +602,7 @@ function App() {
       enableDictionaryEnhancement,
       llmConfig,
       assistantConfig,
+      searchConfig,
       enableMuteOtherApps,
       dictionary,
       builtinDictionaryDomains,
@@ -633,7 +640,7 @@ function App() {
       }
       // 失败时不更新基准，下次相同配置会重试
     });
-  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
+  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, searchConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
 
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
@@ -668,7 +675,26 @@ function App() {
     autoSaveTimerRef.current = window.setTimeout(() => {
       if (statusRef.current === "recording" || statusRef.current === "transcribing") return;
       console.log("[App.tsx] debounce 到期，执行 handleSaveConfig");
-      void handleSaveConfigRef.current();
+      if (syncTimeoutRef.current) {
+        window.clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      setSyncStatus("syncing");
+      void (async () => {
+        try {
+          await handleSaveConfigRef.current();
+          setSyncStatus("success");
+          syncTimeoutRef.current = window.setTimeout(() => {
+            setSyncStatus("idle");
+          }, 1500);
+        } catch (err) {
+          console.error("[App.tsx] debounce 保存配置失败:", err);
+          setSyncStatus("error");
+          syncTimeoutRef.current = window.setTimeout(() => {
+            setSyncStatus("idle");
+          }, 2000);
+        }
+      })();
     }, 900);
 
     return () => {
@@ -681,6 +707,7 @@ function App() {
     enableDictionaryEnhancement,
     llmConfig,
     assistantConfig,
+    searchConfig,
     dictionary,
     builtinDictionaryDomains,
     enableMuteOtherApps,
@@ -785,6 +812,8 @@ function App() {
           <AssistantPage
             assistantConfig={assistantConfig}
             setAssistantConfig={setAssistantConfig}
+            searchConfig={searchConfig}
+            setSearchConfig={setSearchConfig}
             sharedConfig={llmConfig.shared}
             onNavigateToModels={() => setActivePage("models")}
             isRunning={isConfigLocked}

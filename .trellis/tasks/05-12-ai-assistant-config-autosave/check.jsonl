@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Verify frontend conventions and scope."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Review component behavior, accessibility, and interaction patterns."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Quality gate for frontend changes."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check TypeScript config typing."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify config round-trip and IPC boundary assumptions."}

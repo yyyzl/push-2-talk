@@ -6,10 +6,12 @@
 // （如 OpenAI、智谱 GLM、DeepSeek、通义千问等）
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 // ============================================================================
 // 消息类型定义
@@ -21,6 +23,7 @@ pub enum Role {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 impl Role {
@@ -29,6 +32,7 @@ impl Role {
             Role::System => "system",
             Role::User => "user",
             Role::Assistant => "assistant",
+            Role::Tool => "tool",
         }
     }
 }
@@ -38,6 +42,9 @@ impl Role {
 pub struct Message {
     pub role: Role,
     pub content: String,
+    pub tool_call_id: Option<String>,
+    pub name: Option<String>,
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 impl Message {
@@ -45,6 +52,9 @@ impl Message {
         Self {
             role: Role::System,
             content: content.into(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
         }
     }
 
@@ -52,6 +62,9 @@ impl Message {
         Self {
             role: Role::User,
             content: content.into(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
         }
     }
 
@@ -59,8 +72,112 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
         }
     }
+
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: Some(tool_calls),
+        }
+    }
+
+    pub fn tool(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_call_id: Some(tool_call_id.into()),
+            name: Some(name.into()),
+            tool_calls: None,
+        }
+    }
+
+    fn to_openai_json(&self) -> Value {
+        let mut value = serde_json::json!({
+            "role": self.role.as_str(),
+            "content": self.content
+        });
+
+        if let Some(tool_call_id) = &self.tool_call_id {
+            value["tool_call_id"] = Value::String(tool_call_id.clone());
+        }
+        if let Some(name) = &self.name {
+            value["name"] = Value::String(name.clone());
+        }
+        if let Some(tool_calls) = &self.tool_calls {
+            value["tool_calls"] = serde_json::to_value(tool_calls).unwrap_or(Value::Null);
+        }
+
+        value
+    }
+}
+
+// ============================================================================
+// Tool calling + streaming 类型
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolFunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: ToolFunctionCall,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolFunctionDefinition,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunctionDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamToolCallDelta {
+    pub index: usize,
+    pub id: Option<String>,
+    pub call_type: Option<String>,
+    pub function_name: Option<String>,
+    pub function_arguments_delta: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamChunk {
+    pub delta_content: Option<String>,
+    pub delta_tool_calls: Vec<StreamToolCallDelta>,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatStreamResponse {
+    pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub finish_reason: Option<String>,
 }
 
 // ============================================================================
@@ -202,15 +319,7 @@ impl OpenAiClient {
         }
 
         // 构建 OpenAI 兼容格式的消息
-        let messages_json: Vec<Value> = messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role.as_str(),
-                    "content": m.content
-                })
-            })
-            .collect();
+        let messages_json: Vec<Value> = messages.iter().map(Message::to_openai_json).collect();
 
         let request_body = serde_json::json!({
             "model": self.config.model,
@@ -282,6 +391,275 @@ impl OpenAiClient {
         let messages = vec![Message::system(system_prompt), Message::user(user_message)];
         self.chat(&messages, options).await
     }
+
+    /// OpenAI Chat Completions SSE streaming 调用。
+    ///
+    /// 保留 `chat()` 的非 streaming 行为给润色和学习链路使用；AI 助手工具调用走本接口。
+    /// reqwest 0.11 没有 per-read timeout，这里用 `tokio::time::timeout` 包裹每个 chunk。
+    pub async fn chat_stream<F>(
+        &self,
+        messages: &[Message],
+        options: ChatOptions,
+        tools: Option<Vec<ToolDefinition>>,
+        cancel_token: CancellationToken,
+        mut on_chunk: F,
+    ) -> Result<ChatStreamResponse>
+    where
+        F: FnMut(StreamChunk) + Send,
+    {
+        if messages.is_empty() {
+            return Ok(ChatStreamResponse::default());
+        }
+
+        let messages_json: Vec<Value> = messages.iter().map(Message::to_openai_json).collect();
+        let mut request_body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages_json,
+            "max_tokens": options.max_tokens,
+            "temperature": options.temperature,
+            "stream": true
+        });
+
+        if let Some(tools) = tools {
+            if !tools.is_empty() {
+                request_body["tools"] = serde_json::to_value(tools)?;
+                request_body["tool_choice"] = Value::String("auto".to_string());
+            }
+        }
+
+        tracing::info!(
+            "[DEBUG] OpenAI stream 请求: endpoint={}, model={}, api_key_len={}, max_tokens={}, temperature={}",
+            self.config.endpoint,
+            self.config.model,
+            self.config.api_key.len(),
+            options.max_tokens,
+            options.temperature
+        );
+
+        let request = self
+            .client
+            .post(&self.config.endpoint)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request_body);
+
+        let response = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                anyhow::bail!("AI 助手生成已取消");
+            }
+            response = request.send() => response?,
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    anyhow::bail!("AI 助手生成已取消");
+                }
+                text = response.text() => text.unwrap_or_default(),
+            };
+            anyhow::bail!("OpenAI API 请求失败 ({}): {}", status, text);
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut chunks = Vec::new();
+        let read_timeout = Duration::from_secs(self.config.timeout_secs.unwrap_or(30).max(1));
+
+        loop {
+            let next = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    anyhow::bail!("AI 助手生成已取消");
+                }
+                next = tokio::time::timeout(read_timeout, stream.next()) => next,
+            };
+
+            let Some(item) = next.map_err(|_| anyhow::anyhow!("OpenAI stream 读取超时"))?
+            else {
+                break;
+            };
+
+            let bytes = item?;
+            let text = String::from_utf8_lossy(&bytes);
+            buffer.push_str(&text);
+
+            while let Some(event) = pop_next_sse_event(&mut buffer) {
+                if let Some(chunk) = parse_sse_event(&event)? {
+                    on_chunk(chunk.clone());
+                    chunks.push(chunk);
+                }
+            }
+        }
+
+        if !buffer.trim().is_empty() {
+            if let Some(chunk) = parse_sse_event(&buffer)? {
+                on_chunk(chunk.clone());
+                chunks.push(chunk);
+            }
+        }
+
+        Ok(accumulate_stream_chunks(&chunks))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn parse_sse_events(input: &str) -> Result<Vec<StreamChunk>> {
+    let normalized = input.replace("\r\n", "\n");
+    let mut chunks = Vec::new();
+
+    for event in normalized.split("\n\n") {
+        if let Some(chunk) = parse_sse_event(event)? {
+            chunks.push(chunk);
+        }
+    }
+
+    Ok(chunks)
+}
+
+fn pop_next_sse_event(buffer: &mut String) -> Option<String> {
+    let lf = buffer.find("\n\n").map(|pos| (pos, 2));
+    let crlf = buffer.find("\r\n\r\n").map(|pos| (pos, 4));
+    let (pos, delimiter_len) = match (lf, crlf) {
+        (Some(lf), Some(crlf)) => {
+            if lf.0 < crlf.0 {
+                lf
+            } else {
+                crlf
+            }
+        }
+        (Some(lf), None) => lf,
+        (None, Some(crlf)) => crlf,
+        (None, None) => return None,
+    };
+
+    let event = buffer[..pos].to_string();
+    let next = buffer[pos + delimiter_len..].to_string();
+    *buffer = next;
+    Some(event)
+}
+
+fn parse_sse_event(event: &str) -> Result<Option<StreamChunk>> {
+    let mut data_lines = Vec::new();
+    for line in event.lines() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start());
+        }
+    }
+
+    if data_lines.is_empty() {
+        return Ok(None);
+    }
+
+    let data = data_lines.join("\n");
+    if data.trim() == "[DONE]" {
+        return Ok(None);
+    }
+
+    let payload: Value = serde_json::from_str(&data).map_err(|e| {
+        anyhow::anyhow!(
+            "OpenAI stream 返回非 JSON 数据: {} (片段: {})",
+            e,
+            &data[..data.len().min(120)]
+        )
+    })?;
+
+    let Some(choice) = payload["choices"].as_array().and_then(|arr| arr.first()) else {
+        return Ok(None);
+    };
+
+    let delta = &choice["delta"];
+    let delta_content = delta["content"].as_str().map(ToString::to_string);
+    let finish_reason = choice["finish_reason"].as_str().map(ToString::to_string);
+    let mut delta_tool_calls = Vec::new();
+
+    if let Some(calls) = delta["tool_calls"].as_array() {
+        for call in calls {
+            let index = call["index"].as_u64().unwrap_or(0) as usize;
+            delta_tool_calls.push(StreamToolCallDelta {
+                index,
+                id: call["id"].as_str().map(ToString::to_string),
+                call_type: call["type"].as_str().map(ToString::to_string),
+                function_name: call["function"]["name"].as_str().map(ToString::to_string),
+                function_arguments_delta: call["function"]["arguments"]
+                    .as_str()
+                    .map(ToString::to_string),
+            });
+        }
+    }
+
+    Ok(Some(StreamChunk {
+        delta_content,
+        delta_tool_calls,
+        finish_reason,
+    }))
+}
+
+pub(crate) fn accumulate_stream_chunks(chunks: &[StreamChunk]) -> ChatStreamResponse {
+    #[derive(Default)]
+    struct PartialToolCall {
+        id: Option<String>,
+        call_type: Option<String>,
+        function_name: Option<String>,
+        arguments: String,
+    }
+
+    let mut content = String::new();
+    let mut finish_reason = None;
+    let mut partials: Vec<PartialToolCall> = Vec::new();
+
+    for chunk in chunks {
+        if let Some(delta) = &chunk.delta_content {
+            content.push_str(delta);
+        }
+        if let Some(reason) = &chunk.finish_reason {
+            finish_reason = Some(reason.clone());
+        }
+
+        for delta in &chunk.delta_tool_calls {
+            if partials.len() <= delta.index {
+                partials.resize_with(delta.index + 1, PartialToolCall::default);
+            }
+            let partial = &mut partials[delta.index];
+            if let Some(id) = &delta.id {
+                partial.id = Some(id.clone());
+            }
+            if let Some(call_type) = &delta.call_type {
+                partial.call_type = Some(call_type.clone());
+            }
+            if let Some(name) = &delta.function_name {
+                partial.function_name = Some(name.clone());
+            }
+            if let Some(arguments) = &delta.function_arguments_delta {
+                partial.arguments.push_str(arguments);
+            }
+        }
+    }
+
+    let tool_calls = partials
+        .into_iter()
+        .filter_map(|partial| {
+            let id = partial.id?;
+            let name = partial.function_name?;
+            Some(ToolCall {
+                id,
+                call_type: partial.call_type.unwrap_or_else(|| "function".to_string()),
+                function: ToolFunctionCall {
+                    name,
+                    arguments: partial.arguments,
+                },
+            })
+        })
+        .collect();
+
+    ChatStreamResponse {
+        content,
+        tool_calls,
+        finish_reason,
+    }
 }
 
 // ============================================================================
@@ -335,5 +713,65 @@ mod tests {
         );
         assert_eq!(config.api_key, "sk-xxx");
         assert_eq!(config.model, "gpt-4");
+    }
+
+    #[test]
+    fn test_parse_sse_content_stream() {
+        let fixture = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"好\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let chunks = parse_sse_events(fixture).expect("SSE fixture 必须可解析");
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].delta_content.as_deref(), Some("你"));
+        assert_eq!(chunks[1].delta_content.as_deref(), Some("好"));
+        assert_eq!(chunks[1].finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn test_parse_sse_tool_call_stream() {
+        let fixture = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"search_web\",\"arguments\":\"{\\\"query\\\":\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"OpenAI news\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let chunks = parse_sse_events(fixture).expect("SSE fixture 必须可解析");
+        let response = accumulate_stream_chunks(&chunks);
+
+        assert_eq!(response.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call_1");
+        assert_eq!(response.tool_calls[0].function.name, "search_web");
+        assert_eq!(
+            response.tool_calls[0].function.arguments,
+            "{\"query\":\"OpenAI news\"}"
+        );
+    }
+
+    #[test]
+    fn test_pop_next_sse_event_supports_crlf_and_lf_boundaries() {
+        let mut buffer = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你\"},\"finish_reason\":null}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"好\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\r\n\r\n",
+        )
+        .to_string();
+        let mut chunks = Vec::new();
+
+        while let Some(event) = pop_next_sse_event(&mut buffer) {
+            if let Some(chunk) = parse_sse_event(&event).expect("SSE event 必须可解析") {
+                chunks.push(chunk);
+            }
+        }
+
+        assert!(buffer.is_empty());
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].delta_content.as_deref(), Some("你"));
+        assert_eq!(chunks[1].delta_content.as_deref(), Some("好"));
+        assert_eq!(chunks[1].finish_reason.as_deref(), Some("stop"));
     }
 }

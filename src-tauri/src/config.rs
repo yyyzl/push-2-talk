@@ -576,6 +576,9 @@ pub struct AppConfig {
     /// AI 助手配置（新增）
     #[serde(default)]
     pub assistant_config: AssistantConfig,
+    /// 联网搜索配置
+    #[serde(default)]
+    pub search_config: SearchConfig,
     /// 自动词库学习配置
     #[serde(default)]
     pub learning_config: LearningConfig,
@@ -1018,11 +1021,7 @@ impl LlmConfig {
     /// Note: `resolve_with_feature` is shared by polishing/assistant/learning, so preset awareness
     /// is contained here in `LlmConfig` rather than leaking the preset concept to the generic method.
     pub fn resolve_polishing(&self) -> ResolvedLlmClientConfig {
-        if let Some(preset) = self
-            .presets
-            .iter()
-            .find(|p| p.id == self.active_preset_id)
-        {
+        if let Some(preset) = self.presets.iter().find(|p| p.id == self.active_preset_id) {
             if let Some(provider_id) = preset.provider_id.as_deref() {
                 if let Some(provider) = self.shared.get_provider(provider_id) {
                     let model = preset
@@ -1191,6 +1190,65 @@ pub struct AssistantConfig {
     /// 文本处理模式系统提示词（有选中文本时使用）
     #[serde(default = "default_assistant_text_processing_prompt")]
     pub text_processing_system_prompt: String,
+    /// AI 助手是否允许联网搜索
+    #[serde(default)]
+    pub enable_web_search: bool,
+    /// function calling 最多工具循环次数
+    #[serde(default = "default_web_search_max_loops")]
+    pub web_search_max_loops: u32,
+    /// 文本处理模式是否也允许联网搜索
+    #[serde(default)]
+    pub web_search_in_text_mode: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchProviderType {
+    Tavily,
+    Bocha,
+    Serper,
+    Searxng,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchProviderConfig {
+    pub id: String,
+    pub provider_type: SearchProviderType,
+    pub display_name: String,
+    #[serde(default = "default_search_provider_enabled")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basic_auth_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basic_auth_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serper_gl: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serper_hl: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serper_tbs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searxng_language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searxng_time_range: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchConfig {
+    #[serde(default)]
+    pub providers: Vec<SearchProviderConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_provider_id: Option<String>,
+    #[serde(default = "default_search_max_results")]
+    pub max_results: u32,
+    #[serde(default = "default_search_timeout_secs")]
+    pub timeout_secs: u32,
+    #[serde(default = "default_search_enable_fallback")]
+    pub enable_fallback: bool,
 }
 
 fn default_smart_command_endpoint() -> String {
@@ -1213,6 +1271,26 @@ fn default_assistant_text_processing_prompt() -> String {
     DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string()
 }
 
+fn default_web_search_max_loops() -> u32 {
+    3
+}
+
+fn default_search_provider_enabled() -> bool {
+    true
+}
+
+fn default_search_max_results() -> u32 {
+    5
+}
+
+fn default_search_timeout_secs() -> u32 {
+    6
+}
+
+fn default_search_enable_fallback() -> bool {
+    true
+}
+
 impl Default for SmartCommandConfig {
     fn default() -> Self {
         Self {
@@ -1232,6 +1310,21 @@ impl Default for AssistantConfig {
             llm: LlmFeatureConfig::default(),
             qa_system_prompt: default_assistant_qa_prompt(),
             text_processing_system_prompt: default_assistant_text_processing_prompt(),
+            enable_web_search: false,
+            web_search_max_loops: default_web_search_max_loops(),
+            web_search_in_text_mode: false,
+        }
+    }
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            providers: Vec::new(),
+            default_provider_id: None,
+            max_results: default_search_max_results(),
+            timeout_secs: default_search_timeout_secs(),
+            enable_fallback: default_search_enable_fallback(),
         }
     }
 }
@@ -1287,6 +1380,7 @@ impl AppConfig {
             llm_config: LlmConfig::default(),
             smart_command_config: SmartCommandConfig::default(),
             assistant_config: AssistantConfig::default(),
+            search_config: SearchConfig::default(),
             learning_config: LearningConfig::default(),
             tnl_config: TnlConfig::default(),
             close_action: None,
@@ -1540,6 +1634,9 @@ impl AppConfig {
                         },
                         qa_system_prompt: config.smart_command_config.system_prompt.clone(),
                         text_processing_system_prompt: default_assistant_text_processing_prompt(),
+                        enable_web_search: false,
+                        web_search_max_loops: default_web_search_max_loops(),
+                        web_search_in_text_mode: false,
                     };
                     config.smart_command_config.enabled = false;
                 }
@@ -1852,11 +1949,51 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{AsrConfig, AsrLanguageMode, LlmConfig, LlmPreset};
+    use super::{
+        AppConfig, AsrConfig, AsrLanguageMode, AssistantConfig, LlmConfig, LlmPreset, SearchConfig,
+    };
 
     #[test]
     fn asr_config_defaults_to_auto_language_mode() {
         assert_eq!(AsrConfig::default().language_mode, AsrLanguageMode::Auto);
+    }
+
+    #[test]
+    fn search_config_defaults_are_safe_for_legacy_configs() {
+        let cfg = SearchConfig::default();
+
+        assert!(cfg.providers.is_empty());
+        assert_eq!(cfg.default_provider_id, None);
+        assert_eq!(cfg.max_results, 5);
+        assert_eq!(cfg.timeout_secs, 6);
+        assert!(cfg.enable_fallback);
+    }
+
+    #[test]
+    fn assistant_web_search_defaults_to_off() {
+        let cfg = AssistantConfig::default();
+
+        assert!(!cfg.enable_web_search);
+        assert_eq!(cfg.web_search_max_loops, 3);
+        assert!(!cfg.web_search_in_text_mode);
+    }
+
+    #[test]
+    fn app_config_legacy_json_backfills_search_fields() {
+        let json = r#"{
+            "assistant_config": {
+                "enabled": true,
+                "llm": {"use_shared": true},
+                "qa_system_prompt": "qa",
+                "text_processing_system_prompt": "tp"
+            }
+        }"#;
+
+        let cfg: AppConfig = serde_json::from_str(json).expect("旧配置必须能反序列化");
+
+        assert!(!cfg.assistant_config.enable_web_search);
+        assert_eq!(cfg.assistant_config.web_search_max_loops, 3);
+        assert_eq!(cfg.search_config.max_results, 5);
     }
 
     // ============================================================================
@@ -1933,13 +2070,15 @@ mod tests {
             "system_prompt": "Old prompt"
         }"#;
 
-        let preset: LlmPreset = serde_json::from_str(legacy_json)
-            .expect("旧 JSON 必须能反序列化");
+        let preset: LlmPreset = serde_json::from_str(legacy_json).expect("旧 JSON 必须能反序列化");
 
         assert_eq!(preset.id, "polishing");
         assert_eq!(preset.name, "文本润色");
         assert_eq!(preset.system_prompt, "Old prompt");
-        assert_eq!(preset.provider_id, None, "旧 JSON 加载后 provider_id 必须为 None");
+        assert_eq!(
+            preset.provider_id, None,
+            "旧 JSON 加载后 provider_id 必须为 None"
+        );
         assert_eq!(preset.model, None, "旧 JSON 加载后 model 必须为 None");
     }
 

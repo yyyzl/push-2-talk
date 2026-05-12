@@ -1,4 +1,4 @@
-import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig } from '../types';
+import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig, SearchConfig } from '../types';
 
 // 按键显示名称映射
 export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
@@ -102,7 +102,18 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
 注意：
 - 只输出处理后的结果，不要输出任何解释
 - 保持原文的格式和结构（除非用户要求改变）
-- 如果指令不明确，按最合理的方式处理`
+- 如果指令不明确，按最合理的方式处理`,
+  enable_web_search: false,
+  web_search_max_loops: 3,
+  web_search_in_text_mode: false
+};
+
+export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
+  providers: [],
+  default_provider_id: null,
+  max_results: 5,
+  timeout_secs: 6,
+  enable_fallback: true
 };
 
 // ASR 服务商元数据

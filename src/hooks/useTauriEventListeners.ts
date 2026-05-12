@@ -13,6 +13,7 @@ import type {
   HistoryRecord,
   LearningConfig,
   LlmConfig,
+  SearchConfig,
   TranscriptionResult,
   UsageStats,
 } from "../types";
@@ -52,6 +53,7 @@ export type UseTauriEventListenersParams = {
   setEnableDictionaryEnhancement?: React.Dispatch<React.SetStateAction<boolean>>;
   setLlmConfig?: React.Dispatch<React.SetStateAction<LlmConfig>>;
   setAssistantConfig?: React.Dispatch<React.SetStateAction<AssistantConfig>>;
+  setSearchConfig?: React.Dispatch<React.SetStateAction<SearchConfig>>;
   setLearningConfig?: React.Dispatch<React.SetStateAction<LearningConfig>>;
   setEnableMuteOtherApps?: React.Dispatch<React.SetStateAction<boolean>>;
   setTheme?: React.Dispatch<React.SetStateAction<string>>;
@@ -92,6 +94,7 @@ export function useTauriEventListeners({
   setEnableDictionaryEnhancement,
   setLlmConfig,
   setAssistantConfig,
+  setSearchConfig,
   setLearningConfig,
   setEnableMuteOtherApps,
   setTheme,
@@ -216,6 +219,10 @@ export function useTauriEventListeners({
             success: true,
             errorMessage: null,
             tnlDiagnostics: result.tnl_diagnostics,
+            citations: result.citations,
+            toolCallsSummary: result.tool_calls_summary,
+            webSearched: result.web_searched ?? false,
+            searchFailed: result.search_failed ?? false,
           });
         }))) return;
 
@@ -258,6 +265,7 @@ export function useTauriEventListeners({
           setEnableDictionaryEnhancement?.(config.enable_dictionary_enhancement ?? true);
           setLlmConfig?.(config.llm_config || llmConfigRef.current);
           if (config.assistant_config) setAssistantConfig?.(config.assistant_config);
+          if (config.search_config) setSearchConfig?.(config.search_config);
           setLearningConfig?.(
             normalizeLearningConfig(config.learning_config || DEFAULT_LEARNING_CONFIG),
           );
@@ -352,6 +360,7 @@ export function useTauriEventListeners({
     setEnableDictionaryEnhancement,
     setLlmConfig,
     setAssistantConfig,
+    setSearchConfig,
     setLearningConfig,
     setEnableMuteOtherApps,
     setTheme,

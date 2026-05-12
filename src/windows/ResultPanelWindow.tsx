@@ -13,6 +13,9 @@ import {
   Loader2,
   AlertTriangle,
   SendHorizontal,
+  Globe2,
+  Search,
+  Square,
 } from "lucide-react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import type {
@@ -21,12 +24,15 @@ import type {
   TurnPendingPayload,
   TurnCompletePayload,
   TurnErrorPayload,
+  TurnDeltaPayload,
+  AssistantToolCall,
 } from "../types/assistant-result";
 import {
   truncateText,
   formatTimingDisplay,
 } from "../types/assistant-result";
 import type { AppConfig } from "../types";
+import { resolveInitialWebSearchEnabled } from "../utils/searchRuntime";
 
 /** 选中文本摘要最大长度 */
 const SELECTED_TEXT_MAX_LENGTH = 100;
@@ -45,6 +51,15 @@ const startDrag = () => {
   getCurrentWindow().startDragging().catch(() => {});
 };
 
+const isSameConversationTurn = (
+  left: ConversationTurn | undefined,
+  right: ConversationTurn,
+) =>
+  !!left &&
+  left.user_instruction === right.user_instruction &&
+  left.assistant_response === right.assistant_response &&
+  left.llm_time_ms === right.llm_time_ms;
+
 export default function ResultPanelWindow() {
   // ==========================================
   // State
@@ -53,8 +68,14 @@ export default function ResultPanelWindow() {
   const [pendingTurn, setPendingTurn] = useState<TurnPendingPayload | null>(
     null,
   );
+  const [streamingResponse, setStreamingResponse] = useState("");
+  const [pendingToolCalls, setPendingToolCalls] = useState<AssistantToolCall[]>([]);
+  const [conversationStatus, setConversationStatus] = useState<string>("idle");
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [theme, setTheme] = useState("light");
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<"latest" | "all" | false>(
     false,
   );
@@ -62,8 +83,20 @@ export default function ResultPanelWindow() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeTurnIdRef = useRef<string | null>(null);
 
   const isDark = theme === "dark";
+  const isProcessing = conversationStatus === "processing" && !!pendingTurn;
+  const isCancelled = conversationStatus === "cancelled" && !!pendingTurn;
+
+  useEffect(() => {
+    activeTurnIdRef.current = activeTurnId;
+  }, [activeTurnId]);
+
+  const isCurrentTurnEvent = useCallback((turnId?: string | null) => {
+    const current = activeTurnIdRef.current;
+    return !turnId || !current || turnId === current;
+  }, []);
 
   // ==========================================
   // 初始化主题
@@ -72,6 +105,7 @@ export default function ResultPanelWindow() {
     invoke<AppConfig>("load_config")
       .then((config) => {
         setTheme(config.theme || "light");
+        setWebSearchEnabled(resolveInitialWebSearchEnabled(config));
       })
       .catch(console.error);
   }, []);
@@ -133,10 +167,19 @@ export default function ResultPanelWindow() {
             setTurns([turn]);
           } else {
             // 追问：追加
-            setTurns((prev) => [...prev, turn]);
+            setTurns((prev) =>
+              isSameConversationTurn(prev[prev.length - 1], turn)
+                ? prev
+                : [...prev, turn],
+            );
           }
           setPendingTurn(null);
+          setActiveTurnId(null);
+          setStreamingResponse("");
+          setPendingToolCalls([]);
+          setConversationStatus("idle");
           setErrorMessage(null);
+          setWarningMessage(null);
           setCopyFeedback(false);
         },
       );
@@ -149,7 +192,12 @@ export default function ResultPanelWindow() {
           if (cancelled) return;
           console.log("[ResultPanel] turn_pending (push)");
           setPendingTurn(event.payload);
+          setActiveTurnId(event.payload.turn_id ?? null);
+          setStreamingResponse("");
+          setPendingToolCalls([]);
+          setConversationStatus("processing");
           setErrorMessage(null);
+          setWarningMessage(null);
         },
       );
       if (cancelled) { u2(); return; }
@@ -162,14 +210,103 @@ export default function ResultPanelWindow() {
           console.log("[ResultPanel] turn_error (push):", event.payload);
           setErrorMessage(event.payload.error_message);
           setPendingTurn(null);
+          setActiveTurnId(null);
+          setStreamingResponse("");
+          setPendingToolCalls([]);
+          setConversationStatus("error");
+          setWarningMessage(null);
         },
       );
       if (cancelled) { u3(); return; }
       cleanups.push(u3);
 
+      const uDelta = await listen<TurnDeltaPayload>(
+        "assistant_turn_delta",
+        (event) => {
+          if (cancelled) return;
+          if (!isCurrentTurnEvent(event.payload.turn_id)) return;
+          if (event.payload.draft_assistant_response !== undefined) {
+            setStreamingResponse(event.payload.draft_assistant_response);
+          } else {
+            setStreamingResponse((prev) => prev + event.payload.content_delta);
+          }
+        },
+      );
+      if (cancelled) { uDelta(); return; }
+      cleanups.push(uDelta);
+
+      const uToolStarted = await listen<{
+        turn_id?: string;
+        id: string;
+        name: string;
+        query: string;
+        round: number;
+      }>("assistant_tool_call_started", (event) => {
+        if (cancelled) return;
+        if (!isCurrentTurnEvent(event.payload.turn_id)) return;
+        const started: AssistantToolCall = {
+          id: event.payload.id,
+          name: event.payload.name,
+          query: event.payload.query,
+          status: "searching",
+          results: [],
+          elapsed_ms: 0,
+          round: event.payload.round,
+        };
+        setPendingToolCalls((prev) => [...prev.filter((item) => item.id !== started.id), started]);
+      });
+      if (cancelled) { uToolStarted(); return; }
+      cleanups.push(uToolStarted);
+
+      const uToolFinished = await listen<{ turn_id?: string; call: AssistantToolCall }>(
+        "assistant_tool_call_finished",
+        (event) => {
+          if (cancelled) return;
+          if (!isCurrentTurnEvent(event.payload.turn_id)) return;
+          setPendingToolCalls((prev) => [
+            ...prev.filter((item) => item.id !== event.payload.call.id),
+            event.payload.call,
+          ]);
+        },
+      );
+      if (cancelled) { uToolFinished(); return; }
+      cleanups.push(uToolFinished);
+
+      const uWarning = await listen<{ turn_id?: string; message: string }>(
+        "assistant_turn_warning",
+        (event) => {
+          if (cancelled) return;
+          if (!isCurrentTurnEvent(event.payload.turn_id)) return;
+          setWarningMessage(event.payload.message);
+        },
+      );
+      if (cancelled) { uWarning(); return; }
+      cleanups.push(uWarning);
+
+      const uCancelled = await listen<{
+        turn_id?: string;
+        partial_content?: string;
+        tool_calls?: AssistantToolCall[];
+        message?: string;
+      }>("assistant_turn_cancelled", (event) => {
+        if (cancelled) return;
+        if (!isCurrentTurnEvent(event.payload.turn_id)) return;
+        setConversationStatus("cancelled");
+        if (event.payload.partial_content !== undefined) {
+          setStreamingResponse(event.payload.partial_content);
+        }
+        if (event.payload.tool_calls) {
+          setPendingToolCalls(event.payload.tool_calls);
+        }
+        setWarningMessage(event.payload.message ?? "已停止生成");
+      });
+      if (cancelled) { uCancelled(); return; }
+      cleanups.push(uCancelled);
+
       const u4 = await listen<AppConfig>("config_updated", (event) => {
         if (cancelled) return;
         setTheme(event.payload.theme || "light");
+        setWebSearchEnabled(resolveInitialWebSearchEnabled(event.payload));
       });
       if (cancelled) { u4(); return; }
       cleanups.push(u4);
@@ -187,17 +324,27 @@ export default function ResultPanelWindow() {
   // Poll 模式 — 解决隐藏 WebView 丢失 push 事件
   // ==========================================
   useEffect(() => {
-    // 已有 turns 说明 push 正常工作，无需 poll
-    if (turns.length > 0) return;
-
     const fetchState = async () => {
       try {
         const state = await invoke<ConversationStatePayload | null>(
           "get_conversation_state",
         );
-        if (state && state.turns.length > 0) {
+        if (state) {
           console.log("[ResultPanel] 拉取到会话 (poll):", state.session_id);
+          const nextStatus =
+            state.status ?? (state.is_processing ? "processing" : "idle");
+          const stateMessage = state.warning_message ?? null;
           setTurns(state.turns);
+          setPendingTurn(state.pending_turn ?? null);
+          setActiveTurnId(state.pending_turn?.turn_id ?? null);
+          setStreamingResponse(state.draft_assistant_response ?? "");
+          setPendingToolCalls(state.draft_tool_calls ?? []);
+          setConversationStatus(nextStatus);
+          setErrorMessage(nextStatus === "error" ? stateMessage ?? "AI 助手处理失败" : null);
+          setWarningMessage(nextStatus === "error" ? null : stateMessage);
+          if (typeof state.web_search_enabled === "boolean") {
+            setWebSearchEnabled(state.web_search_enabled);
+          }
           setCopyFeedback(false);
         }
       } catch {
@@ -208,7 +355,7 @@ export default function ResultPanelWindow() {
     fetchState();
     const interval = setInterval(fetchState, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [turns.length]);
+  }, []);
 
   // ==========================================
   // 操作处理
@@ -246,38 +393,57 @@ export default function ResultPanelWindow() {
       await invoke("dismiss_conversation");
       setTurns([]);
       setPendingTurn(null);
+      setActiveTurnId(null);
+      setStreamingResponse("");
+      setPendingToolCalls([]);
+      setConversationStatus("idle");
       setErrorMessage(null);
+      setWarningMessage(null);
       setCopyFeedback(false);
     } catch (err) {
       console.error("[ResultPanel] 关闭失败:", err);
+    }
+  }, [isCurrentTurnEvent]);
+
+  const handleCancelGeneration = useCallback(async () => {
+    try {
+      await invoke("cancel_assistant_generation");
+    } catch (err) {
+      console.error("[ResultPanel] 停止生成失败:", err);
     }
   }, []);
 
   // ==========================================
   // 文本追问
   // ==========================================
-  const handleTextSend = useCallback(async (text: string) => {
+  const handleTextSend = useCallback(async (text: string): Promise<string | null> => {
     try {
-      await invoke("send_text_question", { text });
+      await invoke("send_text_question", { text, webSearchEnabled });
+      return null;
     } catch (err) {
       console.error("[ResultPanel] 文本追问失败:", err);
+      return typeof err === "string" ? err : "发送失败，请重试";
     }
-  }, []);
+  }, [webSearchEnabled]);
 
   // ==========================================
-  // 键盘快捷键：Esc = 关闭
+  // 键盘快捷键：生成中 Esc = 停止，空闲时 Esc = 关闭
   // ==========================================
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        handleDismiss();
+        if (isProcessing) {
+          void handleCancelGeneration();
+        } else {
+          handleDismiss();
+        }
       }
     };
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleDismiss]);
+  }, [handleCancelGeneration, handleDismiss, isProcessing]);
 
   // 清理定时器
   useEffect(() => {
@@ -289,7 +455,7 @@ export default function ResultPanelWindow() {
   // ==========================================
   // 无结果时的空状态
   // ==========================================
-  if (turns.length === 0 && !pendingTurn) {
+  if (turns.length === 0 && !pendingTurn && !errorMessage && !warningMessage) {
     return (
       <div
         onMouseDown={startDrag}
@@ -435,6 +601,8 @@ export default function ResultPanelWindow() {
                 response={turn.assistant_response}
                 asrTimeMs={turn.asr_time_ms}
                 llmTimeMs={turn.llm_time_ms}
+                searchTimeMs={turn.search_time_ms}
+                toolCalls={turn.tool_calls}
                 isDark={isDark}
               />
             </div>
@@ -452,12 +620,33 @@ export default function ResultPanelWindow() {
                 hasSelection={pendingTurn.has_selection}
                 isDark={isDark}
               />
-              <LoadingBubble isDark={isDark} />
+              {isCancelled && !streamingResponse && pendingToolCalls.length === 0 ? (
+                <CancelledBubble
+                  isDark={isDark}
+                  onRetry={() => {
+                    void handleTextSend(pendingTurn.user_instruction);
+                  }}
+                />
+              ) : streamingResponse || pendingToolCalls.length > 0 || isCancelled ? (
+                <AssistantBubble
+                  response={streamingResponse}
+                  asrTimeMs={0}
+                  llmTimeMs={0}
+                  searchTimeMs={null}
+                  toolCalls={pendingToolCalls}
+                  isDark={isDark}
+                  isStreaming={isProcessing}
+                  isCancelled={isCancelled}
+                />
+              ) : (
+                <LoadingBubble isDark={isDark} />
+              )}
             </div>
           )}
 
           {/* 错误气泡 */}
           {errorMessage && <ErrorBubble message={errorMessage} isDark={isDark} />}
+          {warningMessage && <WarningBubble message={warningMessage} isDark={isDark} />}
         </div>
 
         {/* ==========================================
@@ -500,7 +689,9 @@ export default function ResultPanelWindow() {
             ========================================== */}
         <TextInputBar
           isDark={isDark}
-          isProcessing={!!pendingTurn}
+          isProcessing={isProcessing}
+          webSearchEnabled={webSearchEnabled}
+          onToggleWebSearch={() => setWebSearchEnabled((prev) => !prev)}
           onSend={handleTextSend}
         />
 
@@ -519,39 +710,59 @@ export default function ResultPanelWindow() {
         >
           {/* 关闭按钮（次要） */}
           <button
-            onClick={handleDismiss}
+            onClick={isProcessing ? handleCancelGeneration : handleDismiss}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-all"
             style={{
-              border: isDark ? "1px solid #333" : "1px solid var(--sand)",
-              background: isDark ? "rgba(255,255,255,0.05)" : "white",
-              color: isDark ? "#ccc" : "var(--ink)",
+              border: isProcessing
+                ? "1px solid rgba(239,68,68,0.25)"
+                : isDark
+                  ? "1px solid #333"
+                  : "1px solid var(--sand)",
+              background: isProcessing
+                ? isDark
+                  ? "rgba(239,68,68,0.08)"
+                  : "rgba(239,68,68,0.05)"
+                : isDark
+                  ? "rgba(255,255,255,0.05)"
+                  : "white",
+              color: isProcessing ? "#dc2626" : isDark ? "#ccc" : "var(--ink)",
               cursor: "pointer",
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = isDark
-                ? "rgba(255,255,255,0.1)"
-                : "rgba(0,0,0,0.03)";
+                ? isProcessing
+                  ? "rgba(239,68,68,0.12)"
+                  : "rgba(255,255,255,0.1)"
+                : isProcessing
+                  ? "rgba(239,68,68,0.08)"
+                  : "rgba(0,0,0,0.03)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = isDark
-                ? "rgba(255,255,255,0.05)"
-                : "white";
+              e.currentTarget.style.background = isProcessing
+                ? isDark
+                  ? "rgba(239,68,68,0.08)"
+                  : "rgba(239,68,68,0.05)"
+                : isDark
+                  ? "rgba(255,255,255,0.05)"
+                  : "white";
             }}
           >
-            <X size={14} />
-            <span>关闭</span>
+            {isProcessing ? <Square size={14} /> : <X size={14} />}
+            <span>{isProcessing ? "停止生成" : "关闭"}</span>
           </button>
 
           {/* 复制全部（多轮时显示） */}
           {turns.length > 1 && (
             <button
               onClick={handleCopyAll}
+              disabled={isProcessing}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-all"
               style={{
                 border: isDark ? "1px solid #333" : "1px solid var(--sand)",
                 background: isDark ? "rgba(255,255,255,0.05)" : "white",
                 color: isDark ? "#ccc" : "var(--ink)",
-                cursor: "pointer",
+                cursor: isProcessing ? "not-allowed" : "pointer",
+                opacity: isProcessing ? 0.4 : 1,
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = isDark
@@ -576,12 +787,14 @@ export default function ResultPanelWindow() {
           {/* 复制最新回复（主要） */}
           <button
             onClick={handleCopyLatest}
+            disabled={isProcessing || turns.length === 0}
             className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-all"
             style={{
               background: "var(--crail)",
               color: "white",
               border: "none",
-              cursor: "pointer",
+              cursor: isProcessing || turns.length === 0 ? "not-allowed" : "pointer",
+              opacity: isProcessing || turns.length === 0 ? 0.4 : 1,
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.opacity = "0.9";
@@ -706,15 +919,27 @@ function AssistantBubble({
   response,
   asrTimeMs,
   llmTimeMs,
+  searchTimeMs,
+  toolCalls = [],
   isDark,
+  isStreaming = false,
+  isCancelled = false,
 }: {
   response: string;
   asrTimeMs: number;
   llmTimeMs: number;
+  searchTimeMs?: number | null;
+  toolCalls?: AssistantToolCall[];
   isDark: boolean;
+  isStreaming?: boolean;
+  isCancelled?: boolean;
 }) {
+  const citations = toolCalls.flatMap((call) => call.results);
+
   return (
     <div className="px-4 pb-3">
+      {toolCalls.length > 0 && <SearchToolCallPanel toolCalls={toolCalls} isDark={isDark} />}
+
       {/* Markdown 回复 */}
       <div
         className="rounded-lg px-3 py-2"
@@ -725,7 +950,27 @@ function AssistantBubble({
             : "1px solid rgba(0,0,0,0.04)",
         }}
       >
-        <MarkdownRenderer content={response} darkMode={isDark} />
+        {response ? (
+          <>
+            <MarkdownRenderer
+              content={response}
+              darkMode={isDark}
+              citations={citations}
+            />
+            {isCancelled && (
+              <span
+                className="mt-1 inline-block text-xs"
+                style={{ color: isDark ? "#888" : "var(--stone-dark)" }}
+              >
+                已停止
+              </span>
+            )}
+          </>
+        ) : (
+          <span style={{ color: isDark ? "#888" : "var(--stone-dark)" }}>
+            {isStreaming ? "正在生成..." : isCancelled ? "已停止生成" : ""}
+          </span>
+        )}
       </div>
 
       {/* 耗时信息 */}
@@ -738,10 +983,136 @@ function AssistantBubble({
         }}
       >
         <Clock size={10} />
-        <span>{formatTimingDisplay(asrTimeMs, llmTimeMs)}</span>
+        <span>{formatTimingDisplay(asrTimeMs, llmTimeMs, searchTimeMs)}</span>
       </div>
     </div>
   );
+}
+
+function SearchToolCallPanel({
+  toolCalls,
+  isDark,
+}: {
+  toolCalls: AssistantToolCall[];
+  isDark: boolean;
+}) {
+  const totalResultCount = toolCalls.reduce((sum, call) => sum + call.results.length, 0);
+  const isSearching = toolCalls.some((call) => call.status === "searching");
+  const hasError = toolCalls.some((call) => call.status === "error");
+  const statusText = isSearching
+    ? "搜索中"
+    : hasError && totalResultCount === 0
+      ? "搜索失败"
+      : `搜索到 ${totalResultCount} 个结果`;
+
+  return (
+    <div
+      className="mb-2 rounded-lg px-3 py-2"
+      style={{
+        background: isDark ? "rgba(255,255,255,0.035)" : "rgba(120,140,93,0.055)",
+        border: isDark ? "1px solid rgba(232,230,220,0.08)" : "1px solid rgba(120,140,93,0.16)",
+        color: isDark ? "#d6d3c8" : "var(--ink)",
+        fontFamily: "var(--font-sans)",
+      }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {isSearching ? (
+            <Loader2 size={14} className="shrink-0 animate-spin" style={{ color: "var(--sage)" }} />
+          ) : (
+            <Search size={14} className="shrink-0" style={{ color: "var(--sage)" }} />
+          )}
+          <span className="text-xs font-bold">联网搜索</span>
+          <span
+            className="truncate rounded-full px-2 py-0.5 text-[11px] font-semibold"
+            style={{
+              background: isDark ? "rgba(255,255,255,0.06)" : "rgba(120,140,93,0.12)",
+              color: isDark ? "#c8d2aa" : "var(--sage)",
+            }}
+          >
+            {statusText}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-2 space-y-1.5">
+        {toolCalls.map((call) => (
+          <div
+            key={call.id}
+            className="rounded-md px-2 py-1.5"
+            style={{
+              background: isDark ? "rgba(255,255,255,0.025)" : "rgba(255,255,255,0.72)",
+              border: isDark ? "1px solid rgba(232,230,220,0.06)" : "1px solid rgba(176,174,165,0.32)",
+            }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className="truncate text-[11px] font-medium"
+                style={{ color: isDark ? "#d6d3c8" : "var(--ink)" }}
+                title={call.query}
+              >
+                {call.status === "searching" ? "正在搜索" : "检索"}：{call.query}
+              </span>
+              {call.elapsed_ms > 0 && (
+                <span className="shrink-0 text-[10px]" style={{ color: isDark ? "#777" : "var(--stone-dark)" }}>
+                  {formatDurationLabel(call.elapsed_ms)}
+                </span>
+              )}
+            </div>
+
+            {call.error && (
+              <div className="mt-1 text-[11px]" style={{ color: isDark ? "#fca5a5" : "#b91c1c" }}>
+                {call.error}
+              </div>
+            )}
+
+            {call.results.length > 0 && (
+              <div className="mt-1.5 space-y-1">
+                {call.results.slice(0, 3).map((result) => (
+                  <div key={`${call.id}-${result.id}`} className="grid grid-cols-[auto_minmax(0,1fr)] gap-2">
+                    <span
+                      className="mt-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
+                      style={{
+                        background: isDark ? "rgba(255,255,255,0.06)" : "rgba(120,140,93,0.12)",
+                        color: isDark ? "#c8d2aa" : "var(--sage)",
+                      }}
+                    >
+                      {result.index}
+                    </span>
+                    <div className="min-w-0">
+                      <div
+                        className="truncate text-[11px] font-semibold"
+                        style={{ color: isDark ? "#e8e6dc" : "var(--ink)" }}
+                        title={result.title || result.url}
+                      >
+                        {result.title || result.url}
+                      </div>
+                      <div
+                        className="truncate text-[10px]"
+                        style={{ color: isDark ? "#777" : "var(--stone-dark)" }}
+                        title={result.source || result.url}
+                      >
+                        {result.source || result.url}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {call.results.length > 3 && (
+                  <div className="pl-6 text-[10px]" style={{ color: isDark ? "#777" : "var(--stone-dark)" }}>
+                    还有 {call.results.length - 3} 条结果会作为引用参与回答
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatDurationLabel(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 /** 加载中气泡 */
@@ -761,6 +1132,45 @@ function LoadingBubble({ isDark }: { isDark: boolean }) {
       >
         <Loader2 size={14} className="animate-spin" />
         <span>AI 思考中...</span>
+      </div>
+    </div>
+  );
+}
+
+/** 已停止气泡 */
+function CancelledBubble({
+  isDark,
+  onRetry,
+}: {
+  isDark: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="px-4 pb-3">
+      <div
+        className="flex items-center justify-between gap-2 rounded-lg px-3 py-2"
+        style={{
+          background: isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)",
+          border: isDark
+            ? "1px solid rgba(232,230,220,0.06)"
+            : "1px solid rgba(0,0,0,0.04)",
+          color: isDark ? "#888" : "var(--stone-dark)",
+          fontSize: "13px",
+        }}
+      >
+        <span>已停止生成</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-md px-2 py-1 text-xs transition-colors"
+          style={{
+            background: isDark ? "rgba(255,255,255,0.08)" : "white",
+            border: isDark ? "1px solid #333" : "1px solid var(--sand)",
+            color: isDark ? "#ccc" : "var(--ink)",
+          }}
+        >
+          重试
+        </button>
       </div>
     </div>
   );
@@ -794,38 +1204,77 @@ function ErrorBubble({
   );
 }
 
+/** 警告气泡 */
+function WarningBubble({
+  message,
+  isDark,
+}: {
+  message: string;
+  isDark: boolean;
+}) {
+  return (
+    <div className="px-4 pb-3">
+      <div
+        className="flex items-start gap-2 rounded-lg px-3 py-2"
+        style={{
+          background: isDark
+            ? "rgba(245,158,11,0.08)"
+            : "rgba(245,158,11,0.08)",
+          border: "1px solid rgba(245,158,11,0.22)",
+          color: isDark ? "#fbbf24" : "#b45309",
+          fontSize: "13px",
+        }}
+      >
+        <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+        <span style={{ lineHeight: 1.5 }}>{message}</span>
+      </div>
+    </div>
+  );
+}
+
 /** 文本追问输入栏 */
 function TextInputBar({
   isDark,
   isProcessing,
+  webSearchEnabled,
+  onToggleWebSearch,
   onSend,
 }: {
   isDark: boolean;
   isProcessing: boolean;
-  onSend: (text: string) => void;
+  webSearchEnabled: boolean;
+  onToggleWebSearch: () => void;
+  onSend: (text: string) => Promise<string | null>;
 }) {
   const [inputText, setInputText] = useState("");
+  const [inputError, setInputError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const INPUT_BAR_CONTROL_HEIGHT = 42;
 
   const canSend = inputText.trim().length > 0 && !isProcessing;
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const trimmed = inputText.trim();
     if (!trimmed || isProcessing) return;
-    onSend(trimmed);
+    const error = await onSend(trimmed);
+    if (error) {
+      setInputError(error);
+      return;
+    }
     setInputText("");
+    setInputError(null);
     // 重置 textarea 高度
     if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${INPUT_BAR_CONTROL_HEIGHT}px`;
     }
-  }, [inputText, isProcessing, onSend]);
+  }, [inputText, isProcessing, onSend, INPUT_BAR_CONTROL_HEIGHT]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // Enter 发送（非空时），Shift+Enter 换行
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        handleSend();
+        void handleSend();
       }
       // Esc 不做任何拦截，让事件冒泡到 window listener 处理关闭
     },
@@ -836,16 +1285,17 @@ function TextInputBar({
   const handleInput = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setInputText(e.target.value);
+      setInputError(null);
       const el = e.target;
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 72)}px`;
+      el.style.height = `${INPUT_BAR_CONTROL_HEIGHT}px`;
+      el.style.height = `${Math.max(INPUT_BAR_CONTROL_HEIGHT, Math.min(el.scrollHeight, 84))}px`;
     },
-    [],
+    [INPUT_BAR_CONTROL_HEIGHT],
   );
 
   return (
     <div
-      className="flex items-end gap-2 px-4 py-2 shrink-0"
+      className="flex items-center gap-3 px-6 py-3 shrink-0"
       style={{
         borderTop: isDark
           ? "1px solid rgba(232,230,220,0.08)"
@@ -853,34 +1303,89 @@ function TextInputBar({
         fontFamily: "var(--font-sans)",
       }}
     >
-      <textarea
-        ref={textareaRef}
-        value={inputText}
-        onChange={handleInput}
-        onKeyDown={handleKeyDown}
+      <button
+        type="button"
+        onClick={onToggleWebSearch}
         disabled={isProcessing}
-        placeholder="输入追问..."
-        rows={1}
-        className="flex-1 text-sm rounded-lg px-3 py-2 outline-none transition-colors"
+        className="flex items-center justify-center rounded-lg transition-all shrink-0"
         style={{
-          resize: "none",
-          maxHeight: "72px",
-          overflowY: "auto",
-          background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.03)",
-          border: isDark
-            ? "1px solid rgba(255,255,255,0.1)"
-            : "1px solid rgba(0,0,0,0.08)",
-          color: isDark ? "#E8E6DC" : "var(--ink)",
+          width: `${INPUT_BAR_CONTROL_HEIGHT}px`,
+          height: `${INPUT_BAR_CONTROL_HEIGHT}px`,
+          background: webSearchEnabled
+            ? isDark
+              ? "rgba(59,130,246,0.18)"
+              : "rgba(59,130,246,0.12)"
+            : isDark
+              ? "rgba(255,255,255,0.05)"
+              : "rgba(0,0,0,0.04)",
+          border: webSearchEnabled
+            ? "1px solid rgba(59,130,246,0.35)"
+            : isDark
+              ? "1px solid rgba(255,255,255,0.1)"
+              : "1px solid rgba(0,0,0,0.08)",
+          color: webSearchEnabled
+            ? isDark
+              ? "#93c5fd"
+              : "#1d4ed8"
+            : isDark
+              ? "#777"
+              : "var(--stone-dark)",
+          cursor: isProcessing ? "not-allowed" : "pointer",
           opacity: isProcessing ? 0.5 : 1,
         }}
-      />
+        title={webSearchEnabled ? "联网搜索已开启" : "联网搜索已关闭"}
+        aria-pressed={webSearchEnabled}
+      >
+        <Globe2 size={16} />
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-h-[42px] min-w-0 flex-1 items-center">
+          <textarea
+            ref={textareaRef}
+            value={inputText}
+            onChange={handleInput}
+            onKeyDown={handleKeyDown}
+            disabled={isProcessing}
+            placeholder="输入追问..."
+            rows={1}
+            className="block w-full text-sm rounded-lg px-3 outline-none transition-colors"
+            style={{
+              boxSizing: "border-box",
+              resize: "none",
+              height: `${INPUT_BAR_CONTROL_HEIGHT}px`,
+              minHeight: `${INPUT_BAR_CONTROL_HEIGHT}px`,
+              maxHeight: "84px",
+              paddingTop: "10px",
+              paddingBottom: "10px",
+              lineHeight: "20px",
+              overflowY: "auto",
+              background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.03)",
+              border: inputError
+                ? "1px solid rgba(220,38,38,0.45)"
+                : isDark
+                  ? "1px solid rgba(255,255,255,0.1)"
+                  : "1px solid rgba(0,0,0,0.08)",
+              color: isDark ? "#E8E6DC" : "var(--ink)",
+              opacity: isProcessing ? 0.5 : 1,
+            }}
+          />
+        </div>
+        {inputError && (
+          <div
+            className="mt-1 text-xs"
+            style={{ color: isDark ? "#f87171" : "#dc2626" }}
+          >
+            {inputError}
+          </div>
+        )}
+      </div>
       <button
-        onClick={handleSend}
+        onClick={() => void handleSend()}
         disabled={!canSend}
         className="flex items-center justify-center rounded-lg transition-all shrink-0"
         style={{
-          width: "34px",
-          height: "34px",
+          width: `${INPUT_BAR_CONTROL_HEIGHT}px`,
+          height: `${INPUT_BAR_CONTROL_HEIGHT}px`,
           background: canSend ? "var(--crail)" : isDark ? "#333" : "#ddd",
           color: canSend ? "white" : isDark ? "#666" : "#999",
           border: "none",

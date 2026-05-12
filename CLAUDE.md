@@ -703,7 +703,7 @@ Config file location: `%APPDATA%\PushToTalk\config.json`
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **push2talk-rust** (2789 symbols, 6025 relationships, 239 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **push2talk-rust** (3455 symbols, 6565 relationships, 211 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

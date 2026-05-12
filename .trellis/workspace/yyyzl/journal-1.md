@@ -1,0 +1,301 @@
+# Journal - yyyzl (Part 1)
+
+> AI development session journal
+> Started: 2026-02-15
+
+---
+
+
+
+## Session 1: feat: AI 助手异步结果面板 — 完整实现 + 运行时调试
+
+**Date**: 2026-04-11
+**Task**: feat: AI 助手异步结果面板 — 完整实现 + 运行时调试
+**Branch**: `feat/assistant-async-result-panel`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+
+## 完成内容
+
+| 模块 | 变更 |
+|------|------|
+| **ResultPanelWindow** | 新增 Markdown 渲染浮窗（react-markdown + remark-gfm + react-syntax-highlighter） |
+| **Push + Poll 双模式** | 解决隐藏 WebView 丢失 push 事件问题，300ms 自停轮询兜底 |
+| **透明窗口拖动** | `data-tauri-drag-region` 在 WebView2 不工作，改用 `startDragging()` API |
+| **Capabilities 权限** | `result_panel` 加入 `capabilities/default.json`，修复静默 IPC 全面失败 |
+| **剪贴板即时释放** | ClipboardGuard 捕获后立即 drop，不再长期持有 |
+| **Pipeline 改造** | AssistantPipeline 不再自动插入，返回结果由结果面板展示 |
+| **Pending 生命周期** | 覆盖/丢弃/停止均补发 transcription_complete 事件 |
+| **砍掉粘贴功能** | 用户反馈无意义，仅保留复制 + 关闭 |
+| **Spec 更新** | 3 个 spec 文件记录 6 个 CRITICAL 教训 |
+
+## 踩坑记录
+
+1. **Capabilities `windows` 数组遗漏** — 新窗口未加入导致 ALL IPC 静默失败，无任何报错
+2. **隐藏 WebView 不处理事件** — `listen()`/`emit()` 在 hidden 窗口不可靠，需 `invoke()` 轮询兜底
+3. **`data-tauri-drag-region` 透明窗口失效** — Windows WebView2 下必须用 `startDragging()` API
+4. **`invoke("get_config")` vs `load_config`** — Tauri IPC 命令名不匹配静默失败
+5. **react-markdown v9 不支持 `className` prop** — 需外层 div 包裹
+
+## 变更文件 (16 files, +2899/-125)
+
+- `result-panel.html` (新增)
+- `src/components/MarkdownRenderer.tsx` (新增)
+- `src/types/assistant-result.ts` (新增)
+- `src/windows/ResultPanelWindow.tsx` (新增)
+- `src/windows/result-panel-actions.ts` (新增)
+- `src/windows/result-panel-main.tsx` (新增)
+- `tests/assistantResultPanel.test.ts` (新增, 16 个测试)
+- `src-tauri/src/lib.rs` (核心改造)
+- `src-tauri/src/pipeline/assistant.rs` (移除自动插入)
+- `src-tauri/src/clipboard_manager.rs` (新增 copy_to_clipboard)
+- `src-tauri/tauri.conf.json` (新增 result_panel 窗口)
+- `src-tauri/capabilities/default.json` (权限声明)
+- `vite.config.ts` (多页构建入口)
+- `package.json` (新增 3 个 npm 依赖)
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5f2bdee` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 2: AI 助手多轮对话与追问功能
+
+**Date**: 2026-04-11
+**Task**: AI 助手多轮对话与追问功能
+**Branch**: `feat/assistant-async-result-panel`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+## 完成内容
+
+将 AI 助手模式从单轮无状态交互升级为多轮对话，支持面板内连续追问。
+
+| 模块 | 变更 |
+|------|------|
+| 后端数据结构 | `ConversationSession` 替代 `PendingAssistantResult`，含 `PromptMode` 首轮锁定、20轮滑动窗口 |
+| 后端 Pipeline | `handle_assistant_mode()` 分支新对话/追问路径，追问复用 `process_followup()` |
+| IPC 命令 | 5 个新命令替代旧命令：`get_conversation_state` / `dismiss_conversation` / `copy_latest_reply` / `copy_full_conversation` / `paste_latest_reply` |
+| IPC 事件 | 3 个新事件：`assistant_turn_complete` / `assistant_turn_pending` / `assistant_turn_error` |
+| 前端类型 | `ConversationTurn` / `TurnCompletePayload` / `TurnPendingPayload` / `TurnErrorPayload` / `formatConversationForCopy()` |
+| 前端 UI | `ResultPanelWindow` 重构为对话流视图，含智能滚动、浮标回底、loading/error 气泡 |
+
+## 修复的 Bug
+
+| Bug | 根因 | 修复 |
+|-----|------|------|
+| 一次追问产生两个重复回复 (后端) | `is_assistant_processing` 用 `store(true)` 存在竞态窗口，rdev 热键双触发穿透 guard | 改为 `compare_exchange` 原子 CAS |
+| 一次追问产生两个重复回复 (前端) | React 18 StrictMode 双挂载导致异步 `listen()` 注册两个 listener，累积型 state 更新被执行两次 | 使用 `cancelled` flag + deferred unsubscribe 模式 |
+
+## 新增测试
+
+- 5 个 Rust 单元测试：`build_followup_messages` 基本/带文本/滑动窗口/文本处理模式 + `format_conversation_for_copy`
+- 7 个 TS 测试：`getKeyboardAction` (5个) + `formatConversationForCopy` (2个)
+
+## 写入 Spec 的经验
+
+- `frontend/component-guidelines.md`：React StrictMode + 异步 listen() 监听器泄漏模式及修复方案
+- `backend/error-handling.md`：AtomicBool `store` vs `compare_exchange` 竞态窗口模式
+
+**Modified Files**: `src-tauri/src/assistant_processor.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/openai_client.rs`, `src-tauri/src/pipeline/assistant.rs`, `src-tauri/src/pipeline/mod.rs`, `src-tauri/src/pipeline/types.rs`, `src/types/assistant-result.ts`, `src/windows/ResultPanelWindow.tsx`, `tests/assistantResultPanel.test.ts`
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `630800c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 3: AI 助手结果面板支持文本输入追问
+
+**Date**: 2026-04-13
+**Task**: AI 助手结果面板支持文本输入追问
+**Branch**: `main`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+## 概述
+
+为 AI 助手结果面板添加文本输入追问能力，作为语音追问的补充通道。用户在面板打开时可以直接打字追问，跳过录音/ASR/TNL 直接调用 LLM。
+
+## 改动清单
+
+| 文件 | 改动 |
+|------|------|
+| `src-tauri/src/lib.rs` | 新增 `send_text_question` IPC 命令（~106 行），复用 `process_followup` 逻辑 |
+| `src/types/assistant-result.ts` | 新增 `formatTimingDisplay` 纯函数（19 行） |
+| `src/windows/ResultPanelWindow.tsx` | 新增 `TextInputBar` 子组件 + `AssistantBubble` 耗时显示修改（~95 行） |
+| `tests/assistantResultPanel.test.ts` | 新增 3 个 `formatTimingDisplay` 测试用例 |
+| `CLAUDE.md` | 文档同步：新增 `send_text_question` 命令描述 |
+
+## 设计决策
+
+- **方案 A（仅追问）**：文本输入仅在面板已打开时可用，不引入新 UI 入口
+- **耗时自适应**：`asr_time_ms = 0` 时只显示 "LLM x.xs"，语音轮次不变
+- **并发保护**：文本追问和语音追问共享 `is_assistant_processing` 原子标志
+
+## TDD 流程
+
+- Slice 1: `formatTimingDisplay` 纯函数（RED→GREEN，3 个测试用例）
+- Slice 2: 后端 `send_text_question` IPC 命令（`cargo check` 验证）
+- Slice 3: 前端 `TextInputBar` 组件 + `AssistantBubble` 修改（`tsc --noEmit` + 全量测试验证）
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c8859d1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 4: GitNexus 升级 + hook 接入；归档 TNL 候选仲裁任务
+
+**Date**: 2026-05-09
+**Task**: GitNexus 升级 + hook 接入；归档 TNL 候选仲裁任务
+**Branch**: `main`
+
+### Summary
+
+升级 gitnexus 到 1.6.3；新增 PreToolUse(Grep|Glob|Bash)+PostToolUse(Bash) gitnexus-hook.cjs 钩子；归档已实现的 tnl-candidate-arbitration 任务（实现见 50ef68a 与 446eb19，所有 AC 已满足）
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `50ef68a` | (see git log) |
+| `446eb19` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 5: per-preset LLM 模型选择 (issue #12)
+
+**Date**: 2026-05-10
+**Task**: per-preset LLM 模型选择 (issue #12)
+**Branch**: `main`
+
+### Summary
+
+实现每个润色预设独立选择 LLM Provider/模型；经过 v1→v4 设计演进，最终采用 inline 模型下拉而非覆盖+徽章方案；后端 11 单测、前端 14 单测全过；附带 Trellis 0.5.9 平台接入整理
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `199f34a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 6: 修复 AI 助手联网搜索状态与取消流程
+
+**Date**: 2026-05-12
+**Task**: 修复 AI 助手联网搜索状态与取消流程
+**Branch**: `main`
+
+### Summary
+
+修复联网搜索结果面板恢复、取消/重试、文本追问后台化、搜索配置短路、SSE CRLF 与历史工具上下文等问题，并通过 cargo/npm 定向验证。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `65e5d32` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -11,12 +11,14 @@ import type {
   HotkeyKey,
   LearningConfig,
   LlmConfig,
+  SearchConfig,
 } from "../types";
 import {
   DEFAULT_ASSISTANT_CONFIG,
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_SEARCH_CONFIG,
   FALLBACK_ASR_PROVIDER,
   VALID_ASR_PROVIDERS,
   normalizeLearningConfig,
@@ -66,6 +68,7 @@ type SaveConfigGatewayOverrides = {
   enableDictionaryEnhancement?: boolean;
   llmConfig?: LlmConfig;
   assistantConfig?: AssistantConfig;
+  searchConfig?: SearchConfig;
   asrConfig?: AsrConfig;
   closeAction?: "close" | "minimize" | null;
   dualHotkeyConfig?: DualHotkeyConfig;
@@ -92,6 +95,7 @@ type ResolvedSaveConfig = {
   enableDictionaryEnhancement: boolean;
   llmConfig: LlmConfig;
   assistantConfig: AssistantConfig;
+  searchConfig: SearchConfig;
   asrConfig: AsrConfig;
   closeAction: "close" | "minimize" | null;
   dualHotkeyConfig: DualHotkeyConfig;
@@ -127,6 +131,9 @@ export type UseAppServiceControllerParams = {
 
   assistantConfig: AssistantConfig;
   setAssistantConfig: React.Dispatch<React.SetStateAction<AssistantConfig>>;
+
+  searchConfig: SearchConfig;
+  setSearchConfig: React.Dispatch<React.SetStateAction<SearchConfig>>;
 
   asrConfig: AsrConfig;
 
@@ -186,6 +193,8 @@ export function useAppServiceController({
   setLlmConfig,
   assistantConfig,
   setAssistantConfig,
+  searchConfig,
+  setSearchConfig,
   asrConfig,
   dualHotkeyConfig,
   setDualHotkeyConfig,
@@ -228,6 +237,7 @@ export function useAppServiceController({
       llmConfig: LlmConfig;
       smartCommandConfig: null;
       assistantConfig: AssistantConfig;
+      searchConfig?: SearchConfig;
       asrConfig: AsrConfig | null;
       dualHotkeyConfig: DualHotkeyConfig;
       enableMuteOtherApps: boolean;
@@ -305,6 +315,7 @@ export function useAppServiceController({
           overrides.enableDictionaryEnhancement ?? enableDictionaryEnhancement,
         llmConfig: overrides.llmConfig ?? llmConfig,
         assistantConfig: overrides.assistantConfig ?? assistantConfig,
+        searchConfig: overrides.searchConfig ?? searchConfig,
         asrConfig: finalAsrConfig,
         closeAction: overrides.closeAction ?? closeAction ?? null,
         dualHotkeyConfig: overrides.dualHotkeyConfig ?? dualHotkeyConfig,
@@ -328,6 +339,7 @@ export function useAppServiceController({
       enableDictionaryEnhancement,
       llmConfig,
       assistantConfig,
+      searchConfig,
       asrConfig,
       closeAction,
       dualHotkeyConfig,
@@ -352,6 +364,7 @@ export function useAppServiceController({
         llmConfig: resolved.llmConfig,
         smartCommandConfig: null,
         assistantConfig: resolved.assistantConfig,
+        searchConfig: resolved.searchConfig,
         asrConfig: resolved.asrConfig,
         closeAction: resolved.closeAction,
         dualHotkeyConfig: resolved.dualHotkeyConfig,
@@ -449,6 +462,7 @@ export function useAppServiceController({
               enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
               llmConfig: config.llm_config || DEFAULT_LLM_CONFIG,
               assistantConfig: config.assistant_config || DEFAULT_ASSISTANT_CONFIG,
+              searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
               asrConfig: migratedAsrConfig,
               closeAction: config.close_action ?? null,
               dualHotkeyConfig: config.dual_hotkey_config || DEFAULT_DUAL_HOTKEY_CONFIG,
@@ -526,6 +540,7 @@ export function useAppServiceController({
         loadedAssistantConfig = DEFAULT_ASSISTANT_CONFIG;
       }
       setAssistantConfig(loadedAssistantConfig);
+      setSearchConfig(config.search_config || DEFAULT_SEARCH_CONFIG);
 
       if (config.dual_hotkey_config) {
         setDualHotkeyConfig(config.dual_hotkey_config);
@@ -597,6 +612,7 @@ export function useAppServiceController({
           llmConfig: loadedLlmConfig,
           smartCommandConfig: null,
           assistantConfig: loadedAssistantConfig,
+          searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
           asrConfig: effectiveAsrConfig,
           dualHotkeyConfig: loadedDualHotkeyConfig,
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
@@ -620,6 +636,7 @@ export function useAppServiceController({
               enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
               llmConfig: loadedLlmConfig,
               assistantConfig: loadedAssistantConfig,
+              searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
               asrConfig: effectiveAsrConfig,
               closeAction: config.close_action ?? null,
               dualHotkeyConfig: loadedDualHotkeyConfig,
@@ -641,6 +658,7 @@ export function useAppServiceController({
     setApiKey,
     setAsrConfig,
     setAssistantConfig,
+    setSearchConfig,
     setCloseAction,
     setDictionary,
     setBuiltinDictionaryDomains,
@@ -681,6 +699,7 @@ export function useAppServiceController({
           llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
           assistantConfig: resolved.assistantConfig,
+          searchConfig: resolved.searchConfig,
           asrConfig: resolved.asrConfig,
           dualHotkeyConfig: resolved.dualHotkeyConfig,
           enableMuteOtherApps: resolved.enableMuteOtherApps,
@@ -693,6 +712,7 @@ export function useAppServiceController({
       flashSuccessToast();
     } catch (err) {
       setError(String(err));
+      throw err;
     }
   }, [
     theme,
@@ -716,6 +736,7 @@ export function useAppServiceController({
     enableDictionaryEnhancement?: boolean;
     llmConfig?: LlmConfig;
     assistantConfig?: AssistantConfig;
+    searchConfig?: SearchConfig;
     asrConfig?: AsrConfig;
     dualHotkeyConfig?: DualHotkeyConfig;
     learningConfig?: LearningConfig;
@@ -734,6 +755,7 @@ export function useAppServiceController({
         enableDictionaryEnhancement: overrides?.enableDictionaryEnhancement,
         llmConfig: overrides?.llmConfig,
         assistantConfig: overrides?.assistantConfig,
+        searchConfig: overrides?.searchConfig,
         asrConfig: overrides?.asrConfig,
         dualHotkeyConfig: overrides?.dualHotkeyConfig,
         learningConfig: overrides?.learningConfig,
@@ -760,6 +782,7 @@ export function useAppServiceController({
           llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
           assistantConfig: resolved.assistantConfig,
+          searchConfig: resolved.searchConfig,
           asrConfig: resolved.asrConfig,
           dualHotkeyConfig: resolved.dualHotkeyConfig,
           enableMuteOtherApps: resolved.enableMuteOtherApps,

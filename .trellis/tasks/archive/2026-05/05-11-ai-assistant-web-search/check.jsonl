@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "检查 backend/frontend 事件契约、hidden WebView pull 恢复、History 持久化链路是否闭环。"}
+{"file": ".trellis/spec/backend/event-contracts.md", "reason": "检查 transcription_complete 与 assistant_turn_* payload 是否保持向后兼容。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "检查 provider 失败、取消、降级、不可恢复错误的语义是否与 PRD 一致。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "检查后端实现质量、测试覆盖和旧 LLM 调用方回归风险。"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "检查新增前端组件是否符合项目组件约定和现有视觉体系。"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "检查 ResultPanel 流式状态、取消状态、toggle override 与 config_updated 交互。"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "检查新增类型、可选字段、老历史兼容和事件 payload 映射。"}
+{"file": ".trellis/tasks/05-11-ai-assistant-web-search/research/provider-api-notes.md", "reason": "核对 Provider 请求/响应解析和错误分类是否符合官方 API。"}

@@ -168,7 +168,10 @@ fn wait_for_clipboard_update(
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
     let mut clipboard = Clipboard::new()?;
     clipboard.set_text(text.to_string())?;
-    tracing::debug!("clipboard_manager: 已复制到剪贴板 (长度: {} 字符)", text.len());
+    tracing::debug!(
+        "clipboard_manager: 已复制到剪贴板 (长度: {} 字符)",
+        text.len()
+    );
     Ok(())
 }
 

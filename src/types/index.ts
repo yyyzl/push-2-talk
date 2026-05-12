@@ -114,6 +114,35 @@ export interface AssistantConfig {
   llm: LlmFeatureConfig;
   qa_system_prompt: string;               // 问答模式提示词（无选中文本时）
   text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
+  enable_web_search: boolean;
+  web_search_max_loops: number;
+  web_search_in_text_mode: boolean;
+}
+
+export type SearchProviderType = "tavily" | "bocha" | "serper" | "searxng";
+
+export interface SearchProviderConfig {
+  id: string;
+  provider_type: SearchProviderType;
+  display_name: string;
+  enabled: boolean;
+  endpoint?: string | null;
+  api_key?: string | null;
+  basic_auth_username?: string | null;
+  basic_auth_password?: string | null;
+  serper_gl?: string | null;
+  serper_hl?: string | null;
+  serper_tbs?: string | null;
+  searxng_language?: string | null;
+  searxng_time_range?: string | null;
+}
+
+export interface SearchConfig {
+  providers: SearchProviderConfig[];
+  default_provider_id?: string | null;
+  max_results: number;
+  timeout_secs: number;
+  enable_fallback: boolean;
 }
 
 // 应用配置
@@ -126,6 +155,7 @@ export interface AppConfig {
   enable_dictionary_enhancement: boolean;
   llm_config: LlmConfig;
   assistant_config: AssistantConfig;
+  search_config: SearchConfig;
   learning_config: LearningConfig;
   close_action: "close" | "minimize" | null;
   hotkey_config: HotkeyConfig;            // 保留用于迁移
@@ -157,6 +187,30 @@ export interface TranscriptionResult {
   mode?: string; // "normal" | "assistant"
   inserted?: boolean;
   tnl_diagnostics?: TnlDiagnostics;
+  citations?: SearchCitation[];
+  tool_calls_summary?: ToolCallSummary[];
+  web_searched?: boolean;
+  search_failed?: boolean;
+}
+
+export interface SearchCitation {
+  index: number;
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+  source?: string | null;
+}
+
+export interface ToolCallSummary {
+  id: string;
+  name: string;
+  query: string;
+  status: string;
+  results_count: number;
+  error?: string | null;
+  elapsed_ms: number;
+  round: number;
 }
 
 export type TnlCandidateRisk = "low" | "medium" | "high";
@@ -224,6 +278,10 @@ export interface HistoryRecord {
   success: boolean;
   errorMessage: string | null;
   tnlDiagnostics?: TnlDiagnostics;
+  citations?: SearchCitation[];
+  toolCallsSummary?: ToolCallSummary[];
+  webSearched?: boolean;
+  searchFailed?: boolean;
 }
 
 // ASR 服务商元数据

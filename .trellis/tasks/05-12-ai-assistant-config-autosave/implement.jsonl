@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend UI and React conventions for the AI assistant settings page."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component interaction, accessibility, and Tauri frontend patterns."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "State persistence and local/global config handling conventions."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TypeScript type safety expectations for config fields and UI state."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Config save/load crosses frontend and Tauri IPC boundaries."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Search for and reuse existing config save and provider-selection patterns."}

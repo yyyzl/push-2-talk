@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.vite
 *.local
 
 # Editor directories and files
@@ -42,7 +43,6 @@ src-tauri/Cargo.lock
 tmpclaude-*
 .claude/
 .ace-tool/
-.trellis/
 .cursor/
 .agents/
 
