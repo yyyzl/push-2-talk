@@ -656,6 +656,8 @@ struct BuiltinDictionaryUpdatedPayload {
 }
 
 const BUILTIN_DICTIONARY_UPDATE_INTERVAL_SECS: u64 = 6 * 60 * 60;
+const DOUBAO_IME_MISSING_FALLBACK_ERROR: &str =
+    "豆包输入法实时 ASR 暂不可用，且未配置备用 ASR。请稍后重试或在 ASR 设置中配置备用服务";
 
 struct TrayMenuState {
     post_process_item: CheckMenuItem<tauri::Wry>,
@@ -2812,25 +2814,31 @@ async fn handle_assistant_mode(
             .unwrap()
             .clone();
 
-        // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
-        let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
-            tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
-            fallback_prov.clone()
+        if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) && fallback_prov.is_none() {
+            tracing::warn!("豆包输入法实时 ASR 失败，且未配置备用 ASR");
+            Err(anyhow::anyhow!(DOUBAO_IME_MISSING_FALLBACK_ERROR))
         } else {
-            active_prov
-        };
+            // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
+            let effective_active_prov =
+                if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
+                    tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
+                    fallback_prov.clone()
+                } else {
+                    active_prov
+                };
 
-        transcribe_with_available_clients(
-            qwen,
-            doubao,
-            sensevoice,
-            &data,
-            enable_fb,
-            effective_active_prov,
-            fallback_prov,
-            "(AI助手备用) ",
-        )
-        .await
+            transcribe_with_available_clients(
+                qwen,
+                doubao,
+                sensevoice,
+                &data,
+                enable_fb,
+                effective_active_prov,
+                fallback_prov,
+                "(AI助手备用) ",
+            )
+            .await
+        }
     } else {
         asr_result
     };
@@ -3796,26 +3804,33 @@ async fn fallback_transcription(
         .unwrap()
         .clone();
 
-    // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
-    let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
-        tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
-        fallback_prov.clone()
-    } else {
-        active_prov
-    };
-
     let asr_start = std::time::Instant::now();
-    let result = transcribe_with_available_clients(
-        qwen,
-        doubao,
-        sensevoice,
-        &audio_data,
-        enable_fallback,
-        effective_active_prov,
-        fallback_prov,
-        "(备用) ",
-    )
-    .await;
+    let result = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme))
+        && fallback_prov.is_none()
+    {
+        tracing::warn!("豆包输入法实时 ASR 失败，且未配置备用 ASR");
+        Err(anyhow::anyhow!(DOUBAO_IME_MISSING_FALLBACK_ERROR))
+    } else {
+        // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
+        let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
+            tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
+            fallback_prov.clone()
+        } else {
+            active_prov
+        };
+
+        transcribe_with_available_clients(
+            qwen,
+            doubao,
+            sensevoice,
+            &audio_data,
+            enable_fallback,
+            effective_active_prov,
+            fallback_prov,
+            "(备用) ",
+        )
+        .await
+    };
     let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
     handle_transcription_result(

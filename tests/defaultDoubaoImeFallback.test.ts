@@ -6,6 +6,10 @@ import type { AsrConfig, AsrProvider } from "../src/types";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback } from "../src/utils";
 
 const readSource = (path: string) => readFile(path, "utf8");
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const DOUBAO_IME_MISSING_FALLBACK_ERROR =
+  "豆包输入法实时 ASR 暂不可用，且未配置备用 ASR。请稍后重试或在 ASR 设置中配置备用服务";
 
 const createAsrConfig = (
   activeProvider: AsrProvider,
@@ -104,4 +108,56 @@ test("手动启停回退提示应走通知通道而非 error 通道", async () =
 
   assert.doesNotMatch(block, /setError\(`ASR Key 缺失，已自动切换至\$\{fallbackName\}`\);/);
   assert.match(block, /showToast\?\.\(/);
+});
+
+test("DoubaoIme 实时失败且无备用 ASR 时应返回明确提示", async () => {
+  const source = await readSource("src-tauri/src/lib.rs");
+  const escapedError = escapeRegExp(DOUBAO_IME_MISSING_FALLBACK_ERROR);
+
+  assert.match(
+    source,
+    new RegExp(`const\\s+DOUBAO_IME_MISSING_FALLBACK_ERROR:\\s*&str\\s*=\\s*"${escapedError}";`),
+  );
+
+  const assistantStart = source.indexOf("async fn handle_assistant_mode(");
+  const assistantEnd = source.indexOf("// 3. 解包 ASR 结果", assistantStart);
+  assert.ok(assistantStart >= 0 && assistantEnd > assistantStart, "未找到 AI 助手备用 ASR 代码块");
+  const assistantFallbackBlock = source.slice(assistantStart, assistantEnd);
+
+  assert.match(
+    assistantFallbackBlock,
+    /matches!\(active_prov,\s*Some\(config::AsrProvider::DoubaoIme\)\)\s*&&\s*fallback_prov\.is_none\(\)/,
+  );
+  assert.match(
+    assistantFallbackBlock,
+    /Err\(anyhow::anyhow!\(DOUBAO_IME_MISSING_FALLBACK_ERROR\)\)/,
+  );
+
+  const dictationStart = source.indexOf("async fn fallback_transcription(");
+  const dictationEnd = source.indexOf("/// 统一的错误处理辅助函数", dictationStart);
+  assert.ok(dictationStart >= 0 && dictationEnd > dictationStart, "未找到听写备用 ASR 代码块");
+  const dictationFallbackBlock = source.slice(dictationStart, dictationEnd);
+
+  assert.match(
+    dictationFallbackBlock,
+    /matches!\(active_prov,\s*Some\(config::AsrProvider::DoubaoIme\)\)\s*&&\s*fallback_prov\.is_none\(\)/,
+  );
+  assert.match(
+    dictationFallbackBlock,
+    /Err\(anyhow::anyhow!\(DOUBAO_IME_MISSING_FALLBACK_ERROR\)\)/,
+  );
+});
+
+test("通用未配置 ASR 仍保留原错误语义", async () => {
+  const source = await readSource("src-tauri/src/lib.rs");
+  const transcribeStart = source.indexOf("async fn transcribe_with_available_clients(");
+  const transcribeEnd = source.indexOf("/// HTTP 模式转录处理", transcribeStart);
+
+  assert.ok(transcribeStart >= 0 && transcribeEnd > transcribeStart, "未找到 HTTP ASR 统一转录代码块");
+  const transcribeBlock = source.slice(transcribeStart, transcribeEnd);
+
+  assert.match(
+    transcribeBlock,
+    /None\s*=>\s*\{[\s\S]*Err\(anyhow::anyhow!\("ASR 提供商未配置"\)\)/,
+  );
 });
