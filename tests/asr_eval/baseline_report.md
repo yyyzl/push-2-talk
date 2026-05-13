@@ -15,8 +15,8 @@
 | correction_pair_hit_rate | 81.82% |
 | false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.249 |
-| p95_latency_ms | 0.479 |
+| avg_latency_ms | 0.221 |
+| p95_latency_ms | 0.346 |
 | quality_gate_passed | true |
 | candidates_total | 19 |
 | applied_candidates | 18 |
@@ -33,6 +33,16 @@
 | zh_pinyin_fuzzy_applied | 1 |
 | mixed_applied | 1 |
 | alias_applied | 1 |
+| exact_text_pass_enabled_cases | 22 |
+| exact_text_pass_disabled_cases | 0 |
+| exact_text_pass_candidates | 9 |
+| exact_text_pass_applied | 9 |
+| exact_text_pass_elapsed_us | 1451 |
+| syllable_match_pass_enabled_cases | 22 |
+| syllable_match_pass_disabled_cases | 0 |
+| syllable_match_pass_candidates | 10 |
+| syllable_match_pass_applied | 9 |
+| syllable_match_pass_elapsed_us | 127 |
 
 ## Cases
 
@@ -67,6 +77,7 @@
 - The false-positive guards confirm that phrase-level pairs do not generalize to common words such as `cloud`, `open`, `type`, and `wind`.
 - The TypeScript cases verify that conservative plural-suffix normalization lets `types script` and `types scripts` share the `type script` phonetic key.
 - Match-kind metrics show the current mini eval is covered by exact text, English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias hits.
+- Pass summary metrics show `exact_text` and `syllable_match` contribution separately; elapsed values are local sample timings and should be compared directionally.
 - Ablation command: `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure`.
 - With syllable matching disabled, the sample run passes 13/22 cases with 9 exact-text applications only; the remaining 9 fixes come from English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias paths.
 - Diagnostics export schema v2 includes per-case pass summaries for `exact_text` and `syllable_match`.

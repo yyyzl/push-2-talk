@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use push_to_talk_lib::personalization::{
     CandidateDecision, ConversionCandidate, ConversionDiagnostics, CorrectionPairStore, MatchKind,
-    PersonalizationEngine, PersonalizationEngineConfig,
+    PassDiagnostics, PersonalizationEngine, PersonalizationEngineConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,6 +85,21 @@ struct MatchKindCounts {
     alias: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PassSummaryCounts {
+    enabled_cases: usize,
+    disabled_cases: usize,
+    candidate_count: usize,
+    applied_count: usize,
+    elapsed_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PassSummaryTotals {
+    exact_text: PassSummaryCounts,
+    syllable_match: PassSummaryCounts,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct EvalMetrics {
     total: usize,
@@ -97,6 +112,7 @@ struct EvalMetrics {
     decision_counts: CandidateDecisionCounts,
     candidate_match_counts: MatchKindCounts,
     applied_match_counts: MatchKindCounts,
+    pass_summary_totals: PassSummaryTotals,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -314,6 +330,8 @@ fn print_report(results: &[CaseResult]) {
     );
     println!("- mixed_applied: {}", metrics.applied_match_counts.mixed);
     println!("- alias_applied: {}", metrics.applied_match_counts.alias);
+    print_pass_summary("exact_text", metrics.pass_summary_totals.exact_text);
+    print_pass_summary("syllable_match", metrics.pass_summary_totals.syllable_match);
     if !quality_gate.passed {
         for failure in &quality_gate.failures {
             println!("- quality_gate_failure: {}", failure);
@@ -389,6 +407,7 @@ fn compute_metrics(results: &[CaseResult]) -> EvalMetrics {
         decision_counts: summarize_candidate_decisions(results),
         candidate_match_counts: summarize_candidate_match_kinds(results),
         applied_match_counts: summarize_applied_match_kinds(results),
+        pass_summary_totals: summarize_pass_summaries(results),
     }
 }
 
@@ -439,6 +458,14 @@ fn should_exit_success(
     allow_quality_gate_failure: bool,
 ) -> bool {
     quality_gate.passed || allow_quality_gate_failure
+}
+
+fn print_pass_summary(name: &str, counts: PassSummaryCounts) {
+    println!("- {name}_pass_enabled_cases: {}", counts.enabled_cases);
+    println!("- {name}_pass_disabled_cases: {}", counts.disabled_cases);
+    println!("- {name}_pass_candidates: {}", counts.candidate_count);
+    println!("- {name}_pass_applied: {}", counts.applied_count);
+    println!("- {name}_pass_elapsed_us: {}", counts.elapsed_us);
 }
 
 fn ratio(numerator: usize, denominator: usize) -> f32 {
@@ -496,6 +523,34 @@ fn summarize_applied_match_kinds(results: &[CaseResult]) -> MatchKindCounts {
             total.add_candidates(&result.diagnostics.applied);
             total
         })
+}
+
+fn summarize_pass_summaries(results: &[CaseResult]) -> PassSummaryTotals {
+    results
+        .iter()
+        .fold(PassSummaryTotals::default(), |mut total, result| {
+            for summary in &result.diagnostics.pass_summaries {
+                match summary.name.as_str() {
+                    "exact_text" => add_pass_summary(&mut total.exact_text, summary),
+                    "syllable_match" => add_pass_summary(&mut total.syllable_match, summary),
+                    _ => {}
+                }
+            }
+            total
+        })
+}
+
+fn add_pass_summary(total: &mut PassSummaryCounts, summary: &PassDiagnostics) {
+    if summary.enabled {
+        total.enabled_cases += 1;
+    } else {
+        total.disabled_cases += 1;
+    }
+    total.candidate_count = total
+        .candidate_count
+        .saturating_add(summary.candidate_count);
+    total.applied_count = total.applied_count.saturating_add(summary.applied_count);
+    total.elapsed_us = total.elapsed_us.saturating_add(summary.elapsed_us);
 }
 
 impl MatchKindCounts {
@@ -736,6 +791,40 @@ mod tests {
     }
 
     #[test]
+    fn summarize_pass_summaries_counts_each_pass_independently() {
+        let mut first = case_result_with_counts(CandidateDecisionCounts::default());
+        first.diagnostics.pass_summaries = vec![
+            pass_summary("exact_text", true, 2, 1, 10),
+            pass_summary("syllable_match", true, 3, 2, 20),
+        ];
+        let mut second = case_result_with_counts(CandidateDecisionCounts::default());
+        second.diagnostics.pass_summaries = vec![
+            pass_summary("exact_text", true, 1, 1, 7),
+            pass_summary("syllable_match", false, 0, 0, 0),
+        ];
+
+        assert_eq!(
+            summarize_pass_summaries(&[first, second]),
+            PassSummaryTotals {
+                exact_text: PassSummaryCounts {
+                    enabled_cases: 2,
+                    disabled_cases: 0,
+                    candidate_count: 3,
+                    applied_count: 2,
+                    elapsed_us: 17,
+                },
+                syllable_match: PassSummaryCounts {
+                    enabled_cases: 1,
+                    disabled_cases: 1,
+                    candidate_count: 3,
+                    applied_count: 2,
+                    elapsed_us: 20,
+                },
+            }
+        );
+    }
+
+    #[test]
     fn quality_gate_passes_when_metrics_meet_thresholds() {
         let summary = evaluate_quality_gates(&EvalMetrics {
             total: 5,
@@ -751,6 +840,7 @@ mod tests {
             decision_counts: CandidateDecisionCounts::default(),
             candidate_match_counts: MatchKindCounts::default(),
             applied_match_counts: MatchKindCounts::default(),
+            pass_summary_totals: PassSummaryTotals::default(),
         });
 
         assert!(summary.passed);
@@ -776,6 +866,7 @@ mod tests {
             },
             candidate_match_counts: MatchKindCounts::default(),
             applied_match_counts: MatchKindCounts::default(),
+            pass_summary_totals: PassSummaryTotals::default(),
         });
 
         assert!(!summary.passed);
@@ -967,6 +1058,22 @@ mod tests {
                 CandidateDecision::BelowApplyThreshold
             },
             blocked_by_pair_id: None,
+        }
+    }
+
+    fn pass_summary(
+        name: &str,
+        enabled: bool,
+        candidate_count: usize,
+        applied_count: usize,
+        elapsed_us: u64,
+    ) -> PassDiagnostics {
+        PassDiagnostics {
+            name: name.to_string(),
+            enabled,
+            elapsed_us,
+            candidate_count,
+            applied_count,
         }
     }
 }

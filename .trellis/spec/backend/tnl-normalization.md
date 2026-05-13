@@ -330,6 +330,14 @@ struct MatchKindCounts {
     alias: usize,
 }
 
+struct PassSummaryCounts {
+    enabled_cases: usize,
+    disabled_cases: usize,
+    candidate_count: usize,
+    applied_count: usize,
+    elapsed_us: u64,
+}
+
 fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
 
 fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBuf>;
@@ -342,6 +350,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Report `false_replacement_rate` alongside `false_replacement_count`.
 - Report candidate decision totals: `candidates_total`, `applied_candidates`, `below_threshold_candidates`, `skipped_overlap_candidates`, and `pending_candidates`.
 - Report candidate match-kind totals for all candidates and applied candidates: exact text, English phonetic, Chinese fuzzy pinyin, mixed, and alias.
+- Report pass summary totals for `exact_text` and `syllable_match`: enabled cases, disabled cases, candidate count, applied count, and elapsed microseconds.
 - Report `quality_gate_passed`.
 - Add per-case `Latency(ms)`, `Candidates`, and `Applied` to the result table for slow-case and decision inspection.
 - Use nearest-rank p95 over sorted latency values. Empty input returns zeroed summary values.
@@ -376,6 +385,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 | A case fails expected text comparison | Eval still prints latency report before returning failure. |
 | Candidate decisions include applied, below-threshold, and skipped-overlap | Summary totals add each decision bucket independently. |
 | Candidate sources include exact, English phonetic, Chinese fuzzy-pinyin, mixed, and alias hits | Summary reports both total candidate count and applied count for each match kind. |
+| Pass summaries include `exact_text` and `syllable_match` | Summary reports enabled/disabled case count, candidate count, applied count, and elapsed microseconds for each pass. |
 | p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
 | pending candidates remain after conversion | Print report, mark quality gate failed, then return an error. |
 | `--disable-syllable-match-pass --allow-quality-gate-failure` is set | Print failed quality gates and return success for comparison scripts. |
@@ -388,6 +398,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Unit test for nearest-rank p95 calculation.
 - Unit test for aggregating candidate decision counts across cases.
 - Unit test for aggregating candidate and applied match-kind counts independently.
+- Unit test for aggregating pass summaries independently.
 - Unit test for passing quality gates.
 - Unit test for reporting all failed quality gates.
 - Unit test for parsing `--diagnostics-out`.
