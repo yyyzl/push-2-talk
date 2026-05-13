@@ -1,7 +1,7 @@
 //! 个性化二次解码 MVP。
 //!
-//! 这一层消费 ASR 已经输出的文本，不重新识别音频。当前先服务 Week 1
-//! mini eval，后续再接入运行时 pipeline。
+//! 这一层消费 ASR 已经输出的文本，不重新识别音频。当前同时服务 Week 1
+//! mini eval 和普通听写链路中的本地二次解码。
 
 mod correction_pair_store;
 mod engine;

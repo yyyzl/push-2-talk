@@ -430,6 +430,96 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 
 ---
 
+## Scenario: Runtime Personalization Diagnostics Are Bounded And Non-Blocking
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `NormalPipeline` personalization application, runtime diagnostic persistence, or `ConversionDiagnostics` serialization.
+- Runtime diagnostics are for local inspection only. They must help debug the IME-style second decoder without making dictation insertion depend on file I/O success.
+
+### 2. Signatures
+
+```rust
+impl NormalPipeline {
+    fn maybe_apply_personalization(text: String) -> (String, bool);
+    fn write_personalization_diagnostic(
+        source_text: &str,
+        result: &ConversionResult,
+        elapsed_us: u64,
+    ) -> Result<PathBuf>;
+}
+```
+
+Runtime file shape:
+
+```json
+{
+  "schema_version": 1,
+  "stage": "personalization",
+  "timestamp_ms": 0,
+  "source_text": "...",
+  "output_text": "...",
+  "changed": true,
+  "elapsed_us": 0,
+  "candidate_count": 0,
+  "applied_count": 0,
+  "pass_summaries": [],
+  "candidates": [],
+  "applied": []
+}
+```
+
+### 3. Contracts
+
+- Normal dictation may run `PersonalizationEngine` after TNL when `%APPDATA%\PushToTalk\personalization\correction_pairs.json` exists.
+- Runtime personalization diagnostics must be written under `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\`.
+- File names must be unique per run, using the `personalization-<timestamp>-<uuid>.json` pattern.
+- Diagnostic payloads must truncate string fields recursively and cap candidate/applied candidate lists.
+- Diagnostic persistence must be best-effort: if directory creation, serialization, or file write fails, log a warning and keep the decoded text path unchanged.
+- Diagnostics must not include credentials, prompts, audio bytes, or unbounded user history.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| `correction_pairs.json` is missing | Skip personalization and write no personalization diagnostic. |
+| Personalization runs and changes text | Write a bounded diagnostic with `changed = true`, pass summaries, candidate count, and applied count. |
+| Personalization runs and finds no candidate | Write a bounded diagnostic with `changed = false` and zero applied candidates. |
+| A transcript or candidate contains very long text | Truncate strings without splitting Unicode code points. |
+| More than 20 candidates exist | Persist only the first bounded candidate entries while preserving full `candidate_count`. |
+| Diagnostic write fails | Log a warning and continue insertion/LLM processing with the personalization result. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `cloud code -> Claude Code` writes a small JSON file explaining exact/phonetic pass behavior.
+- Base: unrelated text with a loaded pair store writes a no-change diagnostic that remains small.
+- Bad: dictation fails or blocks because the diagnostics directory cannot be created.
+
+### 6. Tests Required
+
+- Unit test for `YYYY-MM-DD` diagnostic directory formatting from a fixed Unix timestamp.
+- Unit test for bounded personalization diagnostic JSON: schema version, stage, elapsed time, candidate cap, pass summaries, and truncated text.
+- Run normal pipeline tests after changing runtime personalization diagnostics.
+- Run `cargo check --no-default-features`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+Self::write_personalization_diagnostic(&source, &result, elapsed_us)?;
+```
+
+#### Correct
+
+```rust
+if let Err(e) = Self::write_personalization_diagnostic(&source, &result, elapsed_us) {
+    tracing::warn!("write failed, keep dictation path: {}", e);
+}
+```
+
+---
+
 ## Scenario: Learned Single Common English Words Require Manual Confirmation
 
 ### 1. Scope / Trigger
