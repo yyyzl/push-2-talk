@@ -475,7 +475,9 @@ Runtime file shape:
 - Runtime personalization diagnostics must be written under `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\`.
 - File names must be unique per run, using the `personalization-<timestamp>-<uuid>.json` pattern.
 - Diagnostic payloads must truncate string fields recursively and cap candidate/applied candidate lists.
+- Each daily diagnostics directory must keep at most 200 `personalization-*.json` files by pruning the oldest personalization files after a successful write.
 - Diagnostic persistence must be best-effort: if directory creation, serialization, or file write fails, log a warning and keep the decoded text path unchanged.
+- Diagnostic pruning must not delete unrelated diagnostic files in the same directory.
 - Diagnostics must not include credentials, prompts, audio bytes, or unbounded user history.
 
 ### 4. Validation & Error Matrix
@@ -487,6 +489,8 @@ Runtime file shape:
 | Personalization runs and finds no candidate | Write a bounded diagnostic with `changed = false` and zero applied candidates. |
 | A transcript or candidate contains very long text | Truncate strings without splitting Unicode code points. |
 | More than 20 candidates exist | Persist only the first bounded candidate entries while preserving full `candidate_count`. |
+| More than 200 personalization diagnostics exist for one UTC day | After writing the new file, keep the newest 200 personalization diagnostics and remove older `personalization-*.json` files. |
+| The directory also contains non-personalization diagnostic files | Leave unrelated diagnostic files untouched. |
 | Diagnostic write fails | Log a warning and continue insertion/LLM processing with the personalization result. |
 
 ### 5. Good/Base/Bad Cases
@@ -499,6 +503,7 @@ Runtime file shape:
 
 - Unit test for `YYYY-MM-DD` diagnostic directory formatting from a fixed Unix timestamp.
 - Unit test for bounded personalization diagnostic JSON: schema version, stage, elapsed time, candidate cap, pass summaries, and truncated text.
+- Unit test for pruning old runtime personalization diagnostics while preserving unrelated diagnostic files.
 - Run normal pipeline tests after changing runtime personalization diagnostics.
 - Run `cargo check --no-default-features`.
 

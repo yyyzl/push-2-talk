@@ -26,6 +26,7 @@ use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 const CANDIDATE_ARBITRATION_TIMEOUT_MS: u64 = 800;
 const MAX_PERSONALIZATION_DIAGNOSTIC_TEXT_CHARS: usize = 160;
 const MAX_PERSONALIZATION_DIAGNOSTIC_CANDIDATES: usize = 20;
+const MAX_PERSONALIZATION_DIAGNOSTIC_FILES_PER_DAY: usize = 200;
 const SECS_PER_DAY: u64 = 86_400;
 
 #[derive(Debug, Serialize)]
@@ -474,7 +475,59 @@ impl NormalPipeline {
             Self::personalization_diagnostic_payload(source_text, result, elapsed_us, timestamp_ms);
         let content = serde_json::to_string_pretty(&payload)?;
         std::fs::write(&path, content)?;
+        Self::prune_personalization_diagnostics(
+            output_dir,
+            MAX_PERSONALIZATION_DIAGNOSTIC_FILES_PER_DAY,
+        )?;
         Ok(path)
+    }
+
+    fn prune_personalization_diagnostics(output_dir: &Path, max_files: usize) -> Result<()> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(output_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if !file_name.starts_with("personalization-")
+                || path.extension().and_then(|ext| ext.to_str()) != Some("json")
+            {
+                continue;
+            }
+
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(UNIX_EPOCH);
+            let timestamp = Self::personalization_diagnostic_timestamp_from_name(&file_name)
+                .unwrap_or_default();
+            files.push((timestamp, modified, file_name, path));
+        }
+
+        if files.len() <= max_files {
+            return Ok(());
+        }
+
+        files.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        let stale_count = files.len().saturating_sub(max_files);
+        for (_, _, _, path) in files.into_iter().take(stale_count) {
+            std::fs::remove_file(path)?;
+        }
+
+        Ok(())
+    }
+
+    fn personalization_diagnostic_timestamp_from_name(file_name: &str) -> Option<u128> {
+        let without_prefix = file_name.strip_prefix("personalization-")?;
+        let (timestamp, _) = without_prefix.split_once('-')?;
+        timestamp.parse().ok()
     }
 
     fn personalization_diagnostic_payload(
@@ -693,5 +746,50 @@ mod tests {
             .expect("pass summaries")
             .iter()
             .any(|summary| summary["name"] == "exact_text"));
+    }
+
+    #[test]
+    fn test_write_personalization_diagnostic_prunes_old_runtime_files() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let store = CorrectionPairStore::new(vec![]);
+        let engine = PersonalizationEngine::new(store);
+        let result = engine.convert("plain text");
+
+        for idx in 0..(MAX_PERSONALIZATION_DIAGNOSTIC_FILES_PER_DAY + 3) {
+            let path = temp
+                .path()
+                .join(format!("personalization-old-{idx:04}.json"));
+            std::fs::write(path, "{}").expect("write old diagnostic");
+        }
+        let unrelated_path = temp.path().join("other-diagnostic.json");
+        std::fs::write(&unrelated_path, "{}").expect("write unrelated diagnostic");
+
+        let new_path = NormalPipeline::write_personalization_diagnostic_to_dir(
+            temp.path(),
+            "plain text",
+            &result,
+            7,
+            999,
+        )
+        .expect("write diagnostic");
+
+        let personalization_count = std::fs::read_dir(temp.path())
+            .expect("read diagnostic dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let file_name = entry.file_name();
+                let file_name = file_name.to_string_lossy();
+                file_name.starts_with("personalization-")
+                    && entry.path().extension().is_some_and(|ext| ext == "json")
+            })
+            .count();
+
+        assert_eq!(
+            personalization_count,
+            MAX_PERSONALIZATION_DIAGNOSTIC_FILES_PER_DAY
+        );
+        assert!(new_path.exists());
+        assert!(unrelated_path.exists());
+        assert!(!temp.path().join("personalization-old-0000.json").exists());
     }
 }
