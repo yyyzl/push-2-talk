@@ -11,5 +11,35 @@
       "claude|code",
       "kelaode|code"
     ]
+  },
+  {
+    "id": "mvp-openai",
+    "original_text": "open ai",
+    "corrected_text": "OpenAI",
+    "source": "manual",
+    "category": "product",
+    "confidence": 0.98,
+    "frequency": 3,
+    "alias_keys": []
+  },
+  {
+    "id": "mvp-typescript",
+    "original_text": "type script",
+    "corrected_text": "TypeScript",
+    "source": "manual",
+    "category": "tool",
+    "confidence": 0.98,
+    "frequency": 3,
+    "alias_keys": []
+  },
+  {
+    "id": "mvp-windsurf",
+    "original_text": "wind surf",
+    "corrected_text": "Windsurf",
+    "source": "manual",
+    "category": "tool",
+    "confidence": 0.98,
+    "frequency": 3,
+    "alias_keys": []
   }
 ]

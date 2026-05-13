@@ -297,7 +297,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 |---|---|
 | Empty latency list | `avg_ms = 0`, `p95_ms = 0`. |
 | Latencies `[2, 1, 4, 100]` | `avg_ms = 26.75`, `p95_ms = 100`. |
-| Eval suite has five cases | Summary includes avg/p95 latency, decision totals, each row's local latency, candidate count, and applied count. |
+| Mini eval suite has 15-30 cases | Summary includes avg/p95 latency, decision totals, each row's local latency, candidate count, and applied count. |
 | A case fails expected text comparison | Eval still prints latency report before returning failure. |
 | Candidate decisions include applied, below-threshold, and skipped-overlap | Summary totals add each decision bucket independently. |
 | p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
@@ -493,3 +493,44 @@ impl CorrectionPair {
 
 - Phonetic key test: `build_key_bundle("Claude Code")` contains `kelaode|code` and `kelaode|KT`.
 - Store/engine test: accepted `cloud code -> Claude Code` reloads and corrects `克劳德 code`.
+
+---
+
+## Scenario: English Plural Near-Misses Share Phrase Phonetic Keys
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `personalization/phonetic_keys.rs` English key generation, ASR eval cases for product/tool names, or correction-pair lookup by English phonetic key.
+- ASR often pluralizes one token in a technical phrase (`types script`, `types scripts`) even though the user's correction pair is singular (`type script -> TypeScript`). The local second-decoding path should cover these small suffix variants without storing duplicate correction pairs.
+
+### 2. Signatures
+
+```rust
+fn build_en_phonetic_keys(words: &[String]) -> Vec<String>;
+fn singularize_ascii_word(word: &str) -> String;
+```
+
+### 3. Contracts
+
+- Generate normal Double Metaphone keys first, then add a conservative singularized variant when it differs.
+- Singularization may strip a trailing `s` for words longer than three ASCII characters.
+- Singularization may convert `ies -> y` when the remaining stem has at least two characters.
+- Do not strip `ss`, and do not singularize words with length `<= 3`.
+- Keep keys deduplicated and stable in insertion order.
+- This is a candidate-generation helper only; it must not bypass the personalization apply threshold or common-word guard.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Pair `type script -> TypeScript`, input `types script` | Input key set shares a key with the stored pair and can auto-apply if score passes threshold. |
+| Pair `type script -> TypeScript`, input `types scripts` | Both plural tokens can be singularized and matched. |
+| Word ends with `ss` | Do not strip the suffix. |
+| Word length is `<= 3` | Do not singularize. |
+| Input `Please type carefully` | No `TypeScript` replacement because the phrase key does not match. |
+
+### 5. Tests Required
+
+- Phonetic key unit test: `type script`, `types script`, and `types scripts` share at least one English phonetic key.
+- ASR eval cases for `types script` and `types scripts`.
+- False-positive guard for common `type` usage.

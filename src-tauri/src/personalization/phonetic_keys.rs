@@ -99,19 +99,59 @@ fn build_en_phonetic_keys(words: &[String]) -> Vec<String> {
         return Vec::new();
     }
 
-    let encoder = DoubleMetaphone::default();
-    let primary = compute_phonetic_key(&encoder, words, false);
-    let alternate = compute_phonetic_key(&encoder, words, true);
     let mut keys = Vec::new();
+    append_phonetic_keys(&mut keys, words);
 
-    if !primary.is_empty() {
-        keys.push(primary.clone());
-    }
-    if !alternate.is_empty() && alternate != primary {
-        keys.push(alternate);
+    let singularized_words = singularize_ascii_words(words);
+    if singularized_words != words {
+        append_phonetic_keys(&mut keys, &singularized_words);
     }
 
     keys
+}
+
+fn append_phonetic_keys(keys: &mut Vec<String>, words: &[String]) {
+    let encoder = DoubleMetaphone::default();
+    let primary = compute_phonetic_key(&encoder, words, false);
+    let alternate = compute_phonetic_key(&encoder, words, true);
+
+    if !primary.is_empty() {
+        push_unique_key(keys, primary.clone());
+    }
+    if !alternate.is_empty() && alternate != primary {
+        push_unique_key(keys, alternate);
+    }
+}
+
+fn singularize_ascii_words(words: &[String]) -> Vec<String> {
+    words
+        .iter()
+        .map(|word| singularize_ascii_word(word))
+        .collect()
+}
+
+fn singularize_ascii_word(word: &str) -> String {
+    if word.len() <= 3 || word.ends_with("ss") {
+        return word.to_string();
+    }
+
+    if let Some(stem) = word.strip_suffix("ies") {
+        if stem.len() >= 2 {
+            return format!("{stem}y");
+        }
+    }
+
+    if let Some(stem) = word.strip_suffix('s') {
+        return stem.to_string();
+    }
+
+    word.to_string()
+}
+
+fn push_unique_key(keys: &mut Vec<String>, key: String) {
+    if !key.is_empty() && !keys.iter().any(|existing| existing == &key) {
+        keys.push(key);
+    }
 }
 
 fn compute_phonetic_key(
@@ -227,6 +267,22 @@ mod tests {
     }
 
     #[test]
+    fn english_plural_near_misses_include_singular_phonetic_key() {
+        let type_script = build_key_bundle("type script");
+        let types_script = build_key_bundle("types script");
+        let types_scripts = build_key_bundle("types scripts");
+
+        assert_shared_key(
+            &type_script.en_phonetic_keys,
+            &types_script.en_phonetic_keys,
+        );
+        assert_shared_key(
+            &type_script.en_phonetic_keys,
+            &types_scripts.en_phonetic_keys,
+        );
+    }
+
+    #[test]
     fn mixed_chinese_alias_key_keeps_ascii_tail() {
         let keys = build_key_bundle("克劳德 code");
 
@@ -240,5 +296,14 @@ mod tests {
 
         assert!(keys.alias_keys.iter().any(|key| key == "kelaode|code"));
         assert!(keys.alias_keys.iter().any(|key| key == "kelaode|KT"));
+    }
+
+    fn assert_shared_key(left: &[String], right: &[String]) {
+        assert!(
+            left.iter().any(|left_key| right.contains(left_key)),
+            "expected shared key between {:?} and {:?}",
+            left,
+            right
+        );
     }
 }
