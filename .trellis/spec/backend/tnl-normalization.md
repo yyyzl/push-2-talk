@@ -226,6 +226,57 @@ pub(crate) struct WindowKey {
 
 ---
 
+## Scenario: ASR Eval Reports Local Decode Latency
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `src-tauri/src/bin/eval_asr.rs`, personalization conversion timing, or ASR personalization quality gates.
+- The eval runner is the regression harness for the local second-decoding path. It must report both accuracy and local processing latency so quality improvements do not hide performance regressions.
+
+### 2. Signatures
+
+Eval entrypoint:
+
+```rust
+cargo run --bin eval_asr -- --suite tests/asr_eval/
+```
+
+Latency summary helper:
+
+```rust
+struct LatencySummary {
+    avg_ms: f64,
+    p95_ms: f64,
+}
+
+fn summarize_latency_ms(values: &[f64]) -> LatencySummary;
+```
+
+### 3. Contracts
+
+- Measure only local conversion time around `PersonalizationEngine::convert`; do not include ASR provider time, audio loading, or LLM calls.
+- Report `avg_latency_ms` and `p95_latency_ms` in the top-level Markdown summary.
+- Add per-case `Latency(ms)` to the result table for slow-case inspection.
+- Use nearest-rank p95 over sorted latency values. Empty input returns zeroed summary values.
+- Keep latency formatting stable with millisecond precision to three decimals.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Empty latency list | `avg_ms = 0`, `p95_ms = 0`. |
+| Latencies `[2, 1, 4, 100]` | `avg_ms = 26.75`, `p95_ms = 100`. |
+| Eval suite has five cases | Summary includes avg/p95 latency plus each row's local latency. |
+| A case fails expected text comparison | Eval still prints latency report before returning failure. |
+
+### 5. Tests Required
+
+- Unit test for empty latency summary.
+- Unit test for nearest-rank p95 calculation.
+- Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
+
+---
+
 ## Scenario: Learned Single Common English Words Require Manual Confirmation
 
 ### 1. Scope / Trigger

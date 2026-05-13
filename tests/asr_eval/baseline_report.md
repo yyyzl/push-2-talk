@@ -14,6 +14,8 @@
 | final_accuracy | 100.00% |
 | correction_pair_hit_rate | 80.00% |
 | false_replacement_count | 0 |
+| avg_latency_ms | 0.114 |
+| p95_latency_ms | 0.155 |
 
 ## Cases
 
@@ -29,4 +31,4 @@
 
 - This is not a full ASR quality baseline yet. It verifies the local personalization decoder MVP over fixed text fixtures.
 - The false-positive guard confirms that a `cloud code -> Claude Code` pair does not generalize to `cloud storage`.
-
+- Latency metrics are from a local sample run and cover only `PersonalizationEngine::convert`, not ASR provider time or LLM processing.
