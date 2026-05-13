@@ -26,6 +26,8 @@ struct EvalArgs {
     allow_quality_gate_failure: bool,
     apply_threshold: Option<f32>,
     max_window_tokens: Option<usize>,
+    sweep_thresholds: Vec<f32>,
+    sweep_window_tokens: Vec<usize>,
 }
 
 impl EvalArgs {
@@ -43,9 +45,33 @@ impl EvalArgs {
         }
         config
     }
+
+    fn is_sweep(&self) -> bool {
+        !self.sweep_thresholds.is_empty() || !self.sweep_window_tokens.is_empty()
+    }
+
+    fn sweep_threshold_values(&self) -> Vec<f32> {
+        if !self.sweep_thresholds.is_empty() {
+            return self.sweep_thresholds.clone();
+        }
+
+        vec![self
+            .apply_threshold
+            .unwrap_or_else(|| PersonalizationEngineConfig::default().apply_threshold)]
+    }
+
+    fn sweep_window_token_values(&self) -> Vec<usize> {
+        if !self.sweep_window_tokens.is_empty() {
+            return self.sweep_window_tokens.clone();
+        }
+
+        vec![self
+            .max_window_tokens
+            .unwrap_or_else(|| PersonalizationEngineConfig::default().max_window_tokens)]
+    }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct EvalCase {
     audio_id: String,
     #[allow(dead_code)]
@@ -131,39 +157,37 @@ struct QualityGateSummary {
     failures: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct SweepRow {
+    apply_threshold: f32,
+    max_window_tokens: usize,
+    metrics: EvalMetrics,
+    quality_gate: QualityGateSummary,
+}
+
 fn main() -> Result<()> {
     let args = parse_args()?;
-    let engine_config = args.engine_config();
-    let suite_dir = resolve_suite_dir(args.suite_dir);
+    let suite_dir = resolve_suite_dir(args.suite_dir.clone());
     let pair_path = suite_dir.join("correction_pairs.json");
     let cases_dir = suite_dir.join("cases");
 
     let store = CorrectionPairStore::load_json(&pair_path)
         .with_context(|| format!("加载纠错对失败: {}", pair_path.display()))?;
-    let engine = PersonalizationEngine::with_config(store, engine_config);
     let cases = load_cases(&cases_dir)?;
 
     if cases.is_empty() {
         anyhow::bail!("评测集为空: {}", cases_dir.display());
     }
 
-    let mut results = Vec::with_capacity(cases.len());
-    for case in cases {
-        let started_at = Instant::now();
-        let conversion = engine.convert(&case.raw_asr_text);
-        let local_latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-        let passed = conversion.text == case.expected_text;
-        results.push(CaseResult {
-            case,
-            actual_text: conversion.text,
-            passed,
-            applied_count: conversion.diagnostics.applied.len(),
-            decision_counts: count_candidate_decisions(&conversion.diagnostics.candidates),
-            local_latency_ms,
-            diagnostics: conversion.diagnostics,
-        });
+    if args.is_sweep() {
+        run_sweep(&args, &store, &cases)
+    } else {
+        run_single_eval(&args, &store, &cases)
     }
+}
 
+fn run_single_eval(args: &EvalArgs, store: &CorrectionPairStore, cases: &[EvalCase]) -> Result<()> {
+    let results = evaluate_cases(store, cases, args.engine_config());
     print_report(&results);
     if let Some(output_dir) = &args.diagnostics_out {
         let path = write_diagnostics(&results, &output_dir)?;
@@ -185,6 +209,82 @@ fn main() -> Result<()> {
     }
 }
 
+fn run_sweep(args: &EvalArgs, store: &CorrectionPairStore, cases: &[EvalCase]) -> Result<()> {
+    if args.diagnostics_out.is_some() {
+        anyhow::bail!("--diagnostics-out 不能和 sweep 参数同时使用");
+    }
+
+    let mut rows = Vec::new();
+    for apply_threshold in args.sweep_threshold_values() {
+        for max_window_tokens in args.sweep_window_token_values() {
+            let mut config = args.engine_config();
+            config.apply_threshold = apply_threshold;
+            config.max_window_tokens = max_window_tokens;
+            let results = evaluate_cases(store, cases, config);
+            let metrics = compute_metrics(&results);
+            let quality_gate = evaluate_quality_gates(&metrics);
+            rows.push(SweepRow {
+                apply_threshold,
+                max_window_tokens,
+                metrics,
+                quality_gate,
+            });
+        }
+    }
+
+    print_sweep_report(&rows);
+    let failures = rows
+        .iter()
+        .filter(|row| !row.quality_gate.passed)
+        .map(|row| {
+            format!(
+                "threshold={:.2}, window={}: {}",
+                row.apply_threshold,
+                row.max_window_tokens,
+                row.quality_gate.failures.join("; ")
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if failures.is_empty() || args.allow_quality_gate_failure {
+        if !failures.is_empty() {
+            eprintln!(
+                "ASR eval sweep quality gate failed but exit is allowed: {}",
+                failures.join(" | ")
+            );
+        }
+        Ok(())
+    } else {
+        anyhow::bail!("ASR eval sweep 未通过: {}", failures.join(" | "));
+    }
+}
+
+fn evaluate_cases(
+    store: &CorrectionPairStore,
+    cases: &[EvalCase],
+    engine_config: PersonalizationEngineConfig,
+) -> Vec<CaseResult> {
+    let engine = PersonalizationEngine::with_config(store.clone(), engine_config);
+    let mut results = Vec::with_capacity(cases.len());
+    for case in cases.iter().cloned() {
+        let started_at = Instant::now();
+        let conversion = engine.convert(&case.raw_asr_text);
+        let local_latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+        let passed = conversion.text == case.expected_text;
+        results.push(CaseResult {
+            case,
+            actual_text: conversion.text,
+            passed,
+            applied_count: conversion.diagnostics.applied.len(),
+            decision_counts: count_candidate_decisions(&conversion.diagnostics.candidates),
+            local_latency_ms,
+            diagnostics: conversion.diagnostics,
+        });
+    }
+
+    results
+}
+
 fn parse_args() -> Result<EvalArgs> {
     parse_args_from(std::env::args().skip(1))
 }
@@ -197,6 +297,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
     let mut allow_quality_gate_failure = false;
     let mut apply_threshold = None;
     let mut max_window_tokens = None;
+    let mut sweep_thresholds = Vec::new();
+    let mut sweep_window_tokens = Vec::new();
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -234,6 +336,18 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
                 };
                 max_window_tokens = Some(parse_max_window_tokens(&value)?);
             }
+            "--sweep-thresholds" => {
+                let Some(value) = args.next() else {
+                    anyhow::bail!("--sweep-thresholds 缺少逗号分隔数值参数");
+                };
+                sweep_thresholds = parse_apply_threshold_list(&value)?;
+            }
+            "--sweep-window-tokens" => {
+                let Some(value) = args.next() else {
+                    anyhow::bail!("--sweep-window-tokens 缺少逗号分隔整数参数");
+                };
+                sweep_window_tokens = parse_max_window_tokens_list(&value)?;
+            }
             _ => {
                 anyhow::bail!("未知参数: {}", arg);
             }
@@ -248,6 +362,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
         allow_quality_gate_failure,
         apply_threshold,
         max_window_tokens,
+        sweep_thresholds,
+        sweep_window_tokens,
     })
 }
 
@@ -272,6 +388,35 @@ fn parse_max_window_tokens(value: &str) -> Result<usize> {
         );
     }
     Ok(max_window_tokens)
+}
+
+fn parse_apply_threshold_list(value: &str) -> Result<Vec<f32>> {
+    parse_comma_separated_values(value, "--sweep-thresholds", parse_apply_threshold)
+}
+
+fn parse_max_window_tokens_list(value: &str) -> Result<Vec<usize>> {
+    parse_comma_separated_values(value, "--sweep-window-tokens", parse_max_window_tokens)
+}
+
+fn parse_comma_separated_values<T>(
+    value: &str,
+    flag: &str,
+    parse_item: impl Fn(&str) -> Result<T>,
+) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    for raw_item in value.split(',') {
+        let item = raw_item.trim();
+        if item.is_empty() {
+            anyhow::bail!("{flag} 包含空值");
+        }
+        values.push(parse_item(item)?);
+    }
+
+    if values.is_empty() {
+        anyhow::bail!("{flag} 至少需要一个值");
+    }
+
+    Ok(values)
 }
 
 fn resolve_suite_dir(path: PathBuf) -> PathBuf {
@@ -403,6 +548,43 @@ fn print_report(results: &[CaseResult]) {
             escape_md(&result.case.raw_asr_text),
             escape_md(&result.actual_text),
             escape_md(&result.case.expected_text),
+        );
+    }
+}
+
+fn print_sweep_report(rows: &[SweepRow]) {
+    println!("# ASR Eval Sweep");
+    println!();
+    println!("| Threshold | WindowTokens | Passed | Accuracy | HitRate | FalseReplacement | P95(ms) | Applied | BelowThreshold | QualityGate |");
+    println!("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|");
+
+    for row in rows {
+        println!(
+            "| {:.2} | {} | {}/{} | {:.2}% | {:.2}% | {:.2}% | {:.3} | {} | {} | {} |",
+            row.apply_threshold,
+            row.max_window_tokens,
+            row.metrics.passed,
+            row.metrics.total,
+            row.metrics.final_accuracy * 100.0,
+            row.metrics.correction_pair_hit_rate * 100.0,
+            row.metrics.false_replacement_rate * 100.0,
+            row.metrics.latency.p95_ms,
+            row.metrics.decision_counts.applied,
+            row.metrics.decision_counts.below_threshold,
+            if row.quality_gate.passed {
+                "PASS"
+            } else {
+                "FAIL"
+            },
+        );
+    }
+
+    for row in rows.iter().filter(|row| !row.quality_gate.passed) {
+        println!(
+            "- quality_gate_failure threshold={:.2} window={}: {}",
+            row.apply_threshold,
+            row.max_window_tokens,
+            row.quality_gate.failures.join("; ")
         );
     }
 }
@@ -991,6 +1173,32 @@ mod tests {
             (MAX_EVAL_WINDOW_TOKENS + 1).to_string(),
         ])
         .is_err());
+    }
+
+    #[test]
+    fn parse_args_accepts_sweep_values() {
+        let args = parse_args_from([
+            "--sweep-thresholds".to_string(),
+            "0.70,0.88,0.99".to_string(),
+            "--sweep-window-tokens".to_string(),
+            "2,5".to_string(),
+        ])
+        .expect("parse sweep args");
+
+        assert!(args.is_sweep());
+        assert_eq!(args.sweep_thresholds, vec![0.70, 0.88, 0.99]);
+        assert_eq!(args.sweep_window_tokens, vec![2, 5]);
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_sweep_values() {
+        assert!(
+            parse_args_from(["--sweep-thresholds".to_string(), "0.88,nan".to_string(),]).is_err()
+        );
+        assert!(parse_args_from(["--sweep-thresholds".to_string(), "0.88,".to_string(),]).is_err());
+        assert!(
+            parse_args_from(["--sweep-window-tokens".to_string(), "5,0".to_string(),]).is_err()
+        );
     }
 
     #[test]

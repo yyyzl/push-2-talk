@@ -80,6 +80,8 @@
 - Pass summary metrics show `exact_text` and `syllable_match` contribution separately; elapsed values are local sample timings and should be compared directionally.
 - Tuning command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.88 --max-window-tokens 5`.
 - Threshold stress command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.99 --allow-quality-gate-failure`.
+- Sweep command: `cargo run --bin eval_asr --no-default-features -- --sweep-thresholds 0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure`.
+- Sample sweep: threshold `0.88` passes for window `3` and `5`; threshold `0.99` drops to 13/22 with 10 below-threshold candidates, useful for inspecting conservative cutoff behavior.
 - Ablation command: `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure`.
 - With syllable matching disabled, the sample run passes 13/22 cases with 9 exact-text applications only; the remaining 9 fixes come from English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias paths.
 - Diagnostics export schema v2 includes per-case pass summaries for `exact_text` and `syllable_match`.

@@ -303,6 +303,7 @@ cargo run --bin eval_asr -- --suite tests/asr_eval/
 cargo run --bin eval_asr -- --suite tests/asr_eval/ --diagnostics-out target/asr_eval_diagnostics
 cargo run --bin eval_asr -- --disable-syllable-match-pass --allow-quality-gate-failure
 cargo run --bin eval_asr -- --apply-threshold 0.88 --max-window-tokens 5
+cargo run --bin eval_asr -- --sweep-thresholds 0.70,0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure
 ```
 
 Latency summary helper:
@@ -369,6 +370,9 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - `--allow-quality-gate-failure` may change only the process exit status for intentional ablation runs. It must still print `quality_gate_passed: false` and each `quality_gate_failure`.
 - `--apply-threshold <float>` is an eval-only tuning flag. The value must be finite and within `0.0..=1.0`; it overrides `PersonalizationEngineConfig.apply_threshold` for that run only.
 - `--max-window-tokens <usize>` is an eval-only tuning flag. The value must be within `1..=16`; it overrides `PersonalizationEngineConfig.max_window_tokens` for that run only.
+- `--sweep-thresholds <csv>` and `--sweep-window-tokens <csv>` are eval-only tuning flags. They run the Cartesian product of threshold/window values and print a compact comparison table.
+- Sweep mode must reuse the same quality-gate logic as normal eval. It fails the process when any row fails unless `--allow-quality-gate-failure` is set.
+- Sweep mode must reject `--diagnostics-out` to avoid overwriting one diagnostics file with multiple configs.
 - Eval tuning flags must not change production defaults exposed through `PersonalizationEngine::new(store)`.
 - `--diagnostics-out <dir>` is optional. When set, eval must create `<dir>/asr_eval_diagnostics.json` after printing the report.
 - Diagnostics payload must be bounded:
@@ -395,6 +399,9 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 | `--disable-syllable-match-pass --allow-quality-gate-failure` is set | Print failed quality gates and return success for comparison scripts. |
 | `--apply-threshold` is NaN, infinite, below 0, or above 1 | Reject before running eval. |
 | `--max-window-tokens` is 0 or greater than 16 | Reject before running eval. |
+| `--sweep-thresholds` contains an empty, NaN, infinite, below-0, or above-1 item | Reject before running eval. |
+| `--sweep-window-tokens` contains an empty, 0, or greater-than-16 item | Reject before running eval. |
+| Sweep mode uses `--diagnostics-out` | Reject before running eval. |
 | `--diagnostics-out target/asr_eval_diagnostics` is set | Create `target/asr_eval_diagnostics/asr_eval_diagnostics.json` with bounded per-case payload. |
 | A candidate contains very long text | Serialized diagnostics truncate it without splitting Unicode code points. |
 
@@ -410,12 +417,14 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Unit test for parsing `--diagnostics-out`.
 - Unit test for parsing personalization pass toggles.
 - Unit test for parsing and validating `--apply-threshold` and `--max-window-tokens`.
+- Unit test for parsing and validating sweep threshold/window lists.
 - Unit test that quality-gate override affects only exit success logic.
 - Unit test for bounded Unicode-safe string truncation.
 - Unit test for bounded diagnostics export and candidate-list capping.
 - Unit test for diagnostics export schema version and `pass_summaries`.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.88 --max-window-tokens 5` after eval tuning flag changes.
+- Run `cargo run --bin eval_asr --no-default-features -- --sweep-thresholds 0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure` after sweep-format changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure` after pass-toggle changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --diagnostics-out target/asr_eval_diagnostics` after diagnostics-format changes.
 

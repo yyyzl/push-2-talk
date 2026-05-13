@@ -169,6 +169,7 @@ flowchart LR
    ```
 5. **诊断落盘**：每次实际识别都落盘到 `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\` JSON，每个 Pass 的输入/输出/命中/耗时；payload 必须脱敏并限制长度
 6. **eval runner**：`cargo run --bin eval_asr -- --suite tests/asr_eval/` 一键跑全集
+7. **调参 sweep**：`cargo run --bin eval_asr -- --sweep-thresholds 0.70,0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure` 一次输出阈值/窗口对比表
 
 ### 指标
 
@@ -188,6 +189,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
 - `tests/asr_eval/cases/*.json` 评测样本
 - `src-tauri/src/bin/eval_asr.rs` 运行器
 - `tests/asr_eval/baseline_report.md` 基线报告（v1 状态下的成绩，作为后续对比基准）
+- sweep 报告：用于比较 `apply_threshold` 与 `max_window_tokens` 对命中率、误伤率、below-threshold 候选和 p95 延迟的影响
 
 ### 工程量
 
