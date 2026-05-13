@@ -229,6 +229,52 @@ pub(crate) struct WindowKey {
 
 ---
 
+## Scenario: Personalization Engine Pass Toggles Preserve Fallback Behavior
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `PersonalizationEngine`, correction-pair candidate generation, or future ConvertPipeline pass wiring.
+- The local IME-style decoder must remain decomposable: exact correction pairs represent the P1 fallback path, while phonetic, fuzzy-pinyin, mixed, and alias matching represent the P2 syllable-match path.
+
+### 2. Signatures
+
+```rust
+pub struct PersonalizationEngineConfig {
+    pub max_window_tokens: usize,
+    pub apply_threshold: f32,
+    pub enable_exact_text_pass: bool,
+    pub enable_syllable_match_pass: bool,
+}
+
+impl PersonalizationEngine {
+    pub fn with_config(store: CorrectionPairStore, config: PersonalizationEngineConfig) -> Self;
+}
+```
+
+### 3. Contracts
+
+- `PersonalizationEngine::new(store)` must preserve production defaults: exact text pass enabled, syllable-match pass enabled, `max_window_tokens = 5`, `apply_threshold = 0.88`.
+- When `enable_exact_text_pass = true`, exact `original_text -> corrected_text` pairs may still apply even if syllable matching is disabled.
+- When `enable_syllable_match_pass = false`, do not query English phonetic, Chinese fuzzy-pinyin, mixed, or alias keys.
+- Disabled syllable matching should produce no phonetic/alias candidates for that pass, not just mark them below threshold.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Pair `cloud code -> Claude Code`, input `我打开 cloud code`, syllable pass disabled | Exact text pass still rewrites to `我打开 Claude Code`. |
+| Pair `cloud code -> Claude Code`, input `我打开 claud code`, syllable pass disabled | Keep `claud code`; no English phonetic candidate. |
+| Pair has alias `kelaode\|code`, input `我打开 克劳德 code`, syllable pass disabled | Keep `克劳德 code`; no alias candidate. |
+| Default config | Existing P1/P2 behavior remains enabled. |
+
+### 5. Tests Required
+
+- Personalization engine test: disabling syllable-match pass keeps exact correction.
+- Personalization engine test: disabling syllable-match pass skips English phonetic and alias candidates.
+- Run personalization suite and ASR eval after changing default config behavior.
+
+---
+
 ## Scenario: ASR Eval Reports Local Decode Latency
 
 ### 1. Scope / Trigger

@@ -7,6 +7,25 @@ use super::correction_pair_store::{CorrectionPair, CorrectionPairStore};
 const DEFAULT_MAX_WINDOW_TOKENS: usize = 5;
 const DEFAULT_APPLY_THRESHOLD: f32 = 0.88;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PersonalizationEngineConfig {
+    pub max_window_tokens: usize,
+    pub apply_threshold: f32,
+    pub enable_exact_text_pass: bool,
+    pub enable_syllable_match_pass: bool,
+}
+
+impl Default for PersonalizationEngineConfig {
+    fn default() -> Self {
+        Self {
+            max_window_tokens: DEFAULT_MAX_WINDOW_TOKENS,
+            apply_threshold: DEFAULT_APPLY_THRESHOLD,
+            enable_exact_text_pass: true,
+            enable_syllable_match_pass: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversionResult {
     pub text: String,
@@ -60,17 +79,16 @@ pub enum CandidateDecision {
 
 pub struct PersonalizationEngine {
     store: CorrectionPairStore,
-    max_window_tokens: usize,
-    apply_threshold: f32,
+    config: PersonalizationEngineConfig,
 }
 
 impl PersonalizationEngine {
     pub fn new(store: CorrectionPairStore) -> Self {
-        Self {
-            store,
-            max_window_tokens: DEFAULT_MAX_WINDOW_TOKENS,
-            apply_threshold: DEFAULT_APPLY_THRESHOLD,
-        }
+        Self::with_config(store, PersonalizationEngineConfig::default())
+    }
+
+    pub fn with_config(store: CorrectionPairStore, config: PersonalizationEngineConfig) -> Self {
+        Self { store, config }
     }
 
     pub fn convert(&self, text: &str) -> ConversionResult {
@@ -96,7 +114,7 @@ impl PersonalizationEngine {
 
         let mut selected = Vec::new();
         for candidate in &mut candidates {
-            if candidate.score < self.apply_threshold {
+            if candidate.score < self.config.apply_threshold {
                 candidate.decision = CandidateDecision::BelowApplyThreshold;
                 continue;
             }
@@ -137,7 +155,7 @@ impl PersonalizationEngine {
     fn collect_candidates(&self, lattice: &SyllableLattice) -> Vec<ConversionCandidate> {
         let mut candidates = Vec::new();
 
-        for window in lattice.windows(self.max_window_tokens) {
+        for window in lattice.windows(self.config.max_window_tokens) {
             let start = window.byte_range.start;
             let end = window.byte_range.end;
             let window_text = window.text.as_str();
@@ -145,16 +163,22 @@ impl PersonalizationEngine {
             let has_chinese = window.has_chinese;
             let has_ascii = window.has_ascii;
 
-            for pair in self.store.lookup_by_text(window_text) {
-                push_candidate(
-                    &mut candidates,
-                    pair,
-                    window_text,
-                    start,
-                    end,
-                    exact_score(pair),
-                    MatchKind::ExactText,
-                );
+            if self.config.enable_exact_text_pass {
+                for pair in self.store.lookup_by_text(window_text) {
+                    push_candidate(
+                        &mut candidates,
+                        pair,
+                        window_text,
+                        start,
+                        end,
+                        exact_score(pair),
+                        MatchKind::ExactText,
+                    );
+                }
+            }
+
+            if !self.config.enable_syllable_match_pass {
+                continue;
             }
 
             if has_ascii && !has_chinese {
@@ -479,5 +503,54 @@ mod tests {
         assert_eq!(result.text, "enable ai mode");
         assert!(!result.changed);
         assert!(result.diagnostics.applied.is_empty());
+    }
+
+    #[test]
+    fn disabling_syllable_match_pass_keeps_exact_pair() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let engine = PersonalizationEngine::with_config(
+            CorrectionPairStore::new(vec![pair]),
+            PersonalizationEngineConfig {
+                enable_syllable_match_pass: false,
+                ..PersonalizationEngineConfig::default()
+            },
+        );
+
+        let result = engine.convert("我打开 cloud code");
+
+        assert_eq!(result.text, "我打开 Claude Code");
+        assert!(result.changed);
+        assert!(result
+            .diagnostics
+            .applied
+            .iter()
+            .all(|candidate| candidate.match_kind == MatchKind::ExactText));
+    }
+
+    #[test]
+    fn disabling_syllable_match_pass_skips_phonetic_and_alias_pairs() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let engine = PersonalizationEngine::with_config(
+            CorrectionPairStore::new(vec![pair]),
+            PersonalizationEngineConfig {
+                enable_syllable_match_pass: false,
+                ..PersonalizationEngineConfig::default()
+            },
+        );
+
+        let phonetic = engine.convert("我打开 claud code");
+        let alias = engine.convert("我打开 克劳德 code");
+
+        assert_eq!(phonetic.text, "我打开 claud code");
+        assert_eq!(alias.text, "我打开 克劳德 code");
+        assert!(!phonetic.changed);
+        assert!(!alias.changed);
+        assert!(phonetic.diagnostics.candidates.is_empty());
+        assert!(alias.diagnostics.candidates.is_empty());
     }
 }
