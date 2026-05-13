@@ -8,7 +8,7 @@ mod engine;
 mod phonetic_keys;
 
 pub use correction_pair_store::{
-    default_correction_pairs_path, record_accepted_correction_pair, CorrectionPair,
-    CorrectionPairStore,
+    default_correction_pairs_path, record_accepted_correction_pair,
+    record_rejected_correction_pair, CorrectionPair, CorrectionPairStore,
 };
 pub use engine::{ConversionDiagnostics, ConversionResult, PersonalizationEngine};

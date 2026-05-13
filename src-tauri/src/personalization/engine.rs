@@ -138,7 +138,7 @@ impl PersonalizationEngine {
                         window_text,
                         start,
                         end,
-                        1.0,
+                        exact_score(pair),
                         MatchKind::ExactText,
                     );
                 }
@@ -227,6 +227,14 @@ fn alias_score(pair: &CorrectionPair) -> f32 {
         pair.confidence * 0.92
     } else {
         pair.confidence * 0.82
+    }
+}
+
+fn exact_score(pair: &CorrectionPair) -> f32 {
+    if pair.is_manual() {
+        1.0
+    } else {
+        pair.confidence.clamp(0.0, 1.0)
     }
 }
 

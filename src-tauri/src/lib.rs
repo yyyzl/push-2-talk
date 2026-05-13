@@ -4730,12 +4730,29 @@ async fn delete_dictionary_entries(
     Ok(())
 }
 
-/// 忽略学习建议（暂不实现黑名单，仅关闭通知）
+/// 忽略学习建议
 #[tauri::command]
-async fn dismiss_learning_suggestion(id: String) -> Result<(), String> {
+async fn dismiss_learning_suggestion(
+    id: String,
+    original: Option<String>,
+    corrected: Option<String>,
+) -> Result<(), String> {
     tracing::debug!("忽略学习建议: {}", id);
-    // 当前版本仅关闭通知，不实现黑名单机制
-    // 未来可在此添加：将 id 对应的词汇加入黑名单，避免重复建议
+    let rejected_pair = crate::personalization::record_rejected_correction_pair(
+        original.as_deref(),
+        corrected.as_deref(),
+    )
+    .map_err(|e| format!("记录学习负反馈失败: {}", e))?;
+    if let Some(pair) = rejected_pair {
+        tracing::info!(
+            "个性化纠错对负反馈: {} → {} (id: {}, confidence: {:.2}, rejected: {})",
+            pair.original_text,
+            pair.corrected_text,
+            pair.id,
+            pair.confidence,
+            pair.rejected_count
+        );
+    }
     Ok(())
 }
 

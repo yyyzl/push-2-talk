@@ -8,6 +8,9 @@ use crate::config::AppConfig;
 
 use super::phonetic_keys::{build_key_bundle, normalize_surface};
 
+const REJECT_CONFIDENCE_DELTA: f32 = 0.20;
+const DISABLE_AFTER_REJECTS: u32 = 3;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrectionPair {
     pub id: String,
@@ -237,6 +240,52 @@ impl CorrectionPairStore {
         Some(pair)
     }
 
+    pub fn record_rejected_correction_json(
+        path: impl AsRef<Path>,
+        original_text: &str,
+        corrected_text: &str,
+    ) -> Result<Option<CorrectionPair>> {
+        if !path.as_ref().exists() {
+            return Ok(None);
+        }
+
+        let mut store = Self::load_json(&path)?;
+        let pair = store.record_rejected_correction(original_text, corrected_text);
+        if pair.is_some() {
+            store.save_json(path)?;
+        }
+        Ok(pair)
+    }
+
+    pub fn record_rejected_correction(
+        &mut self,
+        original_text: &str,
+        corrected_text: &str,
+    ) -> Option<CorrectionPair> {
+        let normalized_original = normalize_surface(original_text);
+        let normalized_corrected = normalize_surface(corrected_text);
+        if normalized_original.is_empty()
+            || normalized_corrected.is_empty()
+            || normalized_original == normalized_corrected
+        {
+            return None;
+        }
+
+        let pair = self.pairs.iter_mut().find(|pair| {
+            pair.enabled
+                && normalize_surface(&pair.original_text) == normalized_original
+                && normalize_surface(&pair.corrected_text) == normalized_corrected
+        })?;
+
+        pair.rejected_count = pair.rejected_count.saturating_add(1);
+        pair.confidence = (pair.confidence - REJECT_CONFIDENCE_DELTA).max(0.0);
+        if pair.rejected_count >= DISABLE_AFTER_REJECTS {
+            pair.enabled = false;
+        }
+
+        Some(pair.clone())
+    }
+
     pub fn lookup_by_text(&self, original: &str) -> Vec<&CorrectionPair> {
         let normalized = normalize_surface(original);
         self.pairs
@@ -313,6 +362,18 @@ pub fn record_accepted_correction_pair(
         corrected_text,
         category,
     )
+}
+
+pub fn record_rejected_correction_pair(
+    original_text: Option<&str>,
+    corrected_text: Option<&str>,
+) -> Result<Option<CorrectionPair>> {
+    let (Some(original_text), Some(corrected_text)) = (original_text, corrected_text) else {
+        return Ok(None);
+    };
+
+    let path = default_correction_pairs_path()?;
+    CorrectionPairStore::record_rejected_correction_json(path, original_text, corrected_text)
 }
 
 fn push_unique(values: &mut Vec<String>, value: String) {
@@ -436,5 +497,103 @@ mod tests {
         assert!(empty.is_none());
         assert!(identity.is_none());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn rejected_correction_pair_lowers_confidence_without_creating_new_pair() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save accepted pair");
+
+        let rejected = CorrectionPairStore::record_rejected_correction_json(
+            &path,
+            "Cloud Code",
+            "Claude Code",
+        )
+        .expect("record reject")
+        .expect("existing pair should be updated");
+
+        assert_eq!(rejected.rejected_count, 1);
+        assert!(rejected.confidence < 0.88);
+        assert!(rejected.enabled);
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let pair = store.lookup_by_text("cloud code")[0];
+        assert_eq!(pair.rejected_count, 1);
+        assert!(pair.confidence < 0.88);
+
+        let missing_path = temp.path().join("missing.json");
+        let missing = CorrectionPairStore::record_rejected_correction_json(
+            &missing_path,
+            "claud code",
+            "Claude Code",
+        )
+        .expect("missing pair should not fail");
+        assert!(missing.is_none());
+        assert!(!missing_path.exists());
+    }
+
+    #[test]
+    fn rejected_learned_pair_no_longer_auto_applies_exact_text() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save accepted pair");
+        CorrectionPairStore::record_rejected_correction_json(&path, "cloud code", "Claude Code")
+            .expect("record reject");
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+
+        assert_eq!(
+            engine.convert("我打开 cloud code").text,
+            "我打开 cloud code"
+        );
+    }
+
+    #[test]
+    fn repeated_rejections_disable_pair_and_exclude_lookup() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save accepted pair");
+
+        for _ in 0..3 {
+            CorrectionPairStore::record_rejected_correction_json(
+                &path,
+                "cloud code",
+                "Claude Code",
+            )
+            .expect("record reject")
+            .expect("pair should exist");
+        }
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        assert!(store.lookup_by_text("cloud code").is_empty());
+
+        let raw_pairs: Vec<CorrectionPair> =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read pairs"))
+                .expect("parse pairs");
+        assert_eq!(raw_pairs[0].rejected_count, 3);
+        assert!(!raw_pairs[0].enabled);
     }
 }

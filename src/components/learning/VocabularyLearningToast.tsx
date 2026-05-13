@@ -52,13 +52,17 @@ export function VocabularyLearningToast({
   // 处理忽略
   const handleDismiss = useCallback(async () => {
     try {
-      await invoke("dismiss_learning_suggestion", { id: suggestion.id });
+      await invoke("dismiss_learning_suggestion", {
+        id: suggestion.id,
+        original: suggestion.original,
+        corrected: suggestion.corrected,
+      });
     } catch (error) {
       console.error("忽略建议失败:", error);
     }
     setIsExiting(true);
     setTimeout(onDismiss, 300);
-  }, [suggestion.id, onDismiss]);
+  }, [suggestion.id, suggestion.original, suggestion.corrected, onDismiss]);
 
   // 自动消失倒计时（鼠标悬停时暂停）
   useEffect(() => {

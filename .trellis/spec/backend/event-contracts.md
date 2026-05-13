@@ -202,3 +202,65 @@ await invoke("add_learned_word", {
 - Backend storage test: accepted correction persists, reloads, and retains category/source/confidence.
 - Backend conversion test: a freshly accepted mixed-language pair is confident enough to apply after reload.
 - Frontend build/type-check must cover the extended Toast `invoke` payload.
+
+---
+
+## Scenario: `dismiss_learning_suggestion` Optional Personalization Reject
+
+### 1. Scope / Trigger
+
+- Trigger: any change to the `dismiss_learning_suggestion` Tauri command, learning Toast dismiss behavior, or personalization correction-pair negative feedback.
+- Explicit user dismissals and passive timeout dismissals have different semantics.
+
+### 2. Signatures
+
+Backend command shape:
+
+```rust
+async fn dismiss_learning_suggestion(
+    id: String,
+    original: Option<String>,
+    corrected: Option<String>,
+) -> Result<(), String>
+```
+
+Frontend explicit-dismiss payload:
+
+```typescript
+await invoke("dismiss_learning_suggestion", {
+  id: suggestion.id,
+  original: suggestion.original,
+  corrected: suggestion.corrected,
+});
+```
+
+Frontend timeout payload:
+
+```typescript
+await invoke("dismiss_learning_suggestion", { id: suggestion.id });
+```
+
+### 3. Contracts
+
+- Missing optional fields must preserve notification-only behavior.
+- An explicit dismiss from the button or Escape key may record negative feedback for an existing correction pair.
+- Passive timeout must not record negative feedback because the user may not have seen the suggestion.
+- Reject feedback must not create a new correction pair. It only updates an existing pair that matches both normalized `original` and normalized `corrected`.
+- Rejected learned pairs must affect future matching. Non-manual exact matches should respect confidence so a rejected learned pair can fall below the automatic-apply threshold.
+- Manual pairs remain high-priority and should not be weakened by the learned-pair exact-match confidence rule.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Explicit dismiss sends original/corrected and pair exists | Increment `rejected_count`, lower confidence, persist store. |
+| Explicit dismiss sends original/corrected but pair is missing | No new pair is created; command succeeds. |
+| Timeout sends only id | No reject is recorded; command succeeds. |
+| Rejected learned pair falls below threshold | It no longer auto-applies, including exact-text matches. |
+| Pair reaches consecutive reject threshold | Pair is disabled and excluded from lookup. |
+
+### 5. Tests Required
+
+- Backend storage test: reject lowers confidence and does not create a missing pair.
+- Backend conversion test: a rejected learned exact-text pair no longer auto-applies.
+- Frontend build/type-check must cover the explicit-dismiss payload while preserving timeout payload compatibility.
