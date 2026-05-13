@@ -493,6 +493,30 @@ mod tests {
     }
 
     #[test]
+    fn accepted_cloud_code_pair_generates_cross_language_alias_after_reload() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save pair");
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        assert_eq!(store.lookup_by_alias_key("kelaode|code").len(), 1);
+        assert_eq!(store.lookup_by_alias_key("kelaode|KT").len(), 1);
+
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+        assert_eq!(
+            engine.convert("我打开 克劳德 code").text,
+            "我打开 Claude Code"
+        );
+    }
+
+    #[test]
     fn accepted_correction_pair_ignores_empty_or_identity_text() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let path = temp.path().join("correction_pairs.json");

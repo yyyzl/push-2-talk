@@ -164,21 +164,51 @@ fn build_mixed_keys(
 }
 
 fn build_alias_keys(zh_pinyin_fuzzy_key: &Option<String>, ascii_words: &[String]) -> Vec<String> {
-    let Some(zh_key) = zh_pinyin_fuzzy_key else {
-        return Vec::new();
-    };
+    let mut keys = Vec::new();
 
-    if ascii_words.is_empty() {
-        return vec![zh_key.clone()];
+    if let Some(zh_key) = zh_pinyin_fuzzy_key {
+        if ascii_words.is_empty() {
+            keys.push(zh_key.clone());
+        } else {
+            keys.push(format!("{}|{}", zh_key, ascii_words.join("|")));
+            if let Some(last_word) = ascii_words.last() {
+                keys.push(format!("{}|{}", zh_key, last_word));
+            }
+        }
     }
 
-    let mut keys = vec![format!("{}|{}", zh_key, ascii_words.join("|"))];
-    if let Some(last_word) = ascii_words.last() {
-        keys.push(format!("{}|{}", zh_key, last_word));
-    }
+    keys.extend(build_seeded_product_alias_keys(ascii_words));
     keys.sort();
     keys.dedup();
     keys
+}
+
+fn build_seeded_product_alias_keys(ascii_words: &[String]) -> Vec<String> {
+    let mut keys = Vec::new();
+
+    for (index, word) in ascii_words.iter().enumerate() {
+        for alias in product_pinyin_aliases(word) {
+            let tail = &ascii_words[index + 1..];
+            if tail.is_empty() {
+                keys.push(alias.to_string());
+                continue;
+            }
+
+            keys.push(format!("{}|{}", alias, tail.join("|")));
+            for phonetic_tail in build_en_phonetic_keys(tail) {
+                keys.push(format!("{}|{}", alias, phonetic_tail));
+            }
+        }
+    }
+
+    keys
+}
+
+fn product_pinyin_aliases(word: &str) -> &'static [&'static str] {
+    match word {
+        "claude" => &["kelaode"],
+        _ => &[],
+    }
 }
 
 #[cfg(test)]
@@ -202,5 +232,13 @@ mod tests {
 
         assert!(keys.alias_keys.iter().any(|key| key == "kelaode|code"));
         assert!(keys.mixed_keys.iter().any(|key| key == "kelaode|code"));
+    }
+
+    #[test]
+    fn corrected_ascii_product_generates_cross_language_aliases() {
+        let keys = build_key_bundle("Claude Code");
+
+        assert!(keys.alias_keys.iter().any(|key| key == "kelaode|code"));
+        assert!(keys.alias_keys.iter().any(|key| key == "kelaode|KT"));
     }
 }

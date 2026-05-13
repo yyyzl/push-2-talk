@@ -219,3 +219,55 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 - Personalization engine test: learned multi-word phrase containing a common word still auto-applies.
 - TNL fuzzy test: shared common-word list includes any generally guarded token.
 - If the token is personalization-only, run the broader TNL suite to prove existing dictionary phonetic behavior is unchanged.
+
+---
+
+## Scenario: Corrected Text May Seed Cross-Language Product Aliases
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `personalization/phonetic_keys.rs`, correction-pair key generation, or alias lookup behavior.
+- Learned pairs must cover the common case where the user fixes an English product name once, but later ASR outputs a Chinese transliteration plus an English tail.
+
+### 2. Signatures
+
+Core key-generation API:
+
+```rust
+pub fn build_key_bundle(text: &str) -> PhoneticKeyBundle;
+
+pub struct PhoneticKeyBundle {
+    pub alias_keys: Vec<String>,
+    pub mixed_keys: Vec<String>,
+}
+```
+
+Correction-pair key hydration:
+
+```rust
+impl CorrectionPair {
+    pub fn ensure_keys(&mut self);
+}
+```
+
+### 3. Contracts
+
+- `ensure_keys()` must derive lookup keys from both `original_text` and `corrected_text`.
+- For corrected ASCII product names with an explicitly seeded pinyin alias, add cross-language alias keys. Example: `Claude Code` should add `kelaode|code` and `kelaode|KT`.
+- Seeded aliases must be a tiny conservative table, not an automatic transliteration generator for every English word.
+- Alias keys generated from corrected text are allowed because the correction pair is user-accepted, manual, imported, or otherwise already present in the personalization store.
+- Existing Chinese+ASCII input key generation must continue producing aliases such as `kelaode|code`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Accepted pair `cloud code -> Claude Code` | Persist alias keys including `kelaode|code` and `kelaode|KT`. |
+| Later ASR text is `我打开 克劳德 code` | Match the learned pair and output `我打开 Claude Code`. |
+| Corrected text has no seeded product alias | Do not invent cross-language aliases. |
+| Seed table is expanded | Add unit tests for generated aliases and run personalization eval. |
+
+### 5. Tests Required
+
+- Phonetic key test: `build_key_bundle("Claude Code")` contains `kelaode|code` and `kelaode|KT`.
+- Store/engine test: accepted `cloud code -> Claude Code` reloads and corrects `克劳德 code`.
