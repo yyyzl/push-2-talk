@@ -240,6 +240,7 @@ impl CorrectionPairStore {
             if !existing_is_manual {
                 existing.id = id;
                 existing.source = "learned".to_string();
+                existing.rejected_count = 0;
             }
             existing.refresh_keys_for_text_update(original_text, corrected_text);
             existing.category = category;
@@ -793,6 +794,53 @@ mod tests {
                 .expect("parse pairs");
         assert_eq!(raw_pairs[0].rejected_count, 3);
         assert!(!raw_pairs[0].enabled);
+    }
+
+    #[test]
+    fn accepted_correction_clears_prior_reject_streak() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save accepted pair");
+        for _ in 0..3 {
+            CorrectionPairStore::record_rejected_correction_json(
+                &path,
+                "cloud code",
+                "Claude Code",
+            )
+            .expect("record reject")
+            .expect("pair should exist");
+        }
+
+        let accepted = CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("accept again")
+        .expect("pair should be re-accepted");
+
+        assert!(accepted.enabled);
+        assert_eq!(accepted.rejected_count, 0);
+        assert!(accepted.confidence >= 0.98);
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let pair = store.lookup_by_text("cloud code")[0];
+        assert_eq!(pair.rejected_count, 0);
+        assert!(pair.enabled);
+
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+        assert_eq!(
+            engine.convert("我打开 cloud code").text,
+            "我打开 Claude Code"
+        );
     }
 
     #[test]

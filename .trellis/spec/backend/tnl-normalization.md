@@ -629,6 +629,7 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 - Manual single-word pairs may still auto-apply. Manual source is the explicit user override.
 - A conflicting accepted-learning update must not overwrite an existing manual correction pair for the same original text.
 - Reject feedback from learning suggestions must not lower confidence, increment reject counters, or disable manual correction pairs.
+- Accepted learning feedback for a previously rejected learned pair must re-enable the pair and reset the consecutive reject streak.
 - Multi-word pairs are not blocked just because one token is common. `cloud code -> Claude Code` remains valid.
 - Personalization must reuse the shared TNL common-word list as its base guard. A small personalization-only supplement is allowed for ASR-specific risky words when adding them to TNL would break existing dictionary phonetic behavior.
 - This guard must apply to exact text, English phonetic, mixed, and alias scoring paths.
@@ -642,6 +643,7 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 | Manual pair `cloud code -> Claude Code`, later accepted learning says `cloud code -> Cloud IDE` | Preserve the manual pair and continue applying `Claude Code`. |
 | Manual pair `cloud code -> Claude Code`, learning dismiss sends the same original/corrected text | Preserve confidence, reject count, enabled state, and conversion behavior. |
 | Learned pair `cloud code -> Claude Code`, input `我打开 cloud code` | Replace the phrase. |
+| Learned pair `cloud code -> Claude Code` is disabled by repeated rejects, then accepted again | Restore exact conversion and reset `rejected_count` to 0. |
 | TNL common-word list misses a generally risky token | Add it to the shared TNL list with a regression test. |
 | A token is risky only for learned correction pairs, but valid for existing TNL dictionary correction | Add it to the personalization supplement instead of the TNL list. |
 
@@ -651,6 +653,7 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 - Personalization engine test: manual single common word still auto-applies.
 - Personalization storage/engine test: conflicting accepted learning does not overwrite an existing manual pair.
 - Personalization storage/engine test: reject feedback does not weaken an existing manual pair.
+- Personalization storage/engine test: accepted learning clears prior reject streak for a learned pair.
 - Personalization engine test: learned multi-word phrase containing a common word still auto-applies.
 - TNL fuzzy test: shared common-word list includes any generally guarded token.
 - If the token is personalization-only, run the broader TNL suite to prove existing dictionary phonetic behavior is unchanged.
