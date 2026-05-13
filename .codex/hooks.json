@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --python 3.12 python -X utf8 .codex/hooks/inject-workflow-state.py",
-            "timeout": 5
+            "command": "python -X utf8 .codex/hooks/inject-workflow-state.py",
+            "timeout": 15
           }
         ]
       }

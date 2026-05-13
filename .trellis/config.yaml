@@ -64,3 +64,21 @@ max_journal_lines: 2000
 #
 codex:
   dispatch_mode: inline  # or "sub-agent" to dispatch trellis-* sub-agents
+
+#-------------------------------------------------------------------------------
+# Session Auto-Commit
+#-------------------------------------------------------------------------------
+
+# Auto-commit behavior for session journal + task archive operations.
+# - true (default): scripts auto-stage and auto-commit journal / task changes
+#   after add_session.py / task.py archive runs.
+# - false: scripts do not touch git. Files (journal-*.md, task archive moves)
+#   are still written to disk; you decide whether to git add / commit.
+#
+# Use `false` if your project's .gitignore intentionally excludes `.trellis/`
+# and you want session data kept local-only, or if you prefer to review
+# staged changes manually before each commit.
+#
+# Accepts: true / false / yes / no / 1 / 0 / on / off (case-insensitive).
+#
+# session_auto_commit: true
