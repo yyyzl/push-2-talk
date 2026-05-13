@@ -89,3 +89,80 @@ if matcher.has_exact_dictionary_match(original) {
     result.push_str(&fuzzy_match.word);
 }
 ```
+
+---
+
+## Scenario: Mixed-Language Windows Must Not Use English-Only Phonetic Matches
+
+### 1. Scope / Trigger
+
+- Trigger: any change to syllable/window candidate generation, personalization correction pairs, or English phonetic matching over spans that may include Chinese and ASCII tokens.
+- Mixed-language ASR text often contains surrounding Chinese context plus an English product/tool name. Window generation must not let the English part match a pair and then replace the whole mixed span.
+
+### 2. Signatures
+
+Candidate-generation APIs may differ, but they must expose token language/kind before deciding which key family to query:
+
+```rust
+enum TokenKind {
+    Chinese,
+    Ascii,
+}
+
+pub enum MatchKind {
+    EnPhonetic,
+    Mixed,
+    Alias,
+}
+```
+
+### 3. Contracts
+
+- Pure ASCII windows may query English phonetic keys.
+- Pure Chinese windows may query pinyin/fuzzy-pinyin keys.
+- Mixed Chinese + ASCII windows must query only mixed keys and alias keys.
+- A mixed window must not be replaced solely because its ASCII subset matches an English phonetic pair.
+- If a shorter pure-ASCII sub-window matches, replace only that sub-window, preserving the surrounding Chinese context.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Pair `cloud code -> Claude Code`, input `我打开 cloud code` | Replace only `cloud code`, result `我打开 Claude Code`. |
+| Pair `cloud code -> Claude Code`, input full window `我打开 cloud code` | Do not replace the full mixed span with `Claude Code`. |
+| Pair has alias `kelaode\|code`, input `我打开 克劳德 code` | Mixed/alias window may replace `克劳德 code` with `Claude Code`. |
+| Input `I use cloud storage` | No replacement from a `cloud code` pair. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `我打开 claud code` becomes `我打开 Claude Code` by replacing the pure-ASCII sub-window.
+- Base: unrelated mixed text with no alias key remains unchanged.
+- Bad: `我打开 cloud code` becomes only `Claude Code` because the full mixed window used the English phonetic key of `cloud code`.
+
+### 6. Tests Required
+
+- Unit test for the positive pure-ASCII sub-window correction inside Chinese context.
+- Unit test for mixed alias correction such as `克劳德 code -> Claude Code`.
+- Regression test asserting the full mixed span is not swallowed.
+- False-positive guard for common English words such as `cloud storage`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Wrong: this uses the English key even when the window contains Chinese.
+for key in keys.en_phonetic_keys {
+    lookup_by_en_phonetic(key);
+}
+```
+
+#### Correct
+
+```rust
+if has_ascii && !has_chinese {
+    lookup_by_en_phonetic(key);
+} else if has_ascii && has_chinese {
+    lookup_by_mixed_or_alias(key);
+}
+```

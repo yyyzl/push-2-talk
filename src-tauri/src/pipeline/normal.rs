@@ -14,6 +14,7 @@ use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
+use crate::personalization::{CorrectionPairStore, PersonalizationEngine};
 use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 
@@ -70,31 +71,34 @@ impl NormalPipeline {
         );
 
         // 2. TNL 技术规范化（如果启用）
-        let (text, tnl_changed, tnl_diagnostics) = {
-            // 从配置加载 TNL 开关
-            let tnl_enabled = AppConfig::load()
-                .map(|(c, _)| c.tnl_config.enabled)
-                .unwrap_or(true);
-
-            if tnl_enabled {
-                let engine = TnlEngine::new(dictionary.clone());
-                let tnl_result = engine.normalize(&asr_text);
-                if tnl_result.changed {
-                    tracing::info!(
-                        "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
-                        asr_text,
-                        tnl_result.text,
-                        tnl_result.elapsed_us,
-                        tnl_result.applied.len()
-                    );
-                }
-                (tnl_result.text, tnl_result.changed, tnl_result.diagnostics)
-            } else {
-                (asr_text.clone(), false, None)
+        let tnl_enabled = AppConfig::load()
+            .map(|(c, _)| c.tnl_config.enabled)
+            .unwrap_or(true);
+        let (text, tnl_changed, tnl_diagnostics) = if tnl_enabled {
+            let engine = TnlEngine::new(dictionary.clone());
+            let tnl_result = engine.normalize(&asr_text);
+            if tnl_result.changed {
+                tracing::info!(
+                    "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
+                    asr_text,
+                    tnl_result.text,
+                    tnl_result.elapsed_us,
+                    tnl_result.applied.len()
+                );
             }
+            (tnl_result.text, tnl_result.changed, tnl_result.diagnostics)
+        } else {
+            (asr_text.clone(), false, None)
         };
 
-        // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL 后文本（text）
+        // 2.5. 本地个性化二次解码（MVP：仅当 correction_pairs.json 存在时启用）
+        let (text, personalization_changed) = if tnl_enabled {
+            Self::maybe_apply_personalization(text)
+        } else {
+            (text, false)
+        };
+
+        // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL/个性化后的文本（text）
 
         // 3. 可选候选仲裁（绑定词库增强开关，不改变全文润色逻辑）
         let pre_arbitration_text = text.clone();
@@ -150,7 +154,7 @@ impl NormalPipeline {
         // - 无 LLM 处理且 TNL 未改变文本 → 不显示双栏（original_text = None）
         let history_original = if original_text.is_some() {
             original_text
-        } else if tnl_changed || candidate_changed {
+        } else if tnl_changed || personalization_changed || candidate_changed {
             Some(asr_text)
         } else {
             None
@@ -253,6 +257,55 @@ impl NormalPipeline {
         }
     }
 
+    fn maybe_apply_personalization(text: String) -> (String, bool) {
+        let Ok(path) = Self::personalization_pairs_path() else {
+            return (text, false);
+        };
+
+        if !path.exists() {
+            return (text, false);
+        }
+
+        let store = match CorrectionPairStore::load_json(&path) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::warn!("NormalPipeline: 加载个性化纠错对失败，保守跳过: {}", e);
+                return (text, false);
+            }
+        };
+
+        Self::apply_personalization_with_store(text, store)
+    }
+
+    fn apply_personalization_with_store(
+        text: String,
+        store: CorrectionPairStore,
+    ) -> (String, bool) {
+        let engine = PersonalizationEngine::new(store);
+        let result = engine.convert(&text);
+        if result.changed {
+            tracing::info!(
+                "NormalPipeline: 个性化二次解码: {} → {} (应用: {}, 候选: {})",
+                text,
+                result.text,
+                result.diagnostics.applied.len(),
+                result.diagnostics.candidates.len()
+            );
+        }
+
+        (result.text, result.changed)
+    }
+
+    fn personalization_pairs_path() -> Result<std::path::PathBuf> {
+        let config_path = AppConfig::config_path()?;
+        let config_dir = config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
+        Ok(config_dir
+            .join("personalization")
+            .join("correction_pairs.json"))
+    }
+
     fn sum_llm_time(first: Option<u64>, second: Option<u64>) -> Option<u64> {
         match (first, second) {
             (Some(a), Some(b)) => Some(a + b),
@@ -350,10 +403,44 @@ impl Default for NormalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::personalization::{CorrectionPair, CorrectionPairStore};
 
     #[test]
     fn test_pipeline_creation() {
         let _pipeline = NormalPipeline::new();
         // Pipeline 现在是无状态的，只需要能创建即可
+    }
+
+    #[test]
+    fn test_apply_personalization_with_store_changes_known_pair() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed) = NormalPipeline::apply_personalization_with_store(
+            "我打开 克劳德 code".to_string(),
+            store,
+        );
+
+        assert!(changed);
+        assert_eq!(text, "我打开 Claude Code");
+    }
+
+    #[test]
+    fn test_apply_personalization_with_store_keeps_unrelated_text() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed) = NormalPipeline::apply_personalization_with_store(
+            "I use cloud storage".to_string(),
+            store,
+        );
+
+        assert!(!changed);
+        assert_eq!(text, "I use cloud storage");
     }
 }

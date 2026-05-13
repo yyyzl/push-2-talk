@@ -15,6 +15,7 @@ mod hotkey_service;
 mod learning;
 mod llm_post_processor;
 mod openai_client;
+pub mod personalization;
 mod pipeline;
 mod search;
 mod streaming_recorder;

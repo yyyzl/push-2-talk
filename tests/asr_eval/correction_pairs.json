@@ -1,0 +1,15 @@
+[
+  {
+    "id": "mvp-claude-code",
+    "original_text": "cloud code",
+    "corrected_text": "Claude Code",
+    "source": "manual",
+    "category": "product",
+    "confidence": 0.98,
+    "frequency": 3,
+    "alias_keys": [
+      "claude|code",
+      "kelaode|code"
+    ]
+  }
+]
