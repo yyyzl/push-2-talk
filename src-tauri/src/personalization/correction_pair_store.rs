@@ -232,16 +232,13 @@ impl CorrectionPairStore {
             pair.id == id || normalize_surface(&pair.original_text) == normalized_original
         }) {
             let existing_is_manual = existing.is_manual();
-            if existing_is_manual
-                && normalize_surface(&existing.corrected_text) != normalize_surface(corrected_text)
-            {
+            if existing_is_manual {
                 return None;
             }
-            if !existing_is_manual {
-                existing.id = id;
-                existing.source = "learned".to_string();
-                existing.rejected_count = 0;
-            }
+
+            existing.id = id;
+            existing.source = "learned".to_string();
+            existing.rejected_count = 0;
             existing.refresh_keys_for_text_update(original_text, corrected_text);
             existing.category = category;
             existing.frequency = existing.frequency.saturating_add(1).max(1);
@@ -665,6 +662,32 @@ mod tests {
         assert_eq!(pair.corrected_text, "Claude Code");
         assert_eq!(pair.accepted_count, 0);
         assert_eq!(store.lookup_by_alias_key("kelaode|code").len(), 1);
+
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+        assert_eq!(
+            engine.convert("我打开 cloud code").text,
+            "我打开 Claude Code"
+        );
+    }
+
+    #[test]
+    fn accepted_correction_does_not_recase_matching_manual_pair() {
+        let mut manual_pair = CorrectionPair::new("manual-claude", "cloud code", "Claude Code");
+        manual_pair.source = "manual".to_string();
+        manual_pair.confidence = 1.0;
+        let mut store = CorrectionPairStore::new(vec![manual_pair]);
+
+        let updated =
+            store.upsert_accepted_correction("cloud code", "claude code", Some("proper_noun"));
+
+        assert!(updated.is_none());
+        let pair = store.lookup_by_text("cloud code")[0];
+        assert_eq!(pair.id, "manual-claude");
+        assert_eq!(pair.source, "manual");
+        assert_eq!(pair.corrected_text, "Claude Code");
+        assert_eq!(pair.category, None);
+        assert_eq!(pair.accepted_count, 0);
+        assert_eq!(pair.frequency, 1);
 
         let engine = crate::personalization::PersonalizationEngine::new(store);
         assert_eq!(

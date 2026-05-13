@@ -186,7 +186,7 @@ await invoke("add_learned_word", {
 - A user-accepted correction pair is considered confirmed enough to be used by the local personalization decoder on the next dictation.
 - Correction pairs are local app data under the PushToTalk config directory. Do not emit them through frontend events unless a UI explicitly needs them.
 - Manual dictionary edits must not require or synthesize `original` / `corrected`.
-- Accepted learning suggestions must not overwrite an existing manual correction pair for the same `original` when the corrected target conflicts.
+- Accepted learning suggestions must not overwrite or reformat an existing manual correction pair for the same `original`, even when the corrected target differs only by case or spacing.
 
 ### 4. Validation & Error Matrix
 
@@ -198,12 +198,13 @@ await invoke("add_learned_word", {
 | Correction-pair JSON is missing | Create it atomically through the store save path. |
 | Correction-pair JSON is invalid | Return an error for accepted-learning persistence instead of silently overwriting unknown data. |
 | A manual pair already maps `cloud code -> Claude Code`, and learning accepts `cloud code -> Cloud IDE` | Keep the manual pair unchanged; still allow the dictionary add/update path to proceed. |
+| A manual pair already maps `cloud code -> Claude Code`, and learning accepts `cloud code -> claude code` | Keep the manual pair's casing, id, category, counters, and keys unchanged. |
 
 ### 5. Tests Required
 
 - Backend storage test: accepted correction persists, reloads, and retains category/source/confidence.
 - Backend conversion test: a freshly accepted mixed-language pair is confident enough to apply after reload.
-- Backend storage/conversion test: accepted learning does not overwrite a conflicting manual correction pair.
+- Backend storage/conversion test: accepted learning does not overwrite or reformat an existing manual correction pair.
 - Frontend build/type-check must cover the extended Toast `invoke` payload.
 
 ---

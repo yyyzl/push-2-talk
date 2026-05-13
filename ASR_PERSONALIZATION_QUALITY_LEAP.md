@@ -261,7 +261,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
    - 中文纯字 pair 才要求 `original.chars().count() == corrected.chars().count()`；中英混合和英文短语不强制等长
    - `fuzzy_class` 必须兼容
    - 英文常见词（前 1000 高频）需要 `manual` 来源才允许 pair
-   - 已有 `manual` 纠错对优先级最高；自动学习接受的新 pair 不能覆盖同一 `original_text` 的冲突 manual pair
+   - 已有 `manual` 纠错对优先级最高；自动学习接受的新 pair 不能覆盖或改写同一 `original_text` 的 manual pair（包括只改变大小写/表面形态）
    - 学习建议的拒绝/忽略反馈只削弱 learned pair，不能降低、禁用或增加 manual pair 的负反馈计数
    - learned pair 被连续负反馈禁用后，如果用户再次接受同一纠错，应恢复启用并清空连续负反馈计数
    - alias key 只能来自用户接受、手动确认或高置信 LLM 判断，不能对所有混合文本自动扩散
