@@ -10,6 +10,7 @@ use super::phonetic_keys::{build_key_bundle, normalize_surface};
 
 const REJECT_CONFIDENCE_DELTA: f32 = 0.20;
 const DISABLE_AFTER_REJECTS: u32 = 3;
+const MAX_SURROUNDING_CONTEXT_CHARS: usize = 256;
 const PERSONALIZATION_RISKY_SINGLE_WORDS: &[&str] = &["cloud"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,8 @@ pub struct CorrectionPair {
     pub length_chars: usize,
     #[serde(default = "default_source")]
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surrounding_context: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     #[serde(default = "default_frequency")]
@@ -78,6 +81,7 @@ impl CorrectionPair {
             alias_keys: Vec::new(),
             length_chars: 0,
             source: default_source(),
+            surrounding_context: None,
             category: None,
             frequency: default_frequency(),
             confidence: default_confidence(),
@@ -197,9 +201,15 @@ impl CorrectionPairStore {
         original_text: &str,
         corrected_text: &str,
         category: Option<&str>,
+        surrounding_context: Option<&str>,
     ) -> Result<Option<CorrectionPair>> {
         let mut store = Self::load_json_or_default(&path)?;
-        let pair = store.upsert_accepted_correction(original_text, corrected_text, category);
+        let pair = store.upsert_accepted_correction(
+            original_text,
+            corrected_text,
+            category,
+            surrounding_context,
+        );
         if pair.is_some() {
             store.save_json(path)?;
         }
@@ -211,6 +221,7 @@ impl CorrectionPairStore {
         original_text: &str,
         corrected_text: &str,
         category: Option<&str>,
+        surrounding_context: Option<&str>,
     ) -> Option<CorrectionPair> {
         let original_text = original_text.trim();
         let corrected_text = corrected_text.trim();
@@ -227,6 +238,7 @@ impl CorrectionPairStore {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
+        let surrounding_context = bounded_optional_text(surrounding_context);
 
         if let Some(existing) = self.pairs.iter_mut().find(|pair| {
             pair.id == id || normalize_surface(&pair.original_text) == normalized_original
@@ -241,6 +253,7 @@ impl CorrectionPairStore {
             existing.rejected_count = 0;
             existing.refresh_keys_for_text_update(original_text, corrected_text);
             existing.category = category;
+            existing.surrounding_context = surrounding_context;
             existing.frequency = existing.frequency.saturating_add(1).max(1);
             existing.accepted_count = existing.accepted_count.saturating_add(1);
             existing.confidence = existing.confidence.max(0.98);
@@ -251,6 +264,7 @@ impl CorrectionPairStore {
         let mut pair = CorrectionPair::new(id, original_text, corrected_text);
         pair.source = "learned".to_string();
         pair.category = category;
+        pair.surrounding_context = surrounding_context;
         pair.frequency = 1;
         pair.confidence = 0.98;
         pair.accepted_count = 1;
@@ -382,6 +396,7 @@ pub fn record_accepted_correction_pair(
     original_text: Option<&str>,
     corrected_text: Option<&str>,
     category: Option<&str>,
+    surrounding_context: Option<&str>,
 ) -> Result<Option<CorrectionPair>> {
     let (Some(original_text), Some(corrected_text)) = (original_text, corrected_text) else {
         return Ok(None);
@@ -393,6 +408,7 @@ pub fn record_accepted_correction_pair(
         original_text,
         corrected_text,
         category,
+        surrounding_context,
     )
 }
 
@@ -465,6 +481,15 @@ fn generated_alias_keys_for_corrected_text(corrected_text: &str) -> Vec<String> 
         .collect()
 }
 
+fn bounded_optional_text(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(value.chars().take(MAX_SURROUNDING_CONTEXT_CHARS).collect())
+}
+
 fn is_single_common_english_word(text: &str) -> bool {
     let normalized = normalize_surface(text);
     let mut words = normalized.split_whitespace();
@@ -495,6 +520,7 @@ mod tests {
             alias_keys: vec!["kelaode|code".to_string()],
             length_chars: 0,
             source: "manual".to_string(),
+            surrounding_context: None,
             category: Some("product".to_string()),
             frequency: 1,
             confidence: 0.98,
@@ -523,6 +549,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save pair")
         .expect("pair should be stored");
@@ -536,6 +563,30 @@ mod tests {
         let loaded = store.lookup_by_text("Cloud Code")[0];
         assert_eq!(loaded.corrected_text, "Claude Code");
         assert_eq!(loaded.category.as_deref(), Some("proper_noun"));
+    }
+
+    #[test]
+    fn accepted_correction_pair_persists_bounded_surrounding_context() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+        let long_context = format!("{} cloud code {}", "前".repeat(180), "后".repeat(180));
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+            Some(&long_context),
+        )
+        .expect("save pair");
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let context = store.lookup_by_text("cloud code")[0]
+            .surrounding_context
+            .as_deref()
+            .expect("surrounding context");
+        assert_eq!(context.chars().count(), MAX_SURROUNDING_CONTEXT_CHARS);
+        assert!(context.starts_with("前前前"));
     }
 
     #[test]
@@ -572,6 +623,7 @@ mod tests {
             "克劳德 code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save pair");
 
@@ -594,6 +646,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save pair");
 
@@ -618,6 +671,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save initial pair");
         CorrectionPairStore::upsert_accepted_correction_json(
@@ -625,6 +679,7 @@ mod tests {
             "cloud code",
             "Cloud IDE",
             Some("proper_noun"),
+            None,
         )
         .expect("update pair");
 
@@ -653,7 +708,7 @@ mod tests {
         let mut store = CorrectionPairStore::new(vec![manual_pair]);
 
         let updated =
-            store.upsert_accepted_correction("cloud code", "Cloud IDE", Some("proper_noun"));
+            store.upsert_accepted_correction("cloud code", "Cloud IDE", Some("proper_noun"), None);
 
         assert!(updated.is_none());
         let pair = store.lookup_by_text("cloud code")[0];
@@ -677,8 +732,12 @@ mod tests {
         manual_pair.confidence = 1.0;
         let mut store = CorrectionPairStore::new(vec![manual_pair]);
 
-        let updated =
-            store.upsert_accepted_correction("cloud code", "claude code", Some("proper_noun"));
+        let updated = store.upsert_accepted_correction(
+            "cloud code",
+            "claude code",
+            Some("proper_noun"),
+            None,
+        );
 
         assert!(updated.is_none());
         let pair = store.lookup_by_text("cloud code")[0];
@@ -706,6 +765,7 @@ mod tests {
             " ",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("empty original should not fail");
         let identity = CorrectionPairStore::upsert_accepted_correction_json(
@@ -713,6 +773,7 @@ mod tests {
             "Claude Code",
             " claude code ",
             Some("proper_noun"),
+            None,
         )
         .expect("identity text should not fail");
 
@@ -731,6 +792,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save accepted pair");
 
@@ -772,6 +834,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save accepted pair");
         CorrectionPairStore::record_rejected_correction_json(&path, "cloud code", "Claude Code")
@@ -796,6 +859,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save accepted pair");
 
@@ -829,6 +893,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("save accepted pair");
         for _ in 0..3 {
@@ -846,6 +911,7 @@ mod tests {
             "cloud code",
             "Claude Code",
             Some("proper_noun"),
+            None,
         )
         .expect("accept again")
         .expect("pair should be re-accepted");

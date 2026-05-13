@@ -4636,6 +4636,7 @@ async fn add_learned_word(
     original: Option<String>,
     corrected: Option<String>,
     category: Option<String>,
+    context: Option<String>,
 ) -> Result<(), String> {
     use crate::dictionary_utils::{entries_to_words, upsert_entry};
 
@@ -4644,6 +4645,7 @@ async fn add_learned_word(
         original.as_deref(),
         corrected.as_deref(),
         category.as_deref(),
+        context.as_deref(),
     )
     .map_err(|e| format!("保存个性化纠错对失败: {}", e))?;
 

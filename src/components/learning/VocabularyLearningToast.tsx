@@ -32,6 +32,7 @@ export function VocabularyLearningToast({
         original: suggestion.original,
         corrected: suggestion.corrected,
         category: suggestion.category,
+        context: suggestion.context,
       });
       console.log("词汇已添加:", suggestion.word);
       setIsExiting(true);
@@ -45,6 +46,7 @@ export function VocabularyLearningToast({
     suggestion.original,
     suggestion.corrected,
     suggestion.category,
+    suggestion.context,
     onAdd,
     isSubmitting,
   ]);

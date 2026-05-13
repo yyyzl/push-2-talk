@@ -164,6 +164,7 @@ async fn add_learned_word(
     original: Option<String>,
     corrected: Option<String>,
     category: Option<String>,
+    context: Option<String>,
 ) -> Result<(), String>
 ```
 
@@ -176,6 +177,7 @@ await invoke("add_learned_word", {
   original: suggestion.original,
   corrected: suggestion.corrected,
   category: suggestion.category,
+  context: suggestion.context,
 });
 ```
 
@@ -183,6 +185,7 @@ await invoke("add_learned_word", {
 
 - Missing optional fields must preserve legacy dictionary-only behavior.
 - If `original` and `corrected` are both present, non-empty, and not the same after surface normalization, the backend must persist a local personalization correction pair.
+- Accepted learning suggestions should pass the local suggestion `context` through to the correction pair as `surrounding_context`; backend persistence must trim and cap this field before writing JSON.
 - A user-accepted correction pair is considered confirmed enough to be used by the local personalization decoder on the next dictation.
 - Correction pairs are local app data under the PushToTalk config directory. Do not emit them through frontend events unless a UI explicitly needs them.
 - Manual dictionary edits must not require or synthesize `original` / `corrected`.
@@ -194,18 +197,53 @@ await invoke("add_learned_word", {
 |---|---|
 | Manual dictionary add sends only `word` and `source` | Add/update dictionary entry; no personalization pair is written. |
 | Learning Toast accepts `cloud code -> Claude Code` | Add dictionary entry and write a `learned` correction pair. |
+| Learning Toast accepts a suggestion with surrounding context | Persist a trimmed, bounded `surrounding_context` on the learned correction pair. |
 | Optional fields are empty or normalize to the same text | Add dictionary entry; skip correction-pair write. |
 | Correction-pair JSON is missing | Create it atomically through the store save path. |
 | Correction-pair JSON is invalid | Return an error for accepted-learning persistence instead of silently overwriting unknown data. |
 | A manual pair already maps `cloud code -> Claude Code`, and learning accepts `cloud code -> Cloud IDE` | Keep the manual pair unchanged; still allow the dictionary add/update path to proceed. |
 | A manual pair already maps `cloud code -> Claude Code`, and learning accepts `cloud code -> claude code` | Keep the manual pair's casing, id, category, counters, and keys unchanged. |
 
-### 5. Tests Required
+### 5. Good/Base/Bad Cases
+
+- Good: a learning suggestion for `cloud code -> Claude Code` includes `context`, and the saved learned pair keeps a bounded `surrounding_context`.
+- Base: a manual dictionary add sends only `word` and `source`, and no correction pair or context is synthesized.
+- Bad: the Toast drops `suggestion.context`, or the backend writes an unbounded input window into `correction_pairs.json`.
+
+### 6. Tests Required
 
 - Backend storage test: accepted correction persists, reloads, and retains category/source/confidence.
+- Backend storage test: accepted correction persists a bounded surrounding context.
 - Backend conversion test: a freshly accepted mixed-language pair is confident enough to apply after reload.
 - Backend storage/conversion test: accepted learning does not overwrite or reformat an existing manual correction pair.
 - Frontend build/type-check must cover the extended Toast `invoke` payload.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await invoke("add_learned_word", {
+  word: suggestion.word,
+  source: "auto",
+  original: suggestion.original,
+  corrected: suggestion.corrected,
+  category: suggestion.category,
+});
+```
+
+#### Correct
+
+```typescript
+await invoke("add_learned_word", {
+  word: suggestion.word,
+  source: "auto",
+  original: suggestion.original,
+  corrected: suggestion.corrected,
+  category: suggestion.category,
+  context: suggestion.context,
+});
+```
 
 ---
 
