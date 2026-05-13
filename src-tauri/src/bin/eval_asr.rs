@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use push_to_talk_lib::personalization::{
-    CandidateDecision, ConversionCandidate, CorrectionPairStore, PersonalizationEngine,
+    CandidateDecision, ConversionCandidate, ConversionDiagnostics, CorrectionPairStore,
+    PersonalizationEngine,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -10,6 +12,15 @@ use std::time::Instant;
 const MIN_CORRECTION_PAIR_HIT_RATE: f32 = 0.70;
 const MAX_FALSE_REPLACEMENT_RATE: f32 = 0.01;
 const MAX_P95_LOCAL_LATENCY_MS: f64 = 30.0;
+const MAX_DIAGNOSTIC_TEXT_CHARS: usize = 160;
+const MAX_DIAGNOSTIC_CANDIDATES: usize = 20;
+const DIAGNOSTICS_FILE_NAME: &str = "asr_eval_diagnostics.json";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvalArgs {
+    suite_dir: PathBuf,
+    diagnostics_out: Option<PathBuf>,
+}
 
 #[derive(Debug, Deserialize)]
 struct EvalCase {
@@ -34,6 +45,7 @@ struct CaseResult {
     applied_count: usize,
     decision_counts: CandidateDecisionCounts,
     local_latency_ms: f64,
+    diagnostics: ConversionDiagnostics,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -70,7 +82,8 @@ struct QualityGateSummary {
 }
 
 fn main() -> Result<()> {
-    let suite_dir = resolve_suite_dir(parse_suite_dir());
+    let args = parse_args()?;
+    let suite_dir = resolve_suite_dir(args.suite_dir);
     let pair_path = suite_dir.join("correction_pairs.json");
     let cases_dir = suite_dir.join("cases");
 
@@ -96,10 +109,15 @@ fn main() -> Result<()> {
             applied_count: conversion.diagnostics.applied.len(),
             decision_counts: count_candidate_decisions(&conversion.diagnostics.candidates),
             local_latency_ms,
+            diagnostics: conversion.diagnostics,
         });
     }
 
     print_report(&results);
+    if let Some(output_dir) = args.diagnostics_out {
+        let path = write_diagnostics(&results, &output_dir)?;
+        eprintln!("ASR eval diagnostics written: {}", path.display());
+    }
     let metrics = compute_metrics(&results);
     let quality_gate = evaluate_quality_gates(&metrics);
 
@@ -110,17 +128,39 @@ fn main() -> Result<()> {
     }
 }
 
-fn parse_suite_dir() -> PathBuf {
-    let mut args = std::env::args().skip(1);
+fn parse_args() -> Result<EvalArgs> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
+    let mut suite_dir = PathBuf::from("tests/asr_eval");
+    let mut diagnostics_out = None;
+    let mut args = args.into_iter();
+
     while let Some(arg) = args.next() {
-        if arg == "--suite" {
-            if let Some(value) = args.next() {
-                return PathBuf::from(value);
+        match arg.as_str() {
+            "--suite" => {
+                let Some(value) = args.next() else {
+                    anyhow::bail!("--suite 缺少路径参数");
+                };
+                suite_dir = PathBuf::from(value);
+            }
+            "--diagnostics-out" => {
+                let Some(value) = args.next() else {
+                    anyhow::bail!("--diagnostics-out 缺少目录参数");
+                };
+                diagnostics_out = Some(PathBuf::from(value));
+            }
+            _ => {
+                anyhow::bail!("未知参数: {}", arg);
             }
         }
     }
 
-    PathBuf::from("tests/asr_eval")
+    Ok(EvalArgs {
+        suite_dir,
+        diagnostics_out,
+    })
 }
 
 fn resolve_suite_dir(path: PathBuf) -> PathBuf {
@@ -218,6 +258,16 @@ fn print_report(results: &[CaseResult]) {
             escape_md(&result.case.expected_text),
         );
     }
+}
+
+fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("创建诊断目录失败: {}", output_dir.display()))?;
+    let path = output_dir.join(DIAGNOSTICS_FILE_NAME);
+    let payload = EvalDiagnosticsPayload::from_results(results);
+    let content = serde_json::to_string_pretty(&payload)?;
+    fs::write(&path, content).with_context(|| format!("写入诊断文件失败: {}", path.display()))?;
+    Ok(path)
 }
 
 fn compute_metrics(results: &[CaseResult]) -> EvalMetrics {
@@ -362,9 +412,109 @@ fn escape_md(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
 
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let truncated = value.chars().take(max_chars).collect::<String>();
+    format!("{truncated}...")
+}
+
+#[derive(Debug, Serialize)]
+struct EvalDiagnosticsPayload {
+    schema_version: u8,
+    cases: Vec<EvalCaseDiagnostics>,
+}
+
+impl EvalDiagnosticsPayload {
+    fn from_results(results: &[CaseResult]) -> Self {
+        Self {
+            schema_version: 1,
+            cases: results
+                .iter()
+                .map(EvalCaseDiagnostics::from_result)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct EvalCaseDiagnostics {
+    audio_id: String,
+    provider: String,
+    category: String,
+    passed: bool,
+    raw_asr_text: String,
+    actual_text: String,
+    expected_text: String,
+    local_latency_ms: f64,
+    candidate_count: usize,
+    applied_count: usize,
+    candidates: Vec<Value>,
+    applied: Vec<Value>,
+}
+
+impl EvalCaseDiagnostics {
+    fn from_result(result: &CaseResult) -> Self {
+        Self {
+            audio_id: truncate_chars(&result.case.audio_id, MAX_DIAGNOSTIC_TEXT_CHARS),
+            provider: truncate_chars(&result.case.provider, MAX_DIAGNOSTIC_TEXT_CHARS),
+            category: truncate_chars(&result.case.category, MAX_DIAGNOSTIC_TEXT_CHARS),
+            passed: result.passed,
+            raw_asr_text: truncate_chars(&result.case.raw_asr_text, MAX_DIAGNOSTIC_TEXT_CHARS),
+            actual_text: truncate_chars(&result.actual_text, MAX_DIAGNOSTIC_TEXT_CHARS),
+            expected_text: truncate_chars(&result.case.expected_text, MAX_DIAGNOSTIC_TEXT_CHARS),
+            local_latency_ms: result.local_latency_ms,
+            candidate_count: result.diagnostics.candidates.len(),
+            applied_count: result.diagnostics.applied.len(),
+            candidates: result
+                .diagnostics
+                .candidates
+                .iter()
+                .take(MAX_DIAGNOSTIC_CANDIDATES)
+                .map(bounded_candidate_json)
+                .collect(),
+            applied: result
+                .diagnostics
+                .applied
+                .iter()
+                .take(MAX_DIAGNOSTIC_CANDIDATES)
+                .map(bounded_candidate_json)
+                .collect(),
+        }
+    }
+}
+
+fn bounded_candidate_json(candidate: &ConversionCandidate) -> Value {
+    let mut value = serde_json::to_value(candidate).unwrap_or(Value::Null);
+    truncate_json_strings(&mut value, MAX_DIAGNOSTIC_TEXT_CHARS);
+    value
+}
+
+fn truncate_json_strings(value: &mut Value, max_chars: usize) {
+    match value {
+        Value::String(text) => {
+            *text = truncate_chars(text, max_chars);
+        }
+        Value::Array(values) => {
+            for item in values {
+                truncate_json_strings(item, max_chars);
+            }
+        }
+        Value::Object(values) => {
+            for item in values.values_mut() {
+                truncate_json_strings(item, max_chars);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use push_to_talk_lib::personalization::CorrectionPair;
 
     #[test]
     fn summarize_latency_returns_zero_for_empty_input() {
@@ -473,6 +623,93 @@ mod tests {
             .any(|failure| failure.contains("pending_candidates")));
     }
 
+    #[test]
+    fn parse_args_accepts_suite_and_diagnostics_output() {
+        let args = parse_args_from([
+            "--suite".to_string(),
+            "tests/custom_eval".to_string(),
+            "--diagnostics-out".to_string(),
+            "target/asr-diagnostics".to_string(),
+        ])
+        .expect("parse args");
+
+        assert_eq!(args.suite_dir, PathBuf::from("tests/custom_eval"));
+        assert_eq!(
+            args.diagnostics_out,
+            Some(PathBuf::from("target/asr-diagnostics"))
+        );
+    }
+
+    #[test]
+    fn truncate_chars_limits_without_splitting_unicode() {
+        assert_eq!(truncate_chars("克劳德code", 4), "克劳德c...");
+        assert_eq!(truncate_chars("Claude", 10), "Claude");
+    }
+
+    #[test]
+    fn truncate_json_strings_bounds_nested_payload() {
+        let mut value = serde_json::json!({
+            "candidate": {
+                "target": "Claude Code".repeat(MAX_DIAGNOSTIC_TEXT_CHARS + 1),
+                "aliases": ["克劳德".repeat(MAX_DIAGNOSTIC_TEXT_CHARS + 1)]
+            }
+        });
+
+        truncate_json_strings(&mut value, MAX_DIAGNOSTIC_TEXT_CHARS);
+
+        assert!(value["candidate"]["target"]
+            .as_str()
+            .expect("target")
+            .ends_with("..."));
+        assert!(value["candidate"]["aliases"][0]
+            .as_str()
+            .expect("alias")
+            .ends_with("..."));
+    }
+
+    #[test]
+    fn diagnostics_export_truncates_text_and_candidate_lists() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let mut result = case_result_with_counts(CandidateDecisionCounts::default());
+        result.case.raw_asr_text = "克劳德".repeat(MAX_DIAGNOSTIC_TEXT_CHARS + 1);
+        result.actual_text = "Claude Code".repeat(MAX_DIAGNOSTIC_TEXT_CHARS + 1);
+        let pairs = (0..MAX_DIAGNOSTIC_CANDIDATES + 5)
+            .map(|idx| {
+                let mut pair = CorrectionPair::new(
+                    format!("pair-{idx}"),
+                    "cloud code",
+                    format!("Claude {idx}"),
+                );
+                pair.source = "manual".to_string();
+                pair.confidence = 0.98;
+                pair
+            })
+            .collect();
+        let conversion =
+            PersonalizationEngine::new(CorrectionPairStore::new(pairs)).convert("cloud code");
+        assert!(conversion.diagnostics.candidates.len() > MAX_DIAGNOSTIC_CANDIDATES);
+        result.diagnostics = conversion.diagnostics;
+
+        let path = write_diagnostics(&[result], temp.path()).expect("write diagnostics");
+        let payload: Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read diagnostics"))
+                .expect("parse diagnostics");
+
+        let case = &payload["cases"][0];
+        assert_eq!(
+            case["candidates"].as_array().expect("candidates").len(),
+            MAX_DIAGNOSTIC_CANDIDATES
+        );
+        assert!(case["raw_asr_text"]
+            .as_str()
+            .expect("raw text")
+            .ends_with("..."));
+        assert!(case["actual_text"]
+            .as_str()
+            .expect("actual text")
+            .ends_with("..."));
+    }
+
     fn case_result_with_counts(decision_counts: CandidateDecisionCounts) -> CaseResult {
         CaseResult {
             case: EvalCase {
@@ -490,6 +727,7 @@ mod tests {
             applied_count: decision_counts.applied,
             decision_counts,
             local_latency_ms: 0.0,
+            diagnostics: ConversionDiagnostics::default(),
         }
     }
 }

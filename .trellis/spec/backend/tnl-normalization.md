@@ -239,6 +239,7 @@ Eval entrypoint:
 
 ```rust
 cargo run --bin eval_asr -- --suite tests/asr_eval/
+cargo run --bin eval_asr -- --suite tests/asr_eval/ --diagnostics-out target/asr_eval_diagnostics
 ```
 
 Latency summary helper:
@@ -260,6 +261,8 @@ struct CandidateDecisionCounts {
 }
 
 fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
+
+fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBuf>;
 ```
 
 ### 3. Contracts
@@ -280,6 +283,13 @@ fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
   - `p95_latency_ms > 30ms`,
   - `pending_candidates > 0`.
 - The report must be printed before returning a failing process status so CI/user runs can see the failing metrics.
+- `--diagnostics-out <dir>` is optional. When set, eval must create `<dir>/asr_eval_diagnostics.json` after printing the report.
+- Diagnostics payload must be bounded:
+  - include `schema_version`,
+  - include per-case `audio_id`, provider, category, pass/fail, raw/actual/expected text, local latency, candidate count, applied count, candidates, and applied candidates,
+  - truncate all string fields recursively to a fixed character limit,
+  - cap serialized candidate and applied-candidate lists per case,
+  - do not serialize prompts, credentials, audio bytes, or unbounded user history.
 
 ### 4. Validation & Error Matrix
 
@@ -292,6 +302,8 @@ fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
 | Candidate decisions include applied, below-threshold, and skipped-overlap | Summary totals add each decision bucket independently. |
 | p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
 | pending candidates remain after conversion | Print report, mark quality gate failed, then return an error. |
+| `--diagnostics-out target/asr_eval_diagnostics` is set | Create `target/asr_eval_diagnostics/asr_eval_diagnostics.json` with bounded per-case payload. |
+| A candidate contains very long text | Serialized diagnostics truncate it without splitting Unicode code points. |
 
 ### 5. Tests Required
 
@@ -300,7 +312,11 @@ fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
 - Unit test for aggregating candidate decision counts across cases.
 - Unit test for passing quality gates.
 - Unit test for reporting all failed quality gates.
+- Unit test for parsing `--diagnostics-out`.
+- Unit test for bounded Unicode-safe string truncation.
+- Unit test for bounded diagnostics export and candidate-list capping.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
+- Run `cargo run --bin eval_asr --no-default-features -- --diagnostics-out target/asr_eval_diagnostics` after diagnostics-format changes.
 
 ---
 
