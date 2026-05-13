@@ -15,8 +15,8 @@
 | correction_pair_hit_rate | 81.82% |
 | false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.224 |
-| p95_latency_ms | 0.369 |
+| avg_latency_ms | 0.249 |
+| p95_latency_ms | 0.479 |
 | quality_gate_passed | true |
 | candidates_total | 19 |
 | applied_candidates | 18 |
@@ -69,5 +69,6 @@
 - Match-kind metrics show the current mini eval is covered by exact text, English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias hits.
 - Ablation command: `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure`.
 - With syllable matching disabled, the sample run passes 13/22 cases with 9 exact-text applications only; the remaining 9 fixes come from English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias paths.
+- Diagnostics export schema v2 includes per-case pass summaries for `exact_text` and `syllable_match`.
 - Mixed-language correction pairs do not participate in pure-ASCII English phonetic lookup; this prevents an `欧喷 ai -> OpenAI` pair from rewriting an unrelated ASCII `ai` span.
 - Latency metrics are from a local sample run and cover only `PersonalizationEngine::convert`, not ASR provider time or LLM processing.

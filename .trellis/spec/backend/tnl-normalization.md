@@ -246,6 +246,14 @@ pub struct PersonalizationEngineConfig {
     pub enable_syllable_match_pass: bool,
 }
 
+pub struct PassDiagnostics {
+    pub name: String,
+    pub enabled: bool,
+    pub elapsed_us: u64,
+    pub candidate_count: usize,
+    pub applied_count: usize,
+}
+
 impl PersonalizationEngine {
     pub fn with_config(store: CorrectionPairStore, config: PersonalizationEngineConfig) -> Self;
 }
@@ -257,6 +265,8 @@ impl PersonalizationEngine {
 - When `enable_exact_text_pass = true`, exact `original_text -> corrected_text` pairs may still apply even if syllable matching is disabled.
 - When `enable_syllable_match_pass = false`, do not query English phonetic, Chinese fuzzy-pinyin, mixed, or alias keys.
 - Disabled syllable matching should produce no phonetic/alias candidates for that pass, not just mark them below threshold.
+- `ConversionDiagnostics.pass_summaries` must include one summary for `exact_text` and one for `syllable_match` on non-empty conversions, including disabled pass summaries with zero candidate/apply counts.
+- Pass summaries are observability-only. They must not decide whether a candidate applies.
 
 ### 4. Validation & Error Matrix
 
@@ -266,11 +276,13 @@ impl PersonalizationEngine {
 | Pair `cloud code -> Claude Code`, input `我打开 claud code`, syllable pass disabled | Keep `claud code`; no English phonetic candidate. |
 | Pair has alias `kelaode\|code`, input `我打开 克劳德 code`, syllable pass disabled | Keep `克劳德 code`; no alias candidate. |
 | Default config | Existing P1/P2 behavior remains enabled. |
+| Default config, input `我打开 claud code` | `syllable_match` summary reports one candidate and one applied candidate. |
 
 ### 5. Tests Required
 
 - Personalization engine test: disabling syllable-match pass keeps exact correction.
 - Personalization engine test: disabling syllable-match pass skips English phonetic and alias candidates.
+- Personalization engine test: pass summaries report enabled/disabled state, candidate count, and applied count.
 - Run personalization suite and ASR eval after changing default config behavior.
 
 ---
@@ -347,8 +359,9 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - `--allow-quality-gate-failure` may change only the process exit status for intentional ablation runs. It must still print `quality_gate_passed: false` and each `quality_gate_failure`.
 - `--diagnostics-out <dir>` is optional. When set, eval must create `<dir>/asr_eval_diagnostics.json` after printing the report.
 - Diagnostics payload must be bounded:
-  - include `schema_version`,
+  - include `schema_version` (`2` after pass summary export),
   - include per-case `audio_id`, provider, category, pass/fail, raw/actual/expected text, local latency, candidate count, applied count, candidates, and applied candidates,
+  - include per-case `pass_summaries`,
   - truncate all string fields recursively to a fixed character limit,
   - cap serialized candidate and applied-candidate lists per case,
   - do not serialize prompts, credentials, audio bytes, or unbounded user history.
@@ -382,6 +395,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Unit test that quality-gate override affects only exit success logic.
 - Unit test for bounded Unicode-safe string truncation.
 - Unit test for bounded diagnostics export and candidate-list capping.
+- Unit test for diagnostics export schema version and `pass_summaries`.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure` after pass-toggle changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --diagnostics-out target/asr_eval_diagnostics` after diagnostics-format changes.

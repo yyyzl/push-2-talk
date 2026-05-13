@@ -13,5 +13,5 @@ pub use correction_pair_store::{
 };
 pub use engine::{
     CandidateDecision, ConversionCandidate, ConversionDiagnostics, ConversionResult, MatchKind,
-    PersonalizationEngine, PersonalizationEngineConfig,
+    PassDiagnostics, PersonalizationEngine, PersonalizationEngineConfig,
 };

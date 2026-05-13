@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 use crate::tnl::SyllableLattice;
 
@@ -6,6 +7,8 @@ use super::correction_pair_store::{CorrectionPair, CorrectionPairStore};
 
 const DEFAULT_MAX_WINDOW_TOKENS: usize = 5;
 const DEFAULT_APPLY_THRESHOLD: f32 = 0.88;
+const EXACT_TEXT_PASS: &str = "exact_text";
+const SYLLABLE_MATCH_PASS: &str = "syllable_match";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PersonalizationEngineConfig {
@@ -37,6 +40,17 @@ pub struct ConversionResult {
 pub struct ConversionDiagnostics {
     pub candidates: Vec<ConversionCandidate>,
     pub applied: Vec<ConversionCandidate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pass_summaries: Vec<PassDiagnostics>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PassDiagnostics {
+    pub name: String,
+    pub enabled: bool,
+    pub elapsed_us: u64,
+    pub candidate_count: usize,
+    pub applied_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,7 +115,7 @@ impl PersonalizationEngine {
         }
 
         let lattice = SyllableLattice::from_asr_text(text);
-        let mut candidates = self.collect_candidates(&lattice);
+        let (mut candidates, mut pass_summaries) = self.collect_candidates(&lattice);
         candidates.sort_by(|a, b| {
             let len_a = a.end.saturating_sub(a.start);
             let len_b = b.end.saturating_sub(b.start);
@@ -141,6 +155,7 @@ impl PersonalizationEngine {
         }
 
         selected.sort_by(|a, b| a.start.cmp(&b.start));
+        update_pass_applied_counts(&mut pass_summaries, &selected);
 
         ConversionResult {
             changed: output != text,
@@ -148,12 +163,20 @@ impl PersonalizationEngine {
             diagnostics: ConversionDiagnostics {
                 candidates,
                 applied: selected,
+                pass_summaries,
             },
         }
     }
 
-    fn collect_candidates(&self, lattice: &SyllableLattice) -> Vec<ConversionCandidate> {
+    fn collect_candidates(
+        &self,
+        lattice: &SyllableLattice,
+    ) -> (Vec<ConversionCandidate>, Vec<PassDiagnostics>) {
         let mut candidates = Vec::new();
+        let mut exact_summary =
+            PassDiagnostics::new(EXACT_TEXT_PASS, self.config.enable_exact_text_pass);
+        let mut syllable_summary =
+            PassDiagnostics::new(SYLLABLE_MATCH_PASS, self.config.enable_syllable_match_pass);
 
         for window in lattice.windows(self.config.max_window_tokens) {
             let start = window.byte_range.start;
@@ -164,6 +187,8 @@ impl PersonalizationEngine {
             let has_ascii = window.has_ascii;
 
             if self.config.enable_exact_text_pass {
+                let started_at = Instant::now();
+                let before_count = candidates.len();
                 for pair in self.store.lookup_by_text(window_text) {
                     push_candidate(
                         &mut candidates,
@@ -175,12 +200,15 @@ impl PersonalizationEngine {
                         MatchKind::ExactText,
                     );
                 }
+                exact_summary.record(started_at, candidates.len() - before_count);
             }
 
             if !self.config.enable_syllable_match_pass {
                 continue;
             }
 
+            let started_at = Instant::now();
+            let before_count = candidates.len();
             if has_ascii && !has_chinese {
                 for key in &keys.en_phonetic_keys {
                     for pair in self.store.lookup_by_en_phonetic(key) {
@@ -253,9 +281,29 @@ impl PersonalizationEngine {
                     }
                 }
             }
+            syllable_summary.record(started_at, candidates.len() - before_count);
         }
 
-        candidates
+        (candidates, vec![exact_summary, syllable_summary])
+    }
+}
+
+impl PassDiagnostics {
+    fn new(name: impl Into<String>, enabled: bool) -> Self {
+        Self {
+            name: name.into(),
+            enabled,
+            elapsed_us: 0,
+            candidate_count: 0,
+            applied_count: 0,
+        }
+    }
+
+    fn record(&mut self, started_at: Instant, candidate_count: usize) {
+        self.elapsed_us = self
+            .elapsed_us
+            .saturating_add(started_at.elapsed().as_micros() as u64);
+        self.candidate_count = self.candidate_count.saturating_add(candidate_count);
     }
 }
 
@@ -332,6 +380,27 @@ fn candidate_rank_score(pair: &CorrectionPair, score: f32) -> f32 {
 
 fn overlaps(a: &ConversionCandidate, b: &ConversionCandidate) -> bool {
     a.start < b.end && b.start < a.end
+}
+
+fn update_pass_applied_counts(
+    pass_summaries: &mut [PassDiagnostics],
+    applied: &[ConversionCandidate],
+) {
+    for summary in pass_summaries {
+        summary.applied_count = applied
+            .iter()
+            .filter(|candidate| pass_name_for_match_kind(candidate.match_kind) == summary.name)
+            .count();
+    }
+}
+
+fn pass_name_for_match_kind(match_kind: MatchKind) -> &'static str {
+    match match_kind {
+        MatchKind::ExactText => EXACT_TEXT_PASS,
+        MatchKind::EnPhonetic | MatchKind::ZhPinyinFuzzy | MatchKind::Mixed | MatchKind::Alias => {
+            SYLLABLE_MATCH_PASS
+        }
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +575,47 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_reports_enabled_pass_summaries() {
+        let engine = engine();
+
+        let result = engine.convert("我打开 claud code");
+
+        let exact = pass_summary(&result, "exact_text");
+        let syllable = pass_summary(&result, "syllable_match");
+        assert!(exact.enabled);
+        assert_eq!(exact.candidate_count, 0);
+        assert_eq!(exact.applied_count, 0);
+        assert!(syllable.enabled);
+        assert_eq!(syllable.candidate_count, 1);
+        assert_eq!(syllable.applied_count, 1);
+    }
+
+    #[test]
+    fn diagnostics_reports_disabled_pass_summary() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let engine = PersonalizationEngine::with_config(
+            CorrectionPairStore::new(vec![pair]),
+            PersonalizationEngineConfig {
+                enable_syllable_match_pass: false,
+                ..PersonalizationEngineConfig::default()
+            },
+        );
+
+        let result = engine.convert("我打开 cloud code");
+
+        let exact = pass_summary(&result, "exact_text");
+        let syllable = pass_summary(&result, "syllable_match");
+        assert!(exact.enabled);
+        assert_eq!(exact.candidate_count, 1);
+        assert_eq!(exact.applied_count, 1);
+        assert!(!syllable.enabled);
+        assert_eq!(syllable.candidate_count, 0);
+        assert_eq!(syllable.applied_count, 0);
+    }
+
+    #[test]
     fn disabling_syllable_match_pass_keeps_exact_pair() {
         let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
         pair.source = "manual".to_string();
@@ -552,5 +662,14 @@ mod tests {
         assert!(!alias.changed);
         assert!(phonetic.diagnostics.candidates.is_empty());
         assert!(alias.diagnostics.candidates.is_empty());
+    }
+
+    fn pass_summary<'a>(result: &'a ConversionResult, name: &str) -> &'a PassDiagnostics {
+        result
+            .diagnostics
+            .pass_summaries
+            .iter()
+            .find(|summary| summary.name == name)
+            .expect("pass summary")
     }
 }

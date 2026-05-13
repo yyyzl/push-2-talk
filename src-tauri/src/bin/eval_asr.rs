@@ -555,7 +555,7 @@ struct EvalDiagnosticsPayload {
 impl EvalDiagnosticsPayload {
     fn from_results(results: &[CaseResult]) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             cases: results
                 .iter()
                 .map(EvalCaseDiagnostics::from_result)
@@ -576,6 +576,7 @@ struct EvalCaseDiagnostics {
     local_latency_ms: f64,
     candidate_count: usize,
     applied_count: usize,
+    pass_summaries: Vec<Value>,
     candidates: Vec<Value>,
     applied: Vec<Value>,
 }
@@ -593,6 +594,12 @@ impl EvalCaseDiagnostics {
             local_latency_ms: result.local_latency_ms,
             candidate_count: result.diagnostics.candidates.len(),
             applied_count: result.diagnostics.applied.len(),
+            pass_summaries: result
+                .diagnostics
+                .pass_summaries
+                .iter()
+                .map(bounded_json)
+                .collect(),
             candidates: result
                 .diagnostics
                 .candidates
@@ -612,7 +619,11 @@ impl EvalCaseDiagnostics {
 }
 
 fn bounded_candidate_json(candidate: &ConversionCandidate) -> Value {
-    let mut value = serde_json::to_value(candidate).unwrap_or(Value::Null);
+    bounded_json(candidate)
+}
+
+fn bounded_json<T: Serialize>(payload: &T) -> Value {
+    let mut value = serde_json::to_value(payload).unwrap_or(Value::Null);
     truncate_json_strings(&mut value, MAX_DIAGNOSTIC_TEXT_CHARS);
     value
 }
@@ -895,11 +906,19 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(path).expect("read diagnostics"))
                 .expect("parse diagnostics");
 
+        assert_eq!(payload["schema_version"], 2);
         let case = &payload["cases"][0];
         assert_eq!(
             case["candidates"].as_array().expect("candidates").len(),
             MAX_DIAGNOSTIC_CANDIDATES
         );
+        let pass_summaries = case["pass_summaries"].as_array().expect("pass summaries");
+        assert!(pass_summaries
+            .iter()
+            .any(|summary| summary["name"] == "exact_text"));
+        assert!(pass_summaries
+            .iter()
+            .any(|summary| summary["name"] == "syllable_match"));
         assert!(case["raw_asr_text"]
             .as_str()
             .expect("raw text")
