@@ -116,6 +116,22 @@ impl CorrectionPair {
         self.length_chars = self.original_text.chars().count();
     }
 
+    fn refresh_keys_for_text_update(&mut self, original_text: &str, corrected_text: &str) {
+        let stale_aliases = generated_alias_keys_for_corrected_text(&self.corrected_text);
+        self.original_text = original_text.to_string();
+        self.corrected_text = corrected_text.to_string();
+        self.en_phonetic_key = None;
+        self.zh_pinyin_key = None;
+        self.zh_pinyin_fuzzy_key = None;
+        self.mixed_key = None;
+        self.alias_keys.retain(|alias| {
+            !stale_aliases
+                .iter()
+                .any(|stale_alias| stale_alias.eq_ignore_ascii_case(alias))
+        });
+        self.ensure_keys();
+    }
+
     pub fn normalized_original(&self) -> String {
         normalize_surface(&self.original_text)
     }
@@ -215,17 +231,17 @@ impl CorrectionPairStore {
         if let Some(existing) = self.pairs.iter_mut().find(|pair| {
             pair.id == id || normalize_surface(&pair.original_text) == normalized_original
         }) {
-            existing.original_text = original_text.to_string();
-            existing.corrected_text = corrected_text.to_string();
-            if !existing.is_manual() {
+            let existing_is_manual = existing.is_manual();
+            if !existing_is_manual {
+                existing.id = id;
                 existing.source = "learned".to_string();
             }
+            existing.refresh_keys_for_text_update(original_text, corrected_text);
             existing.category = category;
             existing.frequency = existing.frequency.saturating_add(1).max(1);
             existing.accepted_count = existing.accepted_count.saturating_add(1);
             existing.confidence = existing.confidence.max(0.98);
             existing.enabled = true;
-            existing.ensure_keys();
             return Some(existing.clone());
         }
 
@@ -436,6 +452,15 @@ fn learned_pair_id(original_text: &str, corrected_text: &str) -> String {
     format!("learned-{:x}", md5::compute(fingerprint))
 }
 
+fn generated_alias_keys_for_corrected_text(corrected_text: &str) -> Vec<String> {
+    let corrected_keys = build_key_bundle(corrected_text);
+    corrected_keys
+        .alias_keys
+        .into_iter()
+        .chain(corrected_keys.mixed_keys)
+        .collect()
+}
+
 fn is_single_common_english_word(text: &str) -> bool {
     let normalized = normalize_surface(text);
     let mut words = normalized.split_whitespace();
@@ -576,6 +601,42 @@ mod tests {
         assert_eq!(
             engine.convert("我打开 克劳德 code").text,
             "我打开 Claude Code"
+        );
+    }
+
+    #[test]
+    fn accepted_correction_update_removes_stale_generated_aliases() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save initial pair");
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Cloud IDE",
+            Some("proper_noun"),
+        )
+        .expect("update pair");
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        assert_eq!(store.lookup_by_text("cloud code").len(), 1);
+        let updated = store.lookup_by_text("cloud code")[0];
+        assert_eq!(updated.corrected_text, "Cloud IDE");
+        assert_eq!(updated.id, learned_pair_id("cloud code", "Cloud IDE"));
+        assert!(store.lookup_by_alias_key("kelaode|code").is_empty());
+        assert!(store.lookup_by_alias_key("kelaode|KT").is_empty());
+
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+        assert_eq!(engine.convert("我打开 cloud code").text, "我打开 Cloud IDE");
+        assert_eq!(
+            engine.convert("我打开 克劳德 code").text,
+            "我打开 克劳德 code"
         );
     }
 

@@ -754,6 +754,8 @@ impl CorrectionPair {
 
 - `ensure_keys()` must derive lookup keys from both `original_text` and `corrected_text`.
 - For corrected ASCII product names with an explicitly seeded pinyin alias, add cross-language alias keys. Example: `Claude Code` should add `kelaode|code` and `kelaode|KT`.
+- When an accepted learned pair updates an existing original text to a different corrected text, refresh the pair id and derived lookup keys for the new target.
+- Pair updates must remove stale aliases generated from the previous corrected text so old cross-language aliases cannot point to the new target accidentally.
 - Seeded aliases must be a tiny conservative table, not an automatic transliteration generator for every English word.
 - Alias keys generated from corrected text are allowed because the correction pair is user-accepted, manual, imported, or otherwise already present in the personalization store.
 - Existing Chinese+ASCII input key generation must continue producing aliases such as `kelaode|code`.
@@ -764,6 +766,7 @@ impl CorrectionPair {
 |---|---|
 | Accepted pair `cloud code -> Claude Code` | Persist alias keys including `kelaode|code` and `kelaode|KT`. |
 | Later ASR text is `我打开 克劳德 code` | Match the learned pair and output `我打开 Claude Code`. |
+| Pair is later updated from `cloud code -> Claude Code` to `cloud code -> Cloud IDE` | Persist the new pair id, keep exact `cloud code` correction, and remove stale `kelaode|code` / `kelaode|KT` aliases. |
 | Corrected text has no seeded product alias | Do not invent cross-language aliases. |
 | Seed table is expanded | Add unit tests for generated aliases and run personalization eval. |
 
@@ -771,6 +774,7 @@ impl CorrectionPair {
 
 - Phonetic key test: `build_key_bundle("Claude Code")` contains `kelaode|code` and `kelaode|KT`.
 - Store/engine test: accepted `cloud code -> Claude Code` reloads and corrects `克劳德 code`.
+- Store/engine test: updating an accepted pair removes stale generated aliases and updates the pair id.
 
 ---
 
