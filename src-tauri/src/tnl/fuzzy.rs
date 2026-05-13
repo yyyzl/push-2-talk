@@ -312,7 +312,7 @@ fn dynamic_edit_similarity_floor(word_len: usize) -> f32 {
 }
 
 /// 判断是否为高频英文词（用于常见词保护）
-fn is_common_english_word(word: &str) -> bool {
+pub(crate) fn is_common_english_word(word: &str) -> bool {
     let lower = word.to_ascii_lowercase();
     COMMON_ENGLISH_WORDS.contains(&lower.as_str())
 }

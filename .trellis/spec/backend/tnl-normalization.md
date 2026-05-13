@@ -166,3 +166,56 @@ if has_ascii && !has_chinese {
     lookup_by_mixed_or_alias(key);
 }
 ```
+
+---
+
+## Scenario: Learned Single Common English Words Require Manual Confirmation
+
+### 1. Scope / Trigger
+
+- Trigger: any change to personalization correction-pair scoring, common-English-word protection, or automatic exact/phonetic/alias application thresholds.
+- Common English words such as `code`, `open`, `use`, and `server` are high-risk when learned as single-word correction pairs. Personalization may add a small ASR-risk supplement such as `cloud` without changing existing TNL fuzzy behavior.
+
+### 2. Signatures
+
+Shared common-word guard:
+
+```rust
+pub(crate) fn is_common_english_word(word: &str) -> bool;
+
+impl CorrectionPair {
+    pub fn requires_manual_for_auto_apply(&self) -> bool;
+}
+```
+
+Personalization scoring must route all automatic scores through the guard:
+
+```rust
+fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
+```
+
+### 3. Contracts
+
+- A non-manual correction pair whose `original_text` is exactly one common ASCII word must not auto-apply, even when the pair has high confidence.
+- Manual single-word pairs may still auto-apply. Manual source is the explicit user override.
+- Multi-word pairs are not blocked just because one token is common. `cloud code -> Claude Code` remains valid.
+- Personalization must reuse the shared TNL common-word list as its base guard. A small personalization-only supplement is allowed for ASR-specific risky words when adding them to TNL would break existing dictionary phonetic behavior.
+- This guard must apply to exact text, English phonetic, mixed, and alias scoring paths.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Learned pair `cloud -> Claude`, input `I use cloud storage` | Keep `cloud`; no automatic replacement. |
+| Manual pair `cloud -> Claude`, input `I use cloud storage` | Replace according to the manual pair. |
+| Learned pair `cloud code -> Claude Code`, input `我打开 cloud code` | Replace the phrase. |
+| TNL common-word list misses a generally risky token | Add it to the shared TNL list with a regression test. |
+| A token is risky only for learned correction pairs, but valid for existing TNL dictionary correction | Add it to the personalization supplement instead of the TNL list. |
+
+### 5. Tests Required
+
+- Personalization engine test: learned single common word does not auto-apply.
+- Personalization engine test: manual single common word still auto-applies.
+- Personalization engine test: learned multi-word phrase containing a common word still auto-applies.
+- TNL fuzzy test: shared common-word list includes any generally guarded token.
+- If the token is personalization-only, run the broader TNL suite to prove existing dictionary phonetic behavior is unchanged.

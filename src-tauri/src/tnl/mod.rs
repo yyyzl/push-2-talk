@@ -17,6 +17,7 @@ mod tokenizer;
 mod types;
 
 pub use engine::TnlEngine;
+pub(crate) use fuzzy::is_common_english_word;
 pub use types::{
     TnlArbitrationSummary, TnlCandidate, TnlCandidateArbitrationResult, TnlCandidateDecision,
     TnlDiagnostics,

@@ -10,6 +10,7 @@ use super::phonetic_keys::{build_key_bundle, normalize_surface};
 
 const REJECT_CONFIDENCE_DELTA: f32 = 0.20;
 const DISABLE_AFTER_REJECTS: u32 = 3;
+const PERSONALIZATION_RISKY_SINGLE_WORDS: &[&str] = &["cloud"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrectionPair {
@@ -125,6 +126,10 @@ impl CorrectionPair {
 
     pub fn is_user_confirmed(&self) -> bool {
         self.is_manual() || self.accepted_count > 0
+    }
+
+    pub fn requires_manual_for_auto_apply(&self) -> bool {
+        !self.is_manual() && is_single_common_english_word(&self.original_text)
     }
 }
 
@@ -390,6 +395,19 @@ fn learned_pair_id(original_text: &str, corrected_text: &str) -> String {
         normalize_surface(corrected_text)
     );
     format!("learned-{:x}", md5::compute(fingerprint))
+}
+
+fn is_single_common_english_word(text: &str) -> bool {
+    let normalized = normalize_surface(text);
+    let mut words = normalized.split_whitespace();
+    let Some(word) = words.next() else {
+        return false;
+    };
+    if words.next().is_some() || !word.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    crate::tnl::is_common_english_word(word) || PERSONALIZATION_RISKY_SINGLE_WORDS.contains(&word)
 }
 
 #[cfg(test)]

@@ -152,7 +152,7 @@ impl PersonalizationEngine {
                                 window_text,
                                 start,
                                 end,
-                                pair.confidence * 0.97,
+                                auto_score(pair, pair.confidence * 0.97),
                                 MatchKind::EnPhonetic,
                             );
                         }
@@ -168,7 +168,7 @@ impl PersonalizationEngine {
                                 window_text,
                                 start,
                                 end,
-                                pair.confidence * 0.9,
+                                auto_score(pair, pair.confidence * 0.9),
                                 MatchKind::ZhPinyinFuzzy,
                             );
                         }
@@ -184,7 +184,7 @@ impl PersonalizationEngine {
                                 window_text,
                                 start,
                                 end,
-                                pair.confidence * 0.9,
+                                auto_score(pair, pair.confidence * 0.9),
                                 MatchKind::Mixed,
                             );
                         }
@@ -223,18 +223,27 @@ impl PersonalizationEngine {
 }
 
 fn alias_score(pair: &CorrectionPair) -> f32 {
-    if pair.is_user_confirmed() {
+    let score = if pair.is_user_confirmed() {
         pair.confidence * 0.92
     } else {
         pair.confidence * 0.82
-    }
+    };
+    auto_score(pair, score)
 }
 
 fn exact_score(pair: &CorrectionPair) -> f32 {
     if pair.is_manual() {
         1.0
     } else {
-        pair.confidence.clamp(0.0, 1.0)
+        auto_score(pair, pair.confidence.clamp(0.0, 1.0))
+    }
+}
+
+fn auto_score(pair: &CorrectionPair, score: f32) -> f32 {
+    if pair.requires_manual_for_auto_apply() {
+        0.0
+    } else {
+        score
     }
 }
 
@@ -397,5 +406,51 @@ mod tests {
 
         assert_eq!(result.text, "I use cloud storage");
         assert!(!result.changed);
+    }
+
+    #[test]
+    fn learned_single_common_word_pair_does_not_auto_apply() {
+        let mut pair = CorrectionPair::new("learned-cloud", "cloud", "Claude");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.98;
+        pair.accepted_count = 1;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+
+        let result = engine.convert("I use cloud storage");
+
+        assert_eq!(result.text, "I use cloud storage");
+        assert!(!result.changed);
+        assert!(result
+            .diagnostics
+            .candidates
+            .iter()
+            .all(|candidate| candidate.score < DEFAULT_APPLY_THRESHOLD));
+    }
+
+    #[test]
+    fn learned_multi_word_pair_with_common_word_still_auto_applies() {
+        let mut pair = CorrectionPair::new("learned-cloud-code", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.98;
+        pair.accepted_count = 1;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+
+        let result = engine.convert("我打开 cloud code");
+
+        assert_eq!(result.text, "我打开 Claude Code");
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn manual_single_common_word_pair_can_auto_apply() {
+        let mut pair = CorrectionPair::new("manual-cloud", "cloud", "Claude");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+
+        let result = engine.convert("I use cloud storage");
+
+        assert_eq!(result.text, "I use Claude storage");
+        assert!(result.changed);
     }
 }
