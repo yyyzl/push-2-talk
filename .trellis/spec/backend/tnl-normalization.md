@@ -302,6 +302,7 @@ Eval entrypoint:
 cargo run --bin eval_asr -- --suite tests/asr_eval/
 cargo run --bin eval_asr -- --suite tests/asr_eval/ --diagnostics-out target/asr_eval_diagnostics
 cargo run --bin eval_asr -- --disable-syllable-match-pass --allow-quality-gate-failure
+cargo run --bin eval_asr -- --apply-threshold 0.88 --max-window-tokens 5
 ```
 
 Latency summary helper:
@@ -366,6 +367,9 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - `--disable-syllable-match-pass` is an ablation-only eval flag. It must keep exact-text correction enabled while disabling English phonetic, Chinese fuzzy-pinyin, mixed, and alias candidate generation.
 - `--disable-exact-text-pass` is an ablation-only eval flag. It must not change production defaults.
 - `--allow-quality-gate-failure` may change only the process exit status for intentional ablation runs. It must still print `quality_gate_passed: false` and each `quality_gate_failure`.
+- `--apply-threshold <float>` is an eval-only tuning flag. The value must be finite and within `0.0..=1.0`; it overrides `PersonalizationEngineConfig.apply_threshold` for that run only.
+- `--max-window-tokens <usize>` is an eval-only tuning flag. The value must be within `1..=16`; it overrides `PersonalizationEngineConfig.max_window_tokens` for that run only.
+- Eval tuning flags must not change production defaults exposed through `PersonalizationEngine::new(store)`.
 - `--diagnostics-out <dir>` is optional. When set, eval must create `<dir>/asr_eval_diagnostics.json` after printing the report.
 - Diagnostics payload must be bounded:
   - include `schema_version` (`2` after pass summary export),
@@ -389,6 +393,8 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 | p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
 | pending candidates remain after conversion | Print report, mark quality gate failed, then return an error. |
 | `--disable-syllable-match-pass --allow-quality-gate-failure` is set | Print failed quality gates and return success for comparison scripts. |
+| `--apply-threshold` is NaN, infinite, below 0, or above 1 | Reject before running eval. |
+| `--max-window-tokens` is 0 or greater than 16 | Reject before running eval. |
 | `--diagnostics-out target/asr_eval_diagnostics` is set | Create `target/asr_eval_diagnostics/asr_eval_diagnostics.json` with bounded per-case payload. |
 | A candidate contains very long text | Serialized diagnostics truncate it without splitting Unicode code points. |
 
@@ -403,11 +409,13 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Unit test for reporting all failed quality gates.
 - Unit test for parsing `--diagnostics-out`.
 - Unit test for parsing personalization pass toggles.
+- Unit test for parsing and validating `--apply-threshold` and `--max-window-tokens`.
 - Unit test that quality-gate override affects only exit success logic.
 - Unit test for bounded Unicode-safe string truncation.
 - Unit test for bounded diagnostics export and candidate-list capping.
 - Unit test for diagnostics export schema version and `pass_summaries`.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
+- Run `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.88 --max-window-tokens 5` after eval tuning flag changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure` after pass-toggle changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --diagnostics-out target/asr_eval_diagnostics` after diagnostics-format changes.
 

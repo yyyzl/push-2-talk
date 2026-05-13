@@ -14,24 +14,34 @@ const MAX_FALSE_REPLACEMENT_RATE: f32 = 0.01;
 const MAX_P95_LOCAL_LATENCY_MS: f64 = 30.0;
 const MAX_DIAGNOSTIC_TEXT_CHARS: usize = 160;
 const MAX_DIAGNOSTIC_CANDIDATES: usize = 20;
+const MAX_EVAL_WINDOW_TOKENS: usize = 16;
 const DIAGNOSTICS_FILE_NAME: &str = "asr_eval_diagnostics.json";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct EvalArgs {
     suite_dir: PathBuf,
     diagnostics_out: Option<PathBuf>,
     disable_exact_text_pass: bool,
     disable_syllable_match_pass: bool,
     allow_quality_gate_failure: bool,
+    apply_threshold: Option<f32>,
+    max_window_tokens: Option<usize>,
 }
 
 impl EvalArgs {
     fn engine_config(&self) -> PersonalizationEngineConfig {
-        PersonalizationEngineConfig {
+        let mut config = PersonalizationEngineConfig {
             enable_exact_text_pass: !self.disable_exact_text_pass,
             enable_syllable_match_pass: !self.disable_syllable_match_pass,
             ..PersonalizationEngineConfig::default()
+        };
+        if let Some(apply_threshold) = self.apply_threshold {
+            config.apply_threshold = apply_threshold;
         }
+        if let Some(max_window_tokens) = self.max_window_tokens {
+            config.max_window_tokens = max_window_tokens;
+        }
+        config
     }
 }
 
@@ -185,6 +195,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
     let mut disable_exact_text_pass = false;
     let mut disable_syllable_match_pass = false;
     let mut allow_quality_gate_failure = false;
+    let mut apply_threshold = None;
+    let mut max_window_tokens = None;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -210,6 +222,18 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
             "--allow-quality-gate-failure" => {
                 allow_quality_gate_failure = true;
             }
+            "--apply-threshold" => {
+                let Some(value) = args.next() else {
+                    anyhow::bail!("--apply-threshold 缺少数值参数");
+                };
+                apply_threshold = Some(parse_apply_threshold(&value)?);
+            }
+            "--max-window-tokens" => {
+                let Some(value) = args.next() else {
+                    anyhow::bail!("--max-window-tokens 缺少数值参数");
+                };
+                max_window_tokens = Some(parse_max_window_tokens(&value)?);
+            }
             _ => {
                 anyhow::bail!("未知参数: {}", arg);
             }
@@ -222,7 +246,32 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
         disable_exact_text_pass,
         disable_syllable_match_pass,
         allow_quality_gate_failure,
+        apply_threshold,
+        max_window_tokens,
     })
+}
+
+fn parse_apply_threshold(value: &str) -> Result<f32> {
+    let threshold = value
+        .parse::<f32>()
+        .with_context(|| format!("--apply-threshold 不是合法数字: {value}"))?;
+    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+        anyhow::bail!("--apply-threshold 必须在 0.0 到 1.0 之间");
+    }
+    Ok(threshold)
+}
+
+fn parse_max_window_tokens(value: &str) -> Result<usize> {
+    let max_window_tokens = value
+        .parse::<usize>()
+        .with_context(|| format!("--max-window-tokens 不是合法整数: {value}"))?;
+    if max_window_tokens == 0 || max_window_tokens > MAX_EVAL_WINDOW_TOKENS {
+        anyhow::bail!(
+            "--max-window-tokens 必须在 1 到 {} 之间",
+            MAX_EVAL_WINDOW_TOKENS
+        );
+    }
+    Ok(max_window_tokens)
 }
 
 fn resolve_suite_dir(path: PathBuf) -> PathBuf {
@@ -902,6 +951,10 @@ mod tests {
             "target/asr-diagnostics".to_string(),
             "--disable-syllable-match-pass".to_string(),
             "--allow-quality-gate-failure".to_string(),
+            "--apply-threshold".to_string(),
+            "0.75".to_string(),
+            "--max-window-tokens".to_string(),
+            "3".to_string(),
         ])
         .expect("parse args");
 
@@ -915,6 +968,8 @@ mod tests {
         let config = args.engine_config();
         assert!(config.enable_exact_text_pass);
         assert!(!config.enable_syllable_match_pass);
+        assert_eq!(config.apply_threshold, 0.75);
+        assert_eq!(config.max_window_tokens, 3);
     }
 
     #[test]
@@ -924,6 +979,18 @@ mod tests {
 
         assert!(args.disable_exact_text_pass);
         assert!(!args.engine_config().enable_exact_text_pass);
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_tuning_values() {
+        assert!(parse_args_from(["--apply-threshold".to_string(), "1.5".to_string(),]).is_err());
+        assert!(parse_args_from(["--apply-threshold".to_string(), "nan".to_string(),]).is_err());
+        assert!(parse_args_from(["--max-window-tokens".to_string(), "0".to_string(),]).is_err());
+        assert!(parse_args_from([
+            "--max-window-tokens".to_string(),
+            (MAX_EVAL_WINDOW_TOKENS + 1).to_string(),
+        ])
+        .is_err());
     }
 
     #[test]
