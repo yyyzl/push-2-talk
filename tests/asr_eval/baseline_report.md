@@ -13,9 +13,11 @@
 |---|---:|
 | final_accuracy | 100.00% |
 | correction_pair_hit_rate | 80.00% |
+| false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.178 |
-| p95_latency_ms | 0.233 |
+| avg_latency_ms | 0.224 |
+| p95_latency_ms | 0.315 |
+| quality_gate_passed | true |
 | candidates_total | 4 |
 | applied_candidates | 4 |
 | below_threshold_candidates | 0 |

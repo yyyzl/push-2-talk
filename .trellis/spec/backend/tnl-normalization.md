@@ -258,17 +258,28 @@ struct CandidateDecisionCounts {
     skipped_overlap: usize,
     pending: usize,
 }
+
+fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
 ```
 
 ### 3. Contracts
 
 - Measure only local conversion time around `PersonalizationEngine::convert`; do not include ASR provider time, audio loading, or LLM calls.
 - Report `avg_latency_ms` and `p95_latency_ms` in the top-level Markdown summary.
+- Report `false_replacement_rate` alongside `false_replacement_count`.
 - Report candidate decision totals: `candidates_total`, `applied_candidates`, `below_threshold_candidates`, `skipped_overlap_candidates`, and `pending_candidates`.
+- Report `quality_gate_passed`.
 - Add per-case `Latency(ms)`, `Candidates`, and `Applied` to the result table for slow-case and decision inspection.
 - Use nearest-rank p95 over sorted latency values. Empty input returns zeroed summary values.
 - Keep latency formatting stable with millisecond precision to three decimals.
 - `pending_candidates` should normally be zero after `PersonalizationEngine::convert`; a non-zero value indicates a candidate decision path was not finalized.
+- Quality gates must fail when:
+  - any case output mismatches expected text,
+  - `correction_pair_hit_rate < 70%`,
+  - `false_replacement_rate > 1%`,
+  - `p95_latency_ms > 30ms`,
+  - `pending_candidates > 0`.
+- The report must be printed before returning a failing process status so CI/user runs can see the failing metrics.
 
 ### 4. Validation & Error Matrix
 
@@ -279,12 +290,16 @@ struct CandidateDecisionCounts {
 | Eval suite has five cases | Summary includes avg/p95 latency, decision totals, each row's local latency, candidate count, and applied count. |
 | A case fails expected text comparison | Eval still prints latency report before returning failure. |
 | Candidate decisions include applied, below-threshold, and skipped-overlap | Summary totals add each decision bucket independently. |
+| p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
+| pending candidates remain after conversion | Print report, mark quality gate failed, then return an error. |
 
 ### 5. Tests Required
 
 - Unit test for empty latency summary.
 - Unit test for nearest-rank p95 calculation.
 - Unit test for aggregating candidate decision counts across cases.
+- Unit test for passing quality gates.
+- Unit test for reporting all failed quality gates.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
 
 ---

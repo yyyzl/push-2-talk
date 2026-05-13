@@ -7,6 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+const MIN_CORRECTION_PAIR_HIT_RATE: f32 = 0.70;
+const MAX_FALSE_REPLACEMENT_RATE: f32 = 0.01;
+const MAX_P95_LOCAL_LATENCY_MS: f64 = 30.0;
+
 #[derive(Debug, Deserialize)]
 struct EvalCase {
     audio_id: String,
@@ -47,6 +51,24 @@ struct CandidateDecisionCounts {
     pending: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EvalMetrics {
+    total: usize,
+    passed: usize,
+    final_accuracy: f32,
+    correction_pair_hit_rate: f32,
+    false_replacement_count: usize,
+    false_replacement_rate: f32,
+    latency: LatencySummary,
+    decision_counts: CandidateDecisionCounts,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct QualityGateSummary {
+    passed: bool,
+    failures: Vec<String>,
+}
+
 fn main() -> Result<()> {
     let suite_dir = resolve_suite_dir(parse_suite_dir());
     let pair_path = suite_dir.join("correction_pairs.json");
@@ -78,11 +100,13 @@ fn main() -> Result<()> {
     }
 
     print_report(&results);
+    let metrics = compute_metrics(&results);
+    let quality_gate = evaluate_quality_gates(&metrics);
 
-    if results.iter().all(|result| result.passed) {
+    if quality_gate.passed {
         Ok(())
     } else {
-        anyhow::bail!("ASR eval 未通过");
+        anyhow::bail!("ASR eval 未通过: {}", quality_gate.failures.join("; "));
     }
 }
 
@@ -136,51 +160,45 @@ fn load_cases(cases_dir: &Path) -> Result<Vec<EvalCase>> {
 }
 
 fn print_report(results: &[CaseResult]) {
-    let total = results.len();
-    let passed = results.iter().filter(|result| result.passed).count();
-    let accuracy = passed as f32 / total as f32;
-    let correction_pair_hit_rate = results
-        .iter()
-        .filter(|result| result.applied_count > 0)
-        .count() as f32
-        / total as f32;
-    let false_replacement_count = results
-        .iter()
-        .filter(|result| {
-            result.case.category == "false_positive_guard"
-                && result.actual_text != result.case.expected_text
-        })
-        .count();
-    let latencies = results
-        .iter()
-        .map(|result| result.local_latency_ms)
-        .collect::<Vec<_>>();
-    let latency = summarize_latency_ms(&latencies);
-    let decision_counts = summarize_candidate_decisions(results);
+    let metrics = compute_metrics(results);
+    let quality_gate = evaluate_quality_gates(&metrics);
 
     println!("# ASR Eval Report");
     println!();
-    println!("- cases: {}", total);
-    println!("- passed: {}", passed);
-    println!("- final_accuracy: {:.2}%", accuracy * 100.0);
+    println!("- cases: {}", metrics.total);
+    println!("- passed: {}", metrics.passed);
+    println!("- final_accuracy: {:.2}%", metrics.final_accuracy * 100.0);
     println!(
         "- correction_pair_hit_rate: {:.2}%",
-        correction_pair_hit_rate * 100.0
+        metrics.correction_pair_hit_rate * 100.0
     );
-    println!("- false_replacement_count: {}", false_replacement_count);
-    println!("- avg_latency_ms: {:.3}", latency.avg_ms);
-    println!("- p95_latency_ms: {:.3}", latency.p95_ms);
-    println!("- candidates_total: {}", decision_counts.total);
-    println!("- applied_candidates: {}", decision_counts.applied);
+    println!(
+        "- false_replacement_rate: {:.2}%",
+        metrics.false_replacement_rate * 100.0
+    );
+    println!(
+        "- false_replacement_count: {}",
+        metrics.false_replacement_count
+    );
+    println!("- avg_latency_ms: {:.3}", metrics.latency.avg_ms);
+    println!("- p95_latency_ms: {:.3}", metrics.latency.p95_ms);
+    println!("- quality_gate_passed: {}", quality_gate.passed);
+    println!("- candidates_total: {}", metrics.decision_counts.total);
+    println!("- applied_candidates: {}", metrics.decision_counts.applied);
     println!(
         "- below_threshold_candidates: {}",
-        decision_counts.below_threshold
+        metrics.decision_counts.below_threshold
     );
     println!(
         "- skipped_overlap_candidates: {}",
-        decision_counts.skipped_overlap
+        metrics.decision_counts.skipped_overlap
     );
-    println!("- pending_candidates: {}", decision_counts.pending);
+    println!("- pending_candidates: {}", metrics.decision_counts.pending);
+    if !quality_gate.passed {
+        for failure in &quality_gate.failures {
+            println!("- quality_gate_failure: {}", failure);
+        }
+    }
     println!();
     println!("| ID | Provider | Category | Result | Latency(ms) | Candidates | Applied | Raw | Actual | Expected |");
     println!("|---|---|---|---|---:|---:|---:|---|---|---|");
@@ -199,6 +217,96 @@ fn print_report(results: &[CaseResult]) {
             escape_md(&result.actual_text),
             escape_md(&result.case.expected_text),
         );
+    }
+}
+
+fn compute_metrics(results: &[CaseResult]) -> EvalMetrics {
+    let total = results.len();
+    let passed = results.iter().filter(|result| result.passed).count();
+    let final_accuracy = ratio(passed, total);
+    let correction_pair_hit_rate = ratio(
+        results
+            .iter()
+            .filter(|result| result.applied_count > 0)
+            .count(),
+        total,
+    );
+    let false_replacement_count = results
+        .iter()
+        .filter(|result| {
+            result.case.category == "false_positive_guard"
+                && result.actual_text != result.case.expected_text
+        })
+        .count();
+    let false_positive_guard_count = results
+        .iter()
+        .filter(|result| result.case.category == "false_positive_guard")
+        .count();
+    let false_replacement_rate = ratio(false_replacement_count, false_positive_guard_count.max(1));
+    let latencies = results
+        .iter()
+        .map(|result| result.local_latency_ms)
+        .collect::<Vec<_>>();
+
+    EvalMetrics {
+        total,
+        passed,
+        final_accuracy,
+        correction_pair_hit_rate,
+        false_replacement_count,
+        false_replacement_rate,
+        latency: summarize_latency_ms(&latencies),
+        decision_counts: summarize_candidate_decisions(results),
+    }
+}
+
+fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary {
+    let mut failures = Vec::new();
+
+    if metrics.passed != metrics.total {
+        failures.push(format!(
+            "final_accuracy {:.2}% below 100.00%",
+            metrics.final_accuracy * 100.0
+        ));
+    }
+    if metrics.correction_pair_hit_rate < MIN_CORRECTION_PAIR_HIT_RATE {
+        failures.push(format!(
+            "correction_pair_hit_rate {:.2}% below {:.2}%",
+            metrics.correction_pair_hit_rate * 100.0,
+            MIN_CORRECTION_PAIR_HIT_RATE * 100.0
+        ));
+    }
+    if metrics.false_replacement_rate > MAX_FALSE_REPLACEMENT_RATE {
+        failures.push(format!(
+            "false_replacement_rate {:.2}% above {:.2}%",
+            metrics.false_replacement_rate * 100.0,
+            MAX_FALSE_REPLACEMENT_RATE * 100.0
+        ));
+    }
+    if metrics.latency.p95_ms > MAX_P95_LOCAL_LATENCY_MS {
+        failures.push(format!(
+            "p95_latency_ms {:.3} above {:.3}",
+            metrics.latency.p95_ms, MAX_P95_LOCAL_LATENCY_MS
+        ));
+    }
+    if metrics.decision_counts.pending > 0 {
+        failures.push(format!(
+            "pending_candidates {} above 0",
+            metrics.decision_counts.pending
+        ));
+    }
+
+    QualityGateSummary {
+        passed: failures.is_empty(),
+        failures,
+    }
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f32 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f32 / denominator as f32
     }
 }
 
@@ -300,6 +408,69 @@ mod tests {
                 pending: 0,
             }
         );
+    }
+
+    #[test]
+    fn quality_gate_passes_when_metrics_meet_thresholds() {
+        let summary = evaluate_quality_gates(&EvalMetrics {
+            total: 5,
+            passed: 5,
+            final_accuracy: 1.0,
+            correction_pair_hit_rate: 0.80,
+            false_replacement_count: 0,
+            false_replacement_rate: 0.0,
+            latency: LatencySummary {
+                avg_ms: 1.0,
+                p95_ms: 10.0,
+            },
+            decision_counts: CandidateDecisionCounts::default(),
+        });
+
+        assert!(summary.passed);
+        assert!(summary.failures.is_empty());
+    }
+
+    #[test]
+    fn quality_gate_reports_all_failed_thresholds() {
+        let summary = evaluate_quality_gates(&EvalMetrics {
+            total: 5,
+            passed: 4,
+            final_accuracy: 0.80,
+            correction_pair_hit_rate: 0.60,
+            false_replacement_count: 1,
+            false_replacement_rate: 0.20,
+            latency: LatencySummary {
+                avg_ms: 20.0,
+                p95_ms: 31.0,
+            },
+            decision_counts: CandidateDecisionCounts {
+                pending: 1,
+                ..CandidateDecisionCounts::default()
+            },
+        });
+
+        assert!(!summary.passed);
+        assert_eq!(summary.failures.len(), 5);
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| failure.contains("final_accuracy")));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| failure.contains("correction_pair_hit_rate")));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| failure.contains("false_replacement_rate")));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| failure.contains("p95_latency_ms")));
+        assert!(summary
+            .failures
+            .iter()
+            .any(|failure| failure.contains("pending_candidates")));
     }
 
     fn case_result_with_counts(decision_counts: CandidateDecisionCounts) -> CaseResult {
