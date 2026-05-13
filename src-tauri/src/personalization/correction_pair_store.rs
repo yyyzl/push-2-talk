@@ -165,12 +165,8 @@ impl CorrectionPairStore {
 
     #[allow(dead_code)]
     pub fn save_json(&self, path: impl AsRef<Path>) -> Result<()> {
-        if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent)?;
-        }
         let content = serde_json::to_string_pretty(&self.pairs)?;
-        fs::write(path, content)?;
-        Ok(())
+        write_text_atomically(path.as_ref(), &content)
     }
 
     #[allow(dead_code)]
@@ -399,6 +395,38 @@ fn push_unique(values: &mut Vec<String>, value: String) {
     values.push(value);
 }
 
+fn write_text_atomically(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let temp_path = path.with_extension("json.tmp");
+    let backup_path = path.with_extension("json.bak");
+    fs::write(&temp_path, content)?;
+
+    if path.exists() {
+        if backup_path.exists() {
+            fs::remove_file(&backup_path)?;
+        }
+        fs::rename(path, &backup_path)?;
+    }
+
+    match fs::rename(&temp_path, path) {
+        Ok(()) => {
+            if backup_path.exists() {
+                fs::remove_file(&backup_path)?;
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if backup_path.exists() && !path.exists() {
+                let _ = fs::rename(&backup_path, path);
+            }
+            Err(e.into())
+        }
+    }
+}
+
 fn learned_pair_id(original_text: &str, corrected_text: &str) -> String {
     let fingerprint = format!(
         "{}=>{}",
@@ -479,6 +507,30 @@ mod tests {
         let loaded = store.lookup_by_text("Cloud Code")[0];
         assert_eq!(loaded.corrected_text, "Claude Code");
         assert_eq!(loaded.category.as_deref(), Some("proper_noun"));
+    }
+
+    #[test]
+    fn save_json_replaces_file_and_cleans_stale_backup() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+        let backup_path = path.with_extension("json.bak");
+        let temp_path = path.with_extension("json.tmp");
+        std::fs::write(&path, "[]").expect("write existing file");
+        std::fs::write(&backup_path, "stale backup").expect("write stale backup");
+
+        let store = CorrectionPairStore::new(vec![CorrectionPair::new(
+            "claude-code",
+            "cloud code",
+            "Claude Code",
+        )]);
+
+        store.save_json(&path).expect("save json");
+
+        assert!(path.exists());
+        assert!(!backup_path.exists());
+        assert!(!temp_path.exists());
+        let reloaded = CorrectionPairStore::load_json(&path).expect("reload");
+        assert_eq!(reloaded.lookup_by_text("cloud code").len(), 1);
     }
 
     #[test]

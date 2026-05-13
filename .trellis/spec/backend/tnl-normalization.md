@@ -520,6 +520,79 @@ if let Err(e) = Self::write_personalization_diagnostic(&source, &result, elapsed
 
 ---
 
+## Scenario: CorrectionPairStore JSON Writes Are Atomic
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `CorrectionPairStore::save_json`, accepted correction persistence, reject feedback persistence, or the JSON MVP store path.
+- The JSON store is the first persistent personalization layer. It must not be corrupted by a process exit or partial write while the user accepts or rejects a learned correction.
+
+### 2. Signatures
+
+```rust
+impl CorrectionPairStore {
+    pub fn save_json(&self, path: impl AsRef<Path>) -> Result<()>;
+    pub fn upsert_accepted_correction_json(...) -> Result<Option<CorrectionPair>>;
+    pub fn record_rejected_correction_json(...) -> Result<Option<CorrectionPair>>;
+}
+```
+
+File paths:
+
+```text
+%APPDATA%\PushToTalk\personalization\correction_pairs.json
+%APPDATA%\PushToTalk\personalization\correction_pairs.json.tmp
+%APPDATA%\PushToTalk\personalization\correction_pairs.json.bak
+```
+
+### 3. Contracts
+
+- `save_json` must write JSON to a same-directory temporary file first, then rename files into place.
+- If the target file exists, move it to `.bak` before moving `.tmp` into the target path.
+- After a successful save, remove `.bak` and `.tmp` leftovers.
+- If the final rename fails after creating `.bak`, best-effort restore `.bak` to the target path.
+- `upsert_accepted_correction_json` and `record_rejected_correction_json` must persist only through `save_json`.
+- Loading invalid JSON must still return an error instead of overwriting unknown/corrupt content with an empty store.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Parent directory is missing | Create it before writing the temp file. |
+| Target file exists and a stale `.bak` exists | Remove stale `.bak`, replace target atomically, and leave no `.bak` or `.tmp` on success. |
+| Target file does not exist | Write temp file, rename into target, and leave no temp file on success. |
+| Final rename fails after backup creation | Attempt to restore `.bak` to the target path and return the original error. |
+| Existing file contains invalid JSON | Return parse error before saving; do not overwrite the file. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: accepting `cloud code -> Claude Code` creates or replaces `correction_pairs.json` without leftover temp files.
+- Base: an unchanged/identity correction does not create a JSON file.
+- Bad: direct `fs::write(correction_pairs.json, ...)` truncates the store before serialization/write fully succeeds.
+
+### 6. Tests Required
+
+- Unit test: saving over an existing file with a stale `.bak` reloads the new pair and removes `.bak` / `.tmp`.
+- Existing accepted/rejected persistence tests must continue to pass.
+- Run personalization tests and `cargo check --no-default-features`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+fs::write(path, serde_json::to_string_pretty(&pairs)?)?;
+```
+
+#### Correct
+
+```rust
+fs::write(&temp_path, content)?;
+fs::rename(&temp_path, path)?;
+```
+
+---
+
 ## Scenario: Learned Single Common English Words Require Manual Confirmation
 
 ### 1. Scope / Trigger
