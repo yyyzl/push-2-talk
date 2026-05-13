@@ -230,8 +230,8 @@ pub(crate) struct WindowKey {
 
 ### 1. Scope / Trigger
 
-- Trigger: any change to `src-tauri/src/bin/eval_asr.rs`, personalization conversion timing, or ASR personalization quality gates.
-- The eval runner is the regression harness for the local second-decoding path. It must report both accuracy and local processing latency so quality improvements do not hide performance regressions.
+- Trigger: any change to `src-tauri/src/bin/eval_asr.rs`, personalization conversion timing, personalization candidate diagnostics, or ASR personalization quality gates.
+- The eval runner is the regression harness for the local second-decoding path. It must report accuracy, local processing latency, and candidate decision distribution so quality improvements do not hide performance regressions or silent decision drift.
 
 ### 2. Signatures
 
@@ -250,15 +250,25 @@ struct LatencySummary {
 }
 
 fn summarize_latency_ms(values: &[f64]) -> LatencySummary;
+
+struct CandidateDecisionCounts {
+    total: usize,
+    applied: usize,
+    below_threshold: usize,
+    skipped_overlap: usize,
+    pending: usize,
+}
 ```
 
 ### 3. Contracts
 
 - Measure only local conversion time around `PersonalizationEngine::convert`; do not include ASR provider time, audio loading, or LLM calls.
 - Report `avg_latency_ms` and `p95_latency_ms` in the top-level Markdown summary.
-- Add per-case `Latency(ms)` to the result table for slow-case inspection.
+- Report candidate decision totals: `candidates_total`, `applied_candidates`, `below_threshold_candidates`, `skipped_overlap_candidates`, and `pending_candidates`.
+- Add per-case `Latency(ms)`, `Candidates`, and `Applied` to the result table for slow-case and decision inspection.
 - Use nearest-rank p95 over sorted latency values. Empty input returns zeroed summary values.
 - Keep latency formatting stable with millisecond precision to three decimals.
+- `pending_candidates` should normally be zero after `PersonalizationEngine::convert`; a non-zero value indicates a candidate decision path was not finalized.
 
 ### 4. Validation & Error Matrix
 
@@ -266,13 +276,15 @@ fn summarize_latency_ms(values: &[f64]) -> LatencySummary;
 |---|---|
 | Empty latency list | `avg_ms = 0`, `p95_ms = 0`. |
 | Latencies `[2, 1, 4, 100]` | `avg_ms = 26.75`, `p95_ms = 100`. |
-| Eval suite has five cases | Summary includes avg/p95 latency plus each row's local latency. |
+| Eval suite has five cases | Summary includes avg/p95 latency, decision totals, each row's local latency, candidate count, and applied count. |
 | A case fails expected text comparison | Eval still prints latency report before returning failure. |
+| Candidate decisions include applied, below-threshold, and skipped-overlap | Summary totals add each decision bucket independently. |
 
 ### 5. Tests Required
 
 - Unit test for empty latency summary.
 - Unit test for nearest-rank p95 calculation.
+- Unit test for aggregating candidate decision counts across cases.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
 
 ---

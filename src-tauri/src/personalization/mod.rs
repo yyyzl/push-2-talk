@@ -11,4 +11,7 @@ pub use correction_pair_store::{
     default_correction_pairs_path, record_accepted_correction_pair,
     record_rejected_correction_pair, CorrectionPair, CorrectionPairStore,
 };
-pub use engine::{ConversionDiagnostics, ConversionResult, PersonalizationEngine};
+pub use engine::{
+    CandidateDecision, ConversionCandidate, ConversionDiagnostics, ConversionResult,
+    PersonalizationEngine,
+};

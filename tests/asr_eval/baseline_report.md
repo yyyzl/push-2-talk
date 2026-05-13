@@ -14,18 +14,23 @@
 | final_accuracy | 100.00% |
 | correction_pair_hit_rate | 80.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.114 |
-| p95_latency_ms | 0.155 |
+| avg_latency_ms | 0.178 |
+| p95_latency_ms | 0.233 |
+| candidates_total | 4 |
+| applied_candidates | 4 |
+| below_threshold_candidates | 0 |
+| skipped_overlap_candidates | 0 |
+| pending_candidates | 0 |
 
 ## Cases
 
-| ID | Category | Result | Raw | Actual |
-|---|---|---|---|---|
-| `mvp-claude-code-001` | `tech_mix` | PASS | `我打开 cloud code` | `我打开 Claude Code` |
-| `mvp-claude-code-002` | `tech_mix` | PASS | `我打开 claud code` | `我打开 Claude Code` |
-| `mvp-claude-code-003` | `tech_mix` | PASS | `我打开 cloud coat` | `我打开 Claude Code` |
-| `mvp-claude-code-004` | `tech_mix` | PASS | `我打开 克劳德 code` | `我打开 Claude Code` |
-| `mvp-claude-code-005` | `false_positive_guard` | PASS | `I use cloud storage` | `I use cloud storage` |
+| ID | Category | Result | Candidates | Applied | Raw | Actual |
+|---|---|---|---:|---:|---|---|
+| `mvp-claude-code-001` | `tech_mix` | PASS | 1 | 1 | `我打开 cloud code` | `我打开 Claude Code` |
+| `mvp-claude-code-002` | `tech_mix` | PASS | 1 | 1 | `我打开 claud code` | `我打开 Claude Code` |
+| `mvp-claude-code-003` | `tech_mix` | PASS | 1 | 1 | `我打开 cloud coat` | `我打开 Claude Code` |
+| `mvp-claude-code-004` | `tech_mix` | PASS | 1 | 1 | `我打开 克劳德 code` | `我打开 Claude Code` |
+| `mvp-claude-code-005` | `false_positive_guard` | PASS | 0 | 0 | `I use cloud storage` | `I use cloud storage` |
 
 ## Notes
 

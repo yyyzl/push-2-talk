@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use push_to_talk_lib::personalization::{CorrectionPairStore, PersonalizationEngine};
+use push_to_talk_lib::personalization::{
+    CandidateDecision, ConversionCandidate, CorrectionPairStore, PersonalizationEngine,
+};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +28,7 @@ struct CaseResult {
     actual_text: String,
     passed: bool,
     applied_count: usize,
+    decision_counts: CandidateDecisionCounts,
     local_latency_ms: f64,
 }
 
@@ -33,6 +36,15 @@ struct CaseResult {
 struct LatencySummary {
     avg_ms: f64,
     p95_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CandidateDecisionCounts {
+    total: usize,
+    applied: usize,
+    below_threshold: usize,
+    skipped_overlap: usize,
+    pending: usize,
 }
 
 fn main() -> Result<()> {
@@ -60,6 +72,7 @@ fn main() -> Result<()> {
             actual_text: conversion.text,
             passed,
             applied_count: conversion.diagnostics.applied.len(),
+            decision_counts: count_candidate_decisions(&conversion.diagnostics.candidates),
             local_latency_ms,
         });
     }
@@ -143,6 +156,7 @@ fn print_report(results: &[CaseResult]) {
         .map(|result| result.local_latency_ms)
         .collect::<Vec<_>>();
     let latency = summarize_latency_ms(&latencies);
+    let decision_counts = summarize_candidate_decisions(results);
 
     println!("# ASR Eval Report");
     println!();
@@ -156,23 +170,67 @@ fn print_report(results: &[CaseResult]) {
     println!("- false_replacement_count: {}", false_replacement_count);
     println!("- avg_latency_ms: {:.3}", latency.avg_ms);
     println!("- p95_latency_ms: {:.3}", latency.p95_ms);
+    println!("- candidates_total: {}", decision_counts.total);
+    println!("- applied_candidates: {}", decision_counts.applied);
+    println!(
+        "- below_threshold_candidates: {}",
+        decision_counts.below_threshold
+    );
+    println!(
+        "- skipped_overlap_candidates: {}",
+        decision_counts.skipped_overlap
+    );
+    println!("- pending_candidates: {}", decision_counts.pending);
     println!();
-    println!("| ID | Provider | Category | Result | Latency(ms) | Raw | Actual | Expected |");
-    println!("|---|---|---|---|---:|---|---|---|");
+    println!("| ID | Provider | Category | Result | Latency(ms) | Candidates | Applied | Raw | Actual | Expected |");
+    println!("|---|---|---|---|---:|---:|---:|---|---|---|");
 
     for result in results {
         println!(
-            "| {} | {} | {} | {} | {:.3} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {:.3} | {} | {} | {} | {} | {} |",
             escape_md(&result.case.audio_id),
             escape_md(&result.case.provider),
             escape_md(&result.case.category),
             if result.passed { "PASS" } else { "FAIL" },
             result.local_latency_ms,
+            result.decision_counts.total,
+            result.applied_count,
             escape_md(&result.case.raw_asr_text),
             escape_md(&result.actual_text),
             escape_md(&result.case.expected_text),
         );
     }
+}
+
+fn count_candidate_decisions(candidates: &[ConversionCandidate]) -> CandidateDecisionCounts {
+    let mut counts = CandidateDecisionCounts {
+        total: candidates.len(),
+        ..CandidateDecisionCounts::default()
+    };
+
+    for candidate in candidates {
+        match candidate.decision {
+            CandidateDecision::Applied => counts.applied += 1,
+            CandidateDecision::BelowApplyThreshold => counts.below_threshold += 1,
+            CandidateDecision::SkippedOverlap => counts.skipped_overlap += 1,
+            CandidateDecision::Pending => counts.pending += 1,
+        }
+    }
+
+    counts
+}
+
+fn summarize_candidate_decisions(results: &[CaseResult]) -> CandidateDecisionCounts {
+    results
+        .iter()
+        .fold(CandidateDecisionCounts::default(), |mut total, result| {
+            total.total += result.decision_counts.total;
+            total.applied += result.decision_counts.applied;
+            total.below_threshold += result.decision_counts.below_threshold;
+            total.skipped_overlap += result.decision_counts.skipped_overlap;
+            total.pending += result.decision_counts.pending;
+            total
+        })
 }
 
 fn summarize_latency_ms(values: &[f64]) -> LatencySummary {
@@ -211,5 +269,56 @@ mod tests {
 
         assert!((summary.avg_ms - 26.75).abs() < f64::EPSILON);
         assert!((summary.p95_ms - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn summarize_candidate_decisions_adds_case_counts() {
+        let results = vec![
+            case_result_with_counts(CandidateDecisionCounts {
+                total: 3,
+                applied: 1,
+                below_threshold: 2,
+                skipped_overlap: 0,
+                pending: 0,
+            }),
+            case_result_with_counts(CandidateDecisionCounts {
+                total: 2,
+                applied: 1,
+                below_threshold: 0,
+                skipped_overlap: 1,
+                pending: 0,
+            }),
+        ];
+
+        assert_eq!(
+            summarize_candidate_decisions(&results),
+            CandidateDecisionCounts {
+                total: 5,
+                applied: 2,
+                below_threshold: 2,
+                skipped_overlap: 1,
+                pending: 0,
+            }
+        );
+    }
+
+    fn case_result_with_counts(decision_counts: CandidateDecisionCounts) -> CaseResult {
+        CaseResult {
+            case: EvalCase {
+                audio_id: "case".to_string(),
+                audio_wav_path: None,
+                provider: "fixture".to_string(),
+                raw_asr_text: "raw".to_string(),
+                expected_text: "expected".to_string(),
+                user_final_text: None,
+                category: "test".to_string(),
+                notes: None,
+            },
+            actual_text: "actual".to_string(),
+            passed: false,
+            applied_count: decision_counts.applied,
+            decision_counts,
+            local_latency_ms: 0.0,
+        }
     }
 }
