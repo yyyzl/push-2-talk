@@ -262,6 +262,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
    - `fuzzy_class` 必须兼容
    - 英文常见词（前 1000 高频）需要 `manual` 来源才允许 pair
    - 已有 `manual` 纠错对优先级最高；自动学习接受的新 pair 不能覆盖同一 `original_text` 的冲突 manual pair
+   - 学习建议的拒绝/忽略反馈只削弱 learned pair，不能降低、禁用或增加 manual pair 的负反馈计数
    - alias key 只能来自用户接受、手动确认或高置信 LLM 判断，不能对所有混合文本自动扩散
 6. **学习接入**：现有 [learning/coordinator.rs](src-tauri/src/learning/coordinator.rs) + [learning/diff_analyzer.rs](src-tauri/src/learning/diff_analyzer.rs) 增加产出 `CorrectionPairSuggestion`，与现有 `LearningSuggestion` 并行
 7. **置信度更新规则**：

@@ -295,6 +295,7 @@ impl CorrectionPairStore {
 
         let pair = self.pairs.iter_mut().find(|pair| {
             pair.enabled
+                && !pair.is_manual()
                 && normalize_surface(&pair.original_text) == normalized_original
                 && normalize_surface(&pair.corrected_text) == normalized_corrected
         })?;
@@ -792,6 +793,32 @@ mod tests {
                 .expect("parse pairs");
         assert_eq!(raw_pairs[0].rejected_count, 3);
         assert!(!raw_pairs[0].enabled);
+    }
+
+    #[test]
+    fn reject_feedback_does_not_weaken_manual_pair() {
+        let mut manual_pair = CorrectionPair::new("manual-claude", "cloud code", "Claude Code");
+        manual_pair.source = "manual".to_string();
+        manual_pair.confidence = 1.0;
+        let mut store = CorrectionPairStore::new(vec![manual_pair]);
+
+        for _ in 0..3 {
+            let rejected = store.record_rejected_correction("cloud code", "Claude Code");
+            assert!(rejected.is_none());
+        }
+
+        let pair = store.lookup_by_text("cloud code")[0];
+        assert_eq!(pair.id, "manual-claude");
+        assert_eq!(pair.source, "manual");
+        assert_eq!(pair.rejected_count, 0);
+        assert_eq!(pair.confidence, 1.0);
+        assert!(pair.enabled);
+
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+        assert_eq!(
+            engine.convert("我打开 cloud code").text,
+            "我打开 Claude Code"
+        );
     }
 
     #[test]

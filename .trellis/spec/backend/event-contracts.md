@@ -250,7 +250,7 @@ await invoke("dismiss_learning_suggestion", { id: suggestion.id });
 - Passive timeout must not record negative feedback because the user may not have seen the suggestion.
 - Reject feedback must not create a new correction pair. It only updates an existing pair that matches both normalized `original` and normalized `corrected`.
 - Rejected learned pairs must affect future matching. Non-manual exact matches should respect confidence so a rejected learned pair can fall below the automatic-apply threshold.
-- Manual pairs remain high-priority and should not be weakened by the learned-pair exact-match confidence rule.
+- Manual pairs remain high-priority and must not be weakened, rejected, or disabled by learning-suggestion dismiss feedback.
 
 ### 4. Validation & Error Matrix
 
@@ -261,9 +261,11 @@ await invoke("dismiss_learning_suggestion", { id: suggestion.id });
 | Timeout sends only id | No reject is recorded; command succeeds. |
 | Rejected learned pair falls below threshold | It no longer auto-applies, including exact-text matches. |
 | Pair reaches consecutive reject threshold | Pair is disabled and excluded from lookup. |
+| Matching pair is `manual` | Do not increment `rejected_count`, lower confidence, or disable the pair. |
 
 ### 5. Tests Required
 
 - Backend storage test: reject lowers confidence and does not create a missing pair.
 - Backend conversion test: a rejected learned exact-text pair no longer auto-applies.
+- Backend storage/conversion test: reject feedback does not weaken or disable a manual pair.
 - Frontend build/type-check must cover the explicit-dismiss payload while preserving timeout payload compatibility.
