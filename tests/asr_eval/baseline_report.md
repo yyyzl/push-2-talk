@@ -15,14 +15,24 @@
 | correction_pair_hit_rate | 80.00% |
 | false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.307 |
-| p95_latency_ms | 0.453 |
+| avg_latency_ms | 0.352 |
+| p95_latency_ms | 0.575 |
 | quality_gate_passed | true |
 | candidates_total | 16 |
 | applied_candidates | 16 |
 | below_threshold_candidates | 0 |
 | skipped_overlap_candidates | 0 |
 | pending_candidates | 0 |
+| exact_text_candidates | 9 |
+| en_phonetic_candidates | 6 |
+| zh_pinyin_fuzzy_candidates | 0 |
+| mixed_candidates | 0 |
+| alias_candidates | 1 |
+| exact_text_applied | 9 |
+| en_phonetic_applied | 6 |
+| zh_pinyin_fuzzy_applied | 0 |
+| mixed_applied | 0 |
+| alias_applied | 1 |
 
 ## Cases
 
@@ -54,4 +64,5 @@
 - This is not a full ASR quality baseline yet. It verifies the local personalization decoder MVP over fixed text fixtures.
 - The false-positive guards confirm that phrase-level pairs do not generalize to common words such as `cloud`, `open`, `type`, and `wind`.
 - The TypeScript cases verify that conservative plural-suffix normalization lets `types script` and `types scripts` share the `type script` phonetic key.
+- Match-kind metrics show the current mini eval is covered by exact text, English phonetic, and alias hits; no zh-only or mixed-key-only hits are present yet.
 - Latency metrics are from a local sample run and cover only `PersonalizationEngine::convert`, not ASR provider time or LLM processing.

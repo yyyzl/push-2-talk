@@ -260,6 +260,14 @@ struct CandidateDecisionCounts {
     pending: usize,
 }
 
+struct MatchKindCounts {
+    exact_text: usize,
+    en_phonetic: usize,
+    zh_pinyin_fuzzy: usize,
+    mixed: usize,
+    alias: usize,
+}
+
 fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
 
 fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBuf>;
@@ -271,6 +279,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Report `avg_latency_ms` and `p95_latency_ms` in the top-level Markdown summary.
 - Report `false_replacement_rate` alongside `false_replacement_count`.
 - Report candidate decision totals: `candidates_total`, `applied_candidates`, `below_threshold_candidates`, `skipped_overlap_candidates`, and `pending_candidates`.
+- Report candidate match-kind totals for all candidates and applied candidates: exact text, English phonetic, Chinese fuzzy pinyin, mixed, and alias.
 - Report `quality_gate_passed`.
 - Add per-case `Latency(ms)`, `Candidates`, and `Applied` to the result table for slow-case and decision inspection.
 - Use nearest-rank p95 over sorted latency values. Empty input returns zeroed summary values.
@@ -300,6 +309,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 | Mini eval suite has 15-30 cases | Summary includes avg/p95 latency, decision totals, each row's local latency, candidate count, and applied count. |
 | A case fails expected text comparison | Eval still prints latency report before returning failure. |
 | Candidate decisions include applied, below-threshold, and skipped-overlap | Summary totals add each decision bucket independently. |
+| Candidate sources include exact, English phonetic, and alias hits | Summary reports both total candidate count and applied count for each match kind. |
 | p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
 | pending candidates remain after conversion | Print report, mark quality gate failed, then return an error. |
 | `--diagnostics-out target/asr_eval_diagnostics` is set | Create `target/asr_eval_diagnostics/asr_eval_diagnostics.json` with bounded per-case payload. |
@@ -310,6 +320,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Unit test for empty latency summary.
 - Unit test for nearest-rank p95 calculation.
 - Unit test for aggregating candidate decision counts across cases.
+- Unit test for aggregating candidate and applied match-kind counts independently.
 - Unit test for passing quality gates.
 - Unit test for reporting all failed quality gates.
 - Unit test for parsing `--diagnostics-out`.

@@ -12,6 +12,6 @@ pub use correction_pair_store::{
     record_rejected_correction_pair, CorrectionPair, CorrectionPairStore,
 };
 pub use engine::{
-    CandidateDecision, ConversionCandidate, ConversionDiagnostics, ConversionResult,
+    CandidateDecision, ConversionCandidate, ConversionDiagnostics, ConversionResult, MatchKind,
     PersonalizationEngine,
 };

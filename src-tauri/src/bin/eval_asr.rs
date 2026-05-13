@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use push_to_talk_lib::personalization::{
-    CandidateDecision, ConversionCandidate, ConversionDiagnostics, CorrectionPairStore,
+    CandidateDecision, ConversionCandidate, ConversionDiagnostics, CorrectionPairStore, MatchKind,
     PersonalizationEngine,
 };
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,15 @@ struct CandidateDecisionCounts {
     pending: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MatchKindCounts {
+    exact_text: usize,
+    en_phonetic: usize,
+    zh_pinyin_fuzzy: usize,
+    mixed: usize,
+    alias: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct EvalMetrics {
     total: usize,
@@ -73,6 +82,8 @@ struct EvalMetrics {
     false_replacement_rate: f32,
     latency: LatencySummary,
     decision_counts: CandidateDecisionCounts,
+    candidate_match_counts: MatchKindCounts,
+    applied_match_counts: MatchKindCounts,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -234,6 +245,40 @@ fn print_report(results: &[CaseResult]) {
         metrics.decision_counts.skipped_overlap
     );
     println!("- pending_candidates: {}", metrics.decision_counts.pending);
+    println!(
+        "- exact_text_candidates: {}",
+        metrics.candidate_match_counts.exact_text
+    );
+    println!(
+        "- en_phonetic_candidates: {}",
+        metrics.candidate_match_counts.en_phonetic
+    );
+    println!(
+        "- zh_pinyin_fuzzy_candidates: {}",
+        metrics.candidate_match_counts.zh_pinyin_fuzzy
+    );
+    println!(
+        "- mixed_candidates: {}",
+        metrics.candidate_match_counts.mixed
+    );
+    println!(
+        "- alias_candidates: {}",
+        metrics.candidate_match_counts.alias
+    );
+    println!(
+        "- exact_text_applied: {}",
+        metrics.applied_match_counts.exact_text
+    );
+    println!(
+        "- en_phonetic_applied: {}",
+        metrics.applied_match_counts.en_phonetic
+    );
+    println!(
+        "- zh_pinyin_fuzzy_applied: {}",
+        metrics.applied_match_counts.zh_pinyin_fuzzy
+    );
+    println!("- mixed_applied: {}", metrics.applied_match_counts.mixed);
+    println!("- alias_applied: {}", metrics.applied_match_counts.alias);
     if !quality_gate.passed {
         for failure in &quality_gate.failures {
             println!("- quality_gate_failure: {}", failure);
@@ -307,6 +352,8 @@ fn compute_metrics(results: &[CaseResult]) -> EvalMetrics {
         false_replacement_rate,
         latency: summarize_latency_ms(&latencies),
         decision_counts: summarize_candidate_decisions(results),
+        candidate_match_counts: summarize_candidate_match_kinds(results),
+        applied_match_counts: summarize_applied_match_kinds(results),
     }
 }
 
@@ -389,6 +436,42 @@ fn summarize_candidate_decisions(results: &[CaseResult]) -> CandidateDecisionCou
             total.pending += result.decision_counts.pending;
             total
         })
+}
+
+fn summarize_candidate_match_kinds(results: &[CaseResult]) -> MatchKindCounts {
+    results
+        .iter()
+        .fold(MatchKindCounts::default(), |mut total, result| {
+            total.add_candidates(&result.diagnostics.candidates);
+            total
+        })
+}
+
+fn summarize_applied_match_kinds(results: &[CaseResult]) -> MatchKindCounts {
+    results
+        .iter()
+        .fold(MatchKindCounts::default(), |mut total, result| {
+            total.add_candidates(&result.diagnostics.applied);
+            total
+        })
+}
+
+impl MatchKindCounts {
+    fn add_candidates(&mut self, candidates: &[ConversionCandidate]) {
+        for candidate in candidates {
+            self.add(candidate.match_kind);
+        }
+    }
+
+    fn add(&mut self, match_kind: MatchKind) {
+        match match_kind {
+            MatchKind::ExactText => self.exact_text += 1,
+            MatchKind::EnPhonetic => self.en_phonetic += 1,
+            MatchKind::ZhPinyinFuzzy => self.zh_pinyin_fuzzy += 1,
+            MatchKind::Mixed => self.mixed += 1,
+            MatchKind::Alias => self.alias += 1,
+        }
+    }
 }
 
 fn summarize_latency_ms(values: &[f64]) -> LatencySummary {
@@ -561,6 +644,45 @@ mod tests {
     }
 
     #[test]
+    fn summarize_match_kinds_counts_candidates_and_applied_independently() {
+        let mut result = case_result_with_counts(CandidateDecisionCounts::default());
+        result.diagnostics.candidates = vec![
+            candidate_with_match_kind(MatchKind::ExactText, true),
+            candidate_with_match_kind(MatchKind::EnPhonetic, true),
+            candidate_with_match_kind(MatchKind::EnPhonetic, false),
+            candidate_with_match_kind(MatchKind::Mixed, false),
+            candidate_with_match_kind(MatchKind::Alias, true),
+        ];
+        result.diagnostics.applied = result
+            .diagnostics
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.applied)
+            .cloned()
+            .collect();
+
+        assert_eq!(
+            summarize_candidate_match_kinds(std::slice::from_ref(&result)),
+            MatchKindCounts {
+                exact_text: 1,
+                en_phonetic: 2,
+                mixed: 1,
+                alias: 1,
+                ..MatchKindCounts::default()
+            }
+        );
+        assert_eq!(
+            summarize_applied_match_kinds(std::slice::from_ref(&result)),
+            MatchKindCounts {
+                exact_text: 1,
+                en_phonetic: 1,
+                alias: 1,
+                ..MatchKindCounts::default()
+            }
+        );
+    }
+
+    #[test]
     fn quality_gate_passes_when_metrics_meet_thresholds() {
         let summary = evaluate_quality_gates(&EvalMetrics {
             total: 5,
@@ -574,6 +696,8 @@ mod tests {
                 p95_ms: 10.0,
             },
             decision_counts: CandidateDecisionCounts::default(),
+            candidate_match_counts: MatchKindCounts::default(),
+            applied_match_counts: MatchKindCounts::default(),
         });
 
         assert!(summary.passed);
@@ -597,6 +721,8 @@ mod tests {
                 pending: 1,
                 ..CandidateDecisionCounts::default()
             },
+            candidate_match_counts: MatchKindCounts::default(),
+            applied_match_counts: MatchKindCounts::default(),
         });
 
         assert!(!summary.passed);
@@ -728,6 +854,26 @@ mod tests {
             decision_counts,
             local_latency_ms: 0.0,
             diagnostics: ConversionDiagnostics::default(),
+        }
+    }
+
+    fn candidate_with_match_kind(match_kind: MatchKind, applied: bool) -> ConversionCandidate {
+        ConversionCandidate {
+            pair_id: "pair".to_string(),
+            original: "raw".to_string(),
+            target: "target".to_string(),
+            start: 0,
+            end: 3,
+            score: 1.0,
+            rank_score: 1.0,
+            match_kind,
+            applied,
+            decision: if applied {
+                CandidateDecision::Applied
+            } else {
+                CandidateDecision::BelowApplyThreshold
+            },
+            blocked_by_pair_id: None,
         }
     }
 }
