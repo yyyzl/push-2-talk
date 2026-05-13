@@ -223,7 +223,7 @@ impl PersonalizationEngine {
 }
 
 fn alias_score(pair: &CorrectionPair) -> f32 {
-    if pair.is_manual() {
+    if pair.is_user_confirmed() {
         pair.confidence * 0.92
     } else {
         pair.confidence * 0.82

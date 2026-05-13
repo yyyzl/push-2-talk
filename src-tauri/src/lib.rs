@@ -4633,10 +4633,20 @@ async fn add_learned_word(
     app_handle: AppHandle,
     word: String,
     source: String,
+    original: Option<String>,
+    corrected: Option<String>,
+    category: Option<String>,
 ) -> Result<(), String> {
     use crate::dictionary_utils::{entries_to_words, upsert_entry};
 
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
+    let stored_correction_pair = crate::personalization::record_accepted_correction_pair(
+        original.as_deref(),
+        corrected.as_deref(),
+        category.as_deref(),
+    )
+    .map_err(|e| format!("保存个性化纠错对失败: {}", e))?;
+
     let (updated_config, words) = mutate_persisted_config_with_result(|config| {
         // 添加词条（source: "manual" 或 "auto"）
         upsert_entry(&mut config.dictionary, &word, &source);
@@ -4659,6 +4669,14 @@ async fn add_learned_word(
     emit_config_updated(&app_handle, &updated_config);
     app_handle.emit("dictionary_updated", ()).ok();
 
+    if let Some(pair) = stored_correction_pair {
+        tracing::info!(
+            "个性化纠错对已保存: {} → {} (id: {})",
+            pair.original_text,
+            pair.corrected_text,
+            pair.id
+        );
+    }
     tracing::info!("词汇 '{}' 已添加到词典", word);
     Ok(())
 }

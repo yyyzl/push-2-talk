@@ -14,7 +14,9 @@ use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
-use crate::personalization::{CorrectionPairStore, PersonalizationEngine};
+use crate::personalization::{
+    default_correction_pairs_path, CorrectionPairStore, PersonalizationEngine,
+};
 use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 
@@ -258,7 +260,7 @@ impl NormalPipeline {
     }
 
     fn maybe_apply_personalization(text: String) -> (String, bool) {
-        let Ok(path) = Self::personalization_pairs_path() else {
+        let Ok(path) = default_correction_pairs_path() else {
             return (text, false);
         };
 
@@ -294,16 +296,6 @@ impl NormalPipeline {
         }
 
         (result.text, result.changed)
-    }
-
-    fn personalization_pairs_path() -> Result<std::path::PathBuf> {
-        let config_path = AppConfig::config_path()?;
-        let config_dir = config_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
-        Ok(config_dir
-            .join("personalization")
-            .join("correction_pairs.json"))
     }
 
     fn sum_llm_time(first: Option<u64>, second: Option<u64>) -> Option<u64> {

@@ -29,6 +29,9 @@ export function VocabularyLearningToast({
       await invoke("add_learned_word", {
         word: suggestion.word,
         source: "auto",
+        original: suggestion.original,
+        corrected: suggestion.corrected,
+        category: suggestion.category,
       });
       console.log("词汇已添加:", suggestion.word);
       setIsExiting(true);
@@ -37,7 +40,14 @@ export function VocabularyLearningToast({
       console.error("添加词汇失败:", error);
       setIsSubmitting(false);
     }
-  }, [suggestion.word, onAdd, isSubmitting]);
+  }, [
+    suggestion.word,
+    suggestion.original,
+    suggestion.corrected,
+    suggestion.category,
+    onAdd,
+    isSubmitting,
+  ]);
 
   // 处理忽略
   const handleDismiss = useCallback(async () => {

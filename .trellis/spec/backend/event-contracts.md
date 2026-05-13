@@ -140,3 +140,65 @@ let context = text.to_string();
 ```
 
 **Related**: `llm_post_processor` candidate arbitration and frontend history persistence.
+
+---
+
+## Scenario: `add_learned_word` Optional Personalization Pair
+
+### 1. Scope / Trigger
+
+- Trigger: any change to the `add_learned_word` Tauri command, auto vocabulary learning Toast payload, or personalization correction-pair persistence.
+- This command has two compatible modes:
+  - dictionary-only: manual dictionary management sends only `word` and `source`.
+  - accepted learning suggestion: the learning Toast also sends `original`, `corrected`, and `category`.
+
+### 2. Signatures
+
+Backend command shape:
+
+```rust
+async fn add_learned_word(
+    app_handle: AppHandle,
+    word: String,
+    source: String,
+    original: Option<String>,
+    corrected: Option<String>,
+    category: Option<String>,
+) -> Result<(), String>
+```
+
+Frontend accepted-learning payload:
+
+```typescript
+await invoke("add_learned_word", {
+  word: suggestion.word,
+  source: "auto",
+  original: suggestion.original,
+  corrected: suggestion.corrected,
+  category: suggestion.category,
+});
+```
+
+### 3. Contracts
+
+- Missing optional fields must preserve legacy dictionary-only behavior.
+- If `original` and `corrected` are both present, non-empty, and not the same after surface normalization, the backend must persist a local personalization correction pair.
+- A user-accepted correction pair is considered confirmed enough to be used by the local personalization decoder on the next dictation.
+- Correction pairs are local app data under the PushToTalk config directory. Do not emit them through frontend events unless a UI explicitly needs them.
+- Manual dictionary edits must not require or synthesize `original` / `corrected`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Manual dictionary add sends only `word` and `source` | Add/update dictionary entry; no personalization pair is written. |
+| Learning Toast accepts `cloud code -> Claude Code` | Add dictionary entry and write a `learned` correction pair. |
+| Optional fields are empty or normalize to the same text | Add dictionary entry; skip correction-pair write. |
+| Correction-pair JSON is missing | Create it atomically through the store save path. |
+| Correction-pair JSON is invalid | Return an error for accepted-learning persistence instead of silently overwriting unknown data. |
+
+### 5. Tests Required
+
+- Backend storage test: accepted correction persists, reloads, and retains category/source/confidence.
+- Backend conversion test: a freshly accepted mixed-language pair is confident enough to apply after reload.
+- Frontend build/type-check must cover the extended Toast `invoke` payload.

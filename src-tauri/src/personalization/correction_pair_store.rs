@@ -1,7 +1,10 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+use crate::config::AppConfig;
 
 use super::phonetic_keys::{build_key_bundle, normalize_surface};
 
@@ -116,6 +119,10 @@ impl CorrectionPair {
     pub fn is_manual(&self) -> bool {
         self.source.eq_ignore_ascii_case("manual")
     }
+
+    pub fn is_user_confirmed(&self) -> bool {
+        self.is_manual() || self.accepted_count > 0
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -137,6 +144,17 @@ impl CorrectionPairStore {
         Ok(Self::new(pairs))
     }
 
+    pub fn load_json_or_default(path: impl AsRef<Path>) -> Result<Self> {
+        match fs::read_to_string(path) {
+            Ok(content) => {
+                let pairs: Vec<CorrectionPair> = serde_json::from_str(&content)?;
+                Ok(Self::new(pairs))
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn save_json(&self, path: impl AsRef<Path>) -> Result<()> {
         if let Some(parent) = path.as_ref().parent() {
@@ -152,6 +170,71 @@ impl CorrectionPairStore {
         pair.ensure_keys();
         self.pairs.retain(|existing| existing.id != pair.id);
         self.pairs.push(pair);
+    }
+
+    pub fn upsert_accepted_correction_json(
+        path: impl AsRef<Path>,
+        original_text: &str,
+        corrected_text: &str,
+        category: Option<&str>,
+    ) -> Result<Option<CorrectionPair>> {
+        let mut store = Self::load_json_or_default(&path)?;
+        let pair = store.upsert_accepted_correction(original_text, corrected_text, category);
+        if pair.is_some() {
+            store.save_json(path)?;
+        }
+        Ok(pair)
+    }
+
+    pub fn upsert_accepted_correction(
+        &mut self,
+        original_text: &str,
+        corrected_text: &str,
+        category: Option<&str>,
+    ) -> Option<CorrectionPair> {
+        let original_text = original_text.trim();
+        let corrected_text = corrected_text.trim();
+        if original_text.is_empty()
+            || corrected_text.is_empty()
+            || normalize_surface(original_text) == normalize_surface(corrected_text)
+        {
+            return None;
+        }
+
+        let id = learned_pair_id(original_text, corrected_text);
+        let normalized_original = normalize_surface(original_text);
+        let category = category
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        if let Some(existing) = self.pairs.iter_mut().find(|pair| {
+            pair.id == id || normalize_surface(&pair.original_text) == normalized_original
+        }) {
+            existing.original_text = original_text.to_string();
+            existing.corrected_text = corrected_text.to_string();
+            if !existing.is_manual() {
+                existing.source = "learned".to_string();
+            }
+            existing.category = category;
+            existing.frequency = existing.frequency.saturating_add(1).max(1);
+            existing.accepted_count = existing.accepted_count.saturating_add(1);
+            existing.confidence = existing.confidence.max(0.98);
+            existing.enabled = true;
+            existing.ensure_keys();
+            return Some(existing.clone());
+        }
+
+        let mut pair = CorrectionPair::new(id, original_text, corrected_text);
+        pair.source = "learned".to_string();
+        pair.category = category;
+        pair.frequency = 1;
+        pair.confidence = 0.98;
+        pair.accepted_count = 1;
+        pair.enabled = true;
+        pair.ensure_keys();
+        self.pairs.push(pair.clone());
+        Some(pair)
     }
 
     pub fn lookup_by_text(&self, original: &str) -> Vec<&CorrectionPair> {
@@ -204,11 +287,48 @@ impl CorrectionPairStore {
     }
 }
 
+pub fn default_correction_pairs_path() -> Result<PathBuf> {
+    let config_path = AppConfig::config_path()?;
+    let config_dir = config_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
+    Ok(config_dir
+        .join("personalization")
+        .join("correction_pairs.json"))
+}
+
+pub fn record_accepted_correction_pair(
+    original_text: Option<&str>,
+    corrected_text: Option<&str>,
+    category: Option<&str>,
+) -> Result<Option<CorrectionPair>> {
+    let (Some(original_text), Some(corrected_text)) = (original_text, corrected_text) else {
+        return Ok(None);
+    };
+
+    let path = default_correction_pairs_path()?;
+    CorrectionPairStore::upsert_accepted_correction_json(
+        path,
+        original_text,
+        corrected_text,
+        category,
+    )
+}
+
 fn push_unique(values: &mut Vec<String>, value: String) {
     if value.is_empty() || values.iter().any(|existing| existing == &value) {
         return;
     }
     values.push(value);
+}
+
+fn learned_pair_id(original_text: &str, corrected_text: &str) -> String {
+    let fingerprint = format!(
+        "{}=>{}",
+        normalize_surface(original_text),
+        normalize_surface(corrected_text)
+    );
+    format!("learned-{:x}", md5::compute(fingerprint))
 }
 
 #[cfg(test)]
@@ -241,5 +361,80 @@ mod tests {
         assert!(!key.is_empty());
         assert_eq!(store.lookup_by_en_phonetic(key).len(), 1);
         assert_eq!(store.lookup_by_alias_key("kelaode|code").len(), 1);
+    }
+
+    #[test]
+    fn accepted_correction_pair_persists_and_reloads() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp
+            .path()
+            .join("personalization")
+            .join("correction_pairs.json");
+
+        let pair = CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save pair")
+        .expect("pair should be stored");
+
+        assert_eq!(pair.source, "learned");
+        assert_eq!(pair.accepted_count, 1);
+        assert!(pair.confidence >= 0.98);
+        assert!(path.exists());
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let loaded = store.lookup_by_text("Cloud Code")[0];
+        assert_eq!(loaded.corrected_text, "Claude Code");
+        assert_eq!(loaded.category.as_deref(), Some("proper_noun"));
+    }
+
+    #[test]
+    fn accepted_mixed_language_pair_is_confident_enough_to_apply_after_reload() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "克劳德 code",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("save pair");
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+
+        assert_eq!(
+            engine.convert("我打开 克劳德 code").text,
+            "我打开 Claude Code"
+        );
+    }
+
+    #[test]
+    fn accepted_correction_pair_ignores_empty_or_identity_text() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        let empty = CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            " ",
+            "Claude Code",
+            Some("proper_noun"),
+        )
+        .expect("empty original should not fail");
+        let identity = CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "Claude Code",
+            " claude code ",
+            Some("proper_noun"),
+        )
+        .expect("identity text should not fail");
+
+        assert!(empty.is_none());
+        assert!(identity.is_none());
+        assert!(!path.exists());
     }
 }
