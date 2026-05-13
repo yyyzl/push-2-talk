@@ -300,7 +300,18 @@ impl CorrectionPairStore {
     }
 
     pub fn lookup_by_en_phonetic(&self, key: &str) -> Vec<&CorrectionPair> {
-        self.lookup_by_key(|pair| pair.en_phonetic_key.as_deref(), key)
+        self.pairs
+            .iter()
+            .filter(|pair| {
+                pair.enabled
+                    && pair.original_text.is_ascii()
+                    && pair
+                        .en_phonetic_key
+                        .as_deref()
+                        .map(|candidate| candidate.eq_ignore_ascii_case(key))
+                        .unwrap_or(false)
+            })
+            .collect()
     }
 
     pub fn lookup_by_zh_pinyin_fuzzy(&self, key: &str) -> Vec<&CorrectionPair> {
@@ -637,5 +648,22 @@ mod tests {
                 .expect("parse pairs");
         assert_eq!(raw_pairs[0].rejected_count, 3);
         assert!(!raw_pairs[0].enabled);
+    }
+
+    #[test]
+    fn mixed_language_pair_does_not_match_ascii_tail_by_english_phonetic_key() {
+        let mixed_pair = CorrectionPair::new("openai-mixed", "欧喷 ai", "OpenAI");
+        let ascii_pair = CorrectionPair::new("openai-ascii", "open ai", "OpenAI");
+        let store = CorrectionPairStore::new(vec![mixed_pair, ascii_pair]);
+        let ai_key = build_key_bundle("ai")
+            .en_phonetic_keys
+            .first()
+            .cloned()
+            .expect("ai phonetic key");
+
+        let matches = store.lookup_by_en_phonetic(&ai_key);
+
+        assert!(matches.iter().all(|pair| pair.original_text.is_ascii()));
+        assert!(!matches.iter().any(|pair| pair.id == "openai-mixed"));
     }
 }

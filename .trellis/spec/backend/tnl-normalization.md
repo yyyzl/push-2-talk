@@ -122,6 +122,7 @@ pub enum MatchKind {
 - Pure Chinese windows may query pinyin/fuzzy-pinyin keys.
 - Mixed Chinese + ASCII windows must query only mixed keys and alias keys.
 - A mixed window must not be replaced solely because its ASCII subset matches an English phonetic pair.
+- A mixed correction pair must not be returned by pure-ASCII English phonetic lookup. Its ASCII tail is not enough evidence to rewrite an unrelated ASCII span.
 - If a shorter pure-ASCII sub-window matches, replace only that sub-window, preserving the surrounding Chinese context.
 
 ### 4. Validation & Error Matrix
@@ -132,6 +133,7 @@ pub enum MatchKind {
 | Pair `cloud code -> Claude Code`, input full window `我打开 cloud code` | Do not replace the full mixed span with `Claude Code`. |
 | Pair has alias `kelaode\|code`, input `我打开 克劳德 code` | Mixed/alias window may replace `克劳德 code` with `Claude Code`. |
 | Input `I use cloud storage` | No replacement from a `cloud code` pair. |
+| Pair `欧喷 ai -> OpenAI`, input `enable ai mode` | Keep `ai`; mixed-language pair must not match the pure ASCII tail by English phonetic key. |
 
 ### 5. Good/Base/Bad Cases
 
@@ -145,6 +147,7 @@ pub enum MatchKind {
 - Unit test for mixed alias correction such as `克劳德 code -> Claude Code`.
 - Regression test asserting the full mixed span is not swallowed.
 - False-positive guard for common English words such as `cloud storage`.
+- Regression test: mixed-language pair does not auto-apply to ASCII tail only.
 
 ### 7. Wrong vs Correct
 
@@ -309,7 +312,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 | Mini eval suite has 15-30 cases | Summary includes avg/p95 latency, decision totals, each row's local latency, candidate count, and applied count. |
 | A case fails expected text comparison | Eval still prints latency report before returning failure. |
 | Candidate decisions include applied, below-threshold, and skipped-overlap | Summary totals add each decision bucket independently. |
-| Candidate sources include exact, English phonetic, and alias hits | Summary reports both total candidate count and applied count for each match kind. |
+| Candidate sources include exact, English phonetic, Chinese fuzzy-pinyin, mixed, and alias hits | Summary reports both total candidate count and applied count for each match kind. |
 | p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
 | pending candidates remain after conversion | Print report, mark quality gate failed, then return an error. |
 | `--diagnostics-out target/asr_eval_diagnostics` is set | Create `target/asr_eval_diagnostics/asr_eval_diagnostics.json` with bounded per-case payload. |

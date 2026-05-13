@@ -3,7 +3,7 @@
 ## Suite
 
 - Suite: `tests/asr_eval`
-- Cases: 20
+- Cases: 22
 - Seed correction pairs: `tests/asr_eval/correction_pairs.json`
 - Scope: Week 1 ASR personalization mini eval vertical slice
 
@@ -12,26 +12,26 @@
 | Metric | Value |
 |---|---:|
 | final_accuracy | 100.00% |
-| correction_pair_hit_rate | 80.00% |
+| correction_pair_hit_rate | 81.82% |
 | false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.352 |
-| p95_latency_ms | 0.575 |
+| avg_latency_ms | 0.236 |
+| p95_latency_ms | 0.449 |
 | quality_gate_passed | true |
-| candidates_total | 16 |
-| applied_candidates | 16 |
+| candidates_total | 19 |
+| applied_candidates | 18 |
 | below_threshold_candidates | 0 |
-| skipped_overlap_candidates | 0 |
+| skipped_overlap_candidates | 1 |
 | pending_candidates | 0 |
 | exact_text_candidates | 9 |
 | en_phonetic_candidates | 6 |
-| zh_pinyin_fuzzy_candidates | 0 |
-| mixed_candidates | 0 |
+| zh_pinyin_fuzzy_candidates | 2 |
+| mixed_candidates | 1 |
 | alias_candidates | 1 |
 | exact_text_applied | 9 |
 | en_phonetic_applied | 6 |
-| zh_pinyin_fuzzy_applied | 0 |
-| mixed_applied | 0 |
+| zh_pinyin_fuzzy_applied | 1 |
+| mixed_applied | 1 |
 | alias_applied | 1 |
 
 ## Cases
@@ -58,11 +58,14 @@
 | `mvp-windsurf-003` | `tech_mix` | PASS | 1 | 1 | `切到 wind surf workspace` | `切到 Windsurf workspace` |
 | `mvp-windsurf-004` | `tech_mix` | PASS | 1 | 1 | `wind surf 插件启动了` | `Windsurf 插件启动了` |
 | `mvp-windsurf-005` | `false_positive_guard` | PASS | 0 | 0 | `The wind speed changed` | `The wind speed changed` |
+| `mvp-openai-zh-001` | `tech_mix` | PASS | 1 | 1 | `我调用 欧盆艾 接口` | `我调用 OpenAI 接口` |
+| `mvp-openai-mixed-001` | `tech_mix` | PASS | 2 | 1 | `我调用 欧盆 ai 接口` | `我调用 OpenAI 接口` |
 
 ## Notes
 
 - This is not a full ASR quality baseline yet. It verifies the local personalization decoder MVP over fixed text fixtures.
 - The false-positive guards confirm that phrase-level pairs do not generalize to common words such as `cloud`, `open`, `type`, and `wind`.
 - The TypeScript cases verify that conservative plural-suffix normalization lets `types script` and `types scripts` share the `type script` phonetic key.
-- Match-kind metrics show the current mini eval is covered by exact text, English phonetic, and alias hits; no zh-only or mixed-key-only hits are present yet.
+- Match-kind metrics show the current mini eval is covered by exact text, English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias hits.
+- Mixed-language correction pairs do not participate in pure-ASCII English phonetic lookup; this prevents an `欧喷 ai -> OpenAI` pair from rewriting an unrelated ASCII `ai` span.
 - Latency metrics are from a local sample run and cover only `PersonalizationEngine::convert`, not ASR provider time or LLM processing.

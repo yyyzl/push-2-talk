@@ -163,5 +163,27 @@
     "category": "false_positive_guard",
     "notes": "wind 常见词不应被泛化到 Windsurf",
     "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-zh-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 欧盆艾 接口",
+    "expected_text": "我调用 OpenAI 接口",
+    "user_final_text": "我调用 OpenAI 接口",
+    "category": "tech_mix",
+    "notes": "OpenAI 纯中文音译错形通过 zh_pinyin_fuzzy 命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-mixed-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 欧盆 ai 接口",
+    "expected_text": "我调用 OpenAI 接口",
+    "user_final_text": "我调用 OpenAI 接口",
+    "category": "tech_mix",
+    "notes": "OpenAI 中文同音错字 + ASCII 尾词通过 mixed key 命中",
+    "diagnostics": null
   }
 ]
