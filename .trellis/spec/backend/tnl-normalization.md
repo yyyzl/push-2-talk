@@ -294,6 +294,16 @@ Candidate diagnostics expose two separate scores:
 pub struct ConversionCandidate {
     pub score: f32,
     pub rank_score: f32,
+    pub applied: bool,
+    pub decision: CandidateDecision,
+    pub blocked_by_pair_id: Option<String>,
+}
+
+pub enum CandidateDecision {
+    Pending,
+    Applied,
+    BelowApplyThreshold,
+    SkippedOverlap,
 }
 ```
 
@@ -312,6 +322,12 @@ impl PersonalizationEngine {
 - A candidate with `score < apply_threshold` must not auto-apply even when `rank_score` is high.
 - When two candidates cover the same span length and overlap, prefer higher `rank_score`; use `score` only as a tie-breaker.
 - Longer candidate windows still sort before shorter windows to preserve phrase-level corrections.
+- By the time `convert()` returns diagnostics, every candidate should have a final decision:
+  - `Applied` for selected replacements.
+  - `BelowApplyThreshold` for candidates that failed the auto-apply threshold.
+  - `SkippedOverlap` for candidates blocked by an already-selected overlapping candidate.
+- `applied` remains as a compatibility boolean, but new diagnostics should use `decision` for explanation.
+- `SkippedOverlap` candidates must include `blocked_by_pair_id` so logs can explain why a shorter or lower-ranked window was skipped.
 
 ### 4. Validation & Error Matrix
 
@@ -321,11 +337,15 @@ impl PersonalizationEngine {
 | Pair confidence is below the apply threshold but frequency is very high | Do not apply; keep original text and expose only diagnostics. |
 | Two candidates have the same rank score | Prefer higher `score`, then earlier start offset. |
 | A longer phrase and a shorter sub-token both match | Prefer the longer phrase before rank comparison. |
+| Candidate loses due to overlap | Mark `decision = SkippedOverlap` and set `blocked_by_pair_id`. |
+| Candidate loses due to threshold | Mark `decision = BelowApplyThreshold` and leave `applied = false`. |
 
 ### 5. Tests Required
 
 - Personalization engine test: repeated same-span pair beats one-off higher-confidence candidate.
 - Personalization engine test: high frequency does not bypass the apply threshold.
+- Personalization engine diagnostics test: skipped-overlap candidate records `blocked_by_pair_id`.
+- Personalization engine diagnostics test: below-threshold candidate records `BelowApplyThreshold`.
 - Run the personalization suite and ASR eval after ranking changes.
 
 ---

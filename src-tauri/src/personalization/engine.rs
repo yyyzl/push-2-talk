@@ -32,6 +32,10 @@ pub struct ConversionCandidate {
     pub rank_score: f32,
     pub match_kind: MatchKind,
     pub applied: bool,
+    #[serde(default)]
+    pub decision: CandidateDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_pair_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +46,16 @@ pub enum MatchKind {
     ZhPinyinFuzzy,
     Mixed,
     Alias,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateDecision {
+    #[default]
+    Pending,
+    Applied,
+    BelowApplyThreshold,
+    SkippedOverlap,
 }
 
 pub struct PersonalizationEngine {
@@ -81,18 +95,24 @@ impl PersonalizationEngine {
         });
 
         let mut selected = Vec::new();
-        for candidate in &candidates {
+        for candidate in &mut candidates {
             if candidate.score < self.apply_threshold {
+                candidate.decision = CandidateDecision::BelowApplyThreshold;
                 continue;
             }
-            if selected
+            if let Some(existing) = selected
                 .iter()
-                .any(|existing: &ConversionCandidate| overlaps(existing, candidate))
+                .find(|existing: &&ConversionCandidate| overlaps(existing, candidate))
             {
+                candidate.decision = CandidateDecision::SkippedOverlap;
+                candidate.blocked_by_pair_id = Some(existing.pair_id.clone());
                 continue;
             }
             let mut applied = candidate.clone();
             applied.applied = true;
+            applied.decision = CandidateDecision::Applied;
+            candidate.applied = true;
+            candidate.decision = CandidateDecision::Applied;
             selected.push(applied);
         }
 
@@ -277,6 +297,8 @@ fn push_candidate(
         rank_score,
         match_kind,
         applied: false,
+        decision: CandidateDecision::Pending,
+        blocked_by_pair_id: None,
     });
 }
 
@@ -385,6 +407,27 @@ mod tests {
 
         assert_eq!(result.text, "我打开 Claude Code");
         assert!(result.changed);
+        let applied = result
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.pair_id == "repeated-cloud-code")
+            .expect("repeated candidate");
+        assert!(applied.applied);
+        assert_eq!(applied.decision, CandidateDecision::Applied);
+
+        let blocked = result
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.pair_id == "one-off-cloud-code")
+            .expect("one-off candidate");
+        assert!(!blocked.applied);
+        assert_eq!(blocked.decision, CandidateDecision::SkippedOverlap);
+        assert_eq!(
+            blocked.blocked_by_pair_id.as_deref(),
+            Some("repeated-cloud-code")
+        );
     }
 
     #[test]
@@ -405,6 +448,9 @@ mod tests {
             .candidates
             .iter()
             .any(|candidate| candidate.rank_score > DEFAULT_APPLY_THRESHOLD));
+        assert!(result.diagnostics.candidates.iter().all(|candidate| {
+            candidate.decision == CandidateDecision::BelowApplyThreshold && !candidate.applied
+        }));
         assert!(result.diagnostics.applied.is_empty());
     }
 
