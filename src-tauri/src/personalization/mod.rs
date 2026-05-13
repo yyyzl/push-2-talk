@@ -5,7 +5,7 @@
 
 mod correction_pair_store;
 mod engine;
-mod phonetic_keys;
+pub(crate) mod phonetic_keys;
 
 pub use correction_pair_store::{
     default_correction_pairs_path, record_accepted_correction_pair,

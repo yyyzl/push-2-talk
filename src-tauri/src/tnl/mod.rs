@@ -12,12 +12,14 @@
 mod engine;
 mod fuzzy;
 mod rules;
+mod syllable_lattice;
 mod tech_span;
 mod tokenizer;
 mod types;
 
 pub use engine::TnlEngine;
 pub(crate) use fuzzy::is_common_english_word;
+pub(crate) use syllable_lattice::SyllableLattice;
 pub use types::{
     TnlArbitrationSummary, TnlCandidate, TnlCandidateArbitrationResult, TnlCandidateDecision,
     TnlDiagnostics,

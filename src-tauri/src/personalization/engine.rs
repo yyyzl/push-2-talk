@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::tnl::SyllableLattice;
+
 use super::correction_pair_store::{CorrectionPair, CorrectionPairStore};
-use super::phonetic_keys::build_key_bundle;
 
 const DEFAULT_MAX_WINDOW_TOKENS: usize = 5;
 const DEFAULT_APPLY_THRESHOLD: f32 = 0.88;
@@ -67,8 +68,8 @@ impl PersonalizationEngine {
             };
         }
 
-        let tokens = content_tokens(text);
-        let mut candidates = self.collect_candidates(text, &tokens);
+        let lattice = SyllableLattice::from_asr_text(text);
+        let mut candidates = self.collect_candidates(&lattice);
         candidates.sort_by(|a, b| {
             let len_a = a.end.saturating_sub(a.start);
             let len_b = b.end.saturating_sub(b.start);
@@ -113,109 +114,98 @@ impl PersonalizationEngine {
         }
     }
 
-    fn collect_candidates(&self, text: &str, tokens: &[ContentToken]) -> Vec<ConversionCandidate> {
+    fn collect_candidates(&self, lattice: &SyllableLattice) -> Vec<ConversionCandidate> {
         let mut candidates = Vec::new();
 
-        for start_idx in 0..tokens.len() {
-            let end_limit = (start_idx + self.max_window_tokens).min(tokens.len());
-            for end_idx in start_idx..end_limit {
-                let start = tokens[start_idx].start;
-                let end = tokens[end_idx].end;
-                if start >= end || end > text.len() {
-                    continue;
+        for window in lattice.windows(self.max_window_tokens) {
+            let start = window.byte_range.start;
+            let end = window.byte_range.end;
+            let window_text = window.text.as_str();
+            let keys = &window.keys;
+            let has_chinese = window.has_chinese;
+            let has_ascii = window.has_ascii;
+
+            for pair in self.store.lookup_by_text(window_text) {
+                push_candidate(
+                    &mut candidates,
+                    pair,
+                    window_text,
+                    start,
+                    end,
+                    exact_score(pair),
+                    MatchKind::ExactText,
+                );
+            }
+
+            if has_ascii && !has_chinese {
+                for key in &keys.en_phonetic_keys {
+                    for pair in self.store.lookup_by_en_phonetic(key) {
+                        push_candidate(
+                            &mut candidates,
+                            pair,
+                            window_text,
+                            start,
+                            end,
+                            auto_score(pair, pair.confidence * 0.97),
+                            MatchKind::EnPhonetic,
+                        );
+                    }
                 }
+            }
 
-                let window_text = &text[start..end];
-                let keys = build_key_bundle(window_text);
-                let has_chinese = tokens[start_idx..=end_idx]
-                    .iter()
-                    .any(|token| token.kind == TokenKind::Chinese);
-                let has_ascii = tokens[start_idx..=end_idx]
-                    .iter()
-                    .any(|token| token.kind == TokenKind::Ascii);
-
-                for pair in self.store.lookup_by_text(window_text) {
-                    push_candidate(
-                        &mut candidates,
-                        pair,
-                        window_text,
-                        start,
-                        end,
-                        exact_score(pair),
-                        MatchKind::ExactText,
-                    );
+            if has_chinese && !has_ascii {
+                if let Some(key) = &keys.zh_pinyin_fuzzy_key {
+                    for pair in self.store.lookup_by_zh_pinyin_fuzzy(key) {
+                        push_candidate(
+                            &mut candidates,
+                            pair,
+                            window_text,
+                            start,
+                            end,
+                            auto_score(pair, pair.confidence * 0.9),
+                            MatchKind::ZhPinyinFuzzy,
+                        );
+                    }
                 }
+            }
 
-                if has_ascii && !has_chinese {
-                    for key in &keys.en_phonetic_keys {
-                        for pair in self.store.lookup_by_en_phonetic(key) {
-                            push_candidate(
-                                &mut candidates,
-                                pair,
-                                window_text,
-                                start,
-                                end,
-                                auto_score(pair, pair.confidence * 0.97),
-                                MatchKind::EnPhonetic,
-                            );
-                        }
+            if has_chinese && has_ascii {
+                for key in &keys.mixed_keys {
+                    for pair in self.store.lookup_by_mixed(key) {
+                        push_candidate(
+                            &mut candidates,
+                            pair,
+                            window_text,
+                            start,
+                            end,
+                            auto_score(pair, pair.confidence * 0.9),
+                            MatchKind::Mixed,
+                        );
+                    }
+                    for pair in self.store.lookup_by_alias_key(key) {
+                        push_candidate(
+                            &mut candidates,
+                            pair,
+                            window_text,
+                            start,
+                            end,
+                            alias_score(pair),
+                            MatchKind::Alias,
+                        );
                     }
                 }
 
-                if has_chinese && !has_ascii {
-                    if let Some(key) = &keys.zh_pinyin_fuzzy_key {
-                        for pair in self.store.lookup_by_zh_pinyin_fuzzy(key) {
-                            push_candidate(
-                                &mut candidates,
-                                pair,
-                                window_text,
-                                start,
-                                end,
-                                auto_score(pair, pair.confidence * 0.9),
-                                MatchKind::ZhPinyinFuzzy,
-                            );
-                        }
-                    }
-                }
-
-                if has_chinese && has_ascii {
-                    for key in &keys.mixed_keys {
-                        for pair in self.store.lookup_by_mixed(key) {
-                            push_candidate(
-                                &mut candidates,
-                                pair,
-                                window_text,
-                                start,
-                                end,
-                                auto_score(pair, pair.confidence * 0.9),
-                                MatchKind::Mixed,
-                            );
-                        }
-                        for pair in self.store.lookup_by_alias_key(key) {
-                            push_candidate(
-                                &mut candidates,
-                                pair,
-                                window_text,
-                                start,
-                                end,
-                                alias_score(pair),
-                                MatchKind::Alias,
-                            );
-                        }
-                    }
-
-                    for key in &keys.alias_keys {
-                        for pair in self.store.lookup_by_alias_key(key) {
-                            push_candidate(
-                                &mut candidates,
-                                pair,
-                                window_text,
-                                start,
-                                end,
-                                alias_score(pair),
-                                MatchKind::Alias,
-                            );
-                        }
+                for key in &keys.alias_keys {
+                    for pair in self.store.lookup_by_alias_key(key) {
+                        push_candidate(
+                            &mut candidates,
+                            pair,
+                            window_text,
+                            start,
+                            end,
+                            alias_score(pair),
+                            MatchKind::Alias,
+                        );
                     }
                 }
             }
@@ -296,83 +286,6 @@ fn candidate_rank_score(pair: &CorrectionPair, score: f32) -> f32 {
 
 fn overlaps(a: &ConversionCandidate, b: &ConversionCandidate) -> bool {
     a.start < b.end && b.start < a.end
-}
-
-#[derive(Debug, Clone)]
-struct ContentToken {
-    start: usize,
-    end: usize,
-    kind: TokenKind,
-}
-
-fn content_tokens(text: &str) -> Vec<ContentToken> {
-    let mut tokens = Vec::new();
-    let mut current_start: Option<usize> = None;
-    let mut current_kind: Option<TokenKind> = None;
-    let mut current_end = 0usize;
-
-    for (idx, ch) in text.char_indices() {
-        let kind = classify_char(ch);
-        match (current_kind, kind) {
-            (Some(existing), Some(next)) if existing == next => {
-                current_end = idx + ch.len_utf8();
-            }
-            (Some(existing), _) => {
-                if let Some(start) = current_start {
-                    tokens.push(ContentToken {
-                        start,
-                        end: current_end,
-                        kind: existing,
-                    });
-                }
-                current_start = kind.map(|_| idx);
-                current_kind = kind;
-                current_end = idx + ch.len_utf8();
-            }
-            (None, Some(next)) => {
-                current_start = Some(idx);
-                current_kind = Some(next);
-                current_end = idx + ch.len_utf8();
-            }
-            (None, None) => {}
-        }
-    }
-
-    if let Some(kind) = current_kind {
-        if let Some(start) = current_start {
-            tokens.push(ContentToken {
-                start,
-                end: current_end,
-                kind,
-            });
-        }
-    }
-
-    tokens
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TokenKind {
-    Chinese,
-    Ascii,
-}
-
-fn classify_char(ch: char) -> Option<TokenKind> {
-    if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-        Some(TokenKind::Ascii)
-    } else if is_cjk(ch) {
-        Some(TokenKind::Chinese)
-    } else {
-        None
-    }
-}
-
-fn is_cjk(ch: char) -> bool {
-    let code = ch as u32;
-    (0x4E00..=0x9FFF).contains(&code)
-        || (0x3400..=0x4DBF).contains(&code)
-        || (0x20000..=0x2CEAF).contains(&code)
-        || (0xF900..=0xFAFF).contains(&code)
 }
 
 #[cfg(test)]

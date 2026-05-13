@@ -169,6 +169,63 @@ if has_ascii && !has_chinese {
 
 ---
 
+## Scenario: SyllableLattice Owns Local Window Key Generation
+
+### 1. Scope / Trigger
+
+- Trigger: any change to ASR text token windows, phonetic/alias key generation over windows, or personalization candidate generation.
+- Window generation is shared infrastructure for the local IME-style second decoding path. It should not be reimplemented separately in each pass.
+
+### 2. Signatures
+
+Core APIs:
+
+```rust
+pub(crate) struct SyllableLattice {
+    pub source_text: String,
+    pub tokens: Vec<PhoneticToken>,
+}
+
+impl SyllableLattice {
+    pub(crate) fn from_asr_text(text: &str) -> Self;
+    pub(crate) fn windows(&self, max_size: usize) -> Vec<WindowKey>;
+}
+
+pub(crate) struct WindowKey {
+    pub byte_range: Range<usize>,
+    pub text: String,
+    pub keys: PhoneticKeyBundle,
+    pub has_chinese: bool,
+    pub has_ascii: bool,
+}
+```
+
+### 3. Contracts
+
+- `SyllableLattice` is the single place that turns ASR text into content tokens and bounded token windows.
+- Whitespace and pure symbol tokens are not emitted as content tokens, but window byte ranges may preserve separators between content tokens.
+- Each `WindowKey` must include the original byte range, original window text, generated phonetic key bundle, and language flags.
+- Window count must be bounded by `max_size`; `max_size = 0` returns no windows.
+- Personalization and future ConvertPipeline passes should consume `SyllableLattice::windows()` instead of duplicating token-window loops.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Input `我打开 克劳德 code。` | Content tokens are `我打开`, `克劳德`, `code`; whitespace and punctuation are skipped. |
+| Window text `克劳德 code` | Exposes mixed/alias keys such as `kelaode\|code`. |
+| Window text `claud code` | Exposes English phonetic keys. |
+| Six content tokens with `max_size = 3` | Emits a bounded sliding-window set; no window exceeds three content tokens. |
+
+### 5. Tests Required
+
+- Unit test for content-token extraction without whitespace or pure symbols.
+- Unit test for mixed Chinese + ASCII alias keys.
+- Unit test for pure ASCII phonetic keys.
+- Unit test for bounded window count.
+
+---
+
 ## Scenario: Learned Single Common English Words Require Manual Confirmation
 
 ### 1. Scope / Trigger
