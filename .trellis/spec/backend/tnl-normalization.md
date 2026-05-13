@@ -289,6 +289,7 @@ Eval entrypoint:
 ```rust
 cargo run --bin eval_asr -- --suite tests/asr_eval/
 cargo run --bin eval_asr -- --suite tests/asr_eval/ --diagnostics-out target/asr_eval_diagnostics
+cargo run --bin eval_asr -- --disable-syllable-match-pass --allow-quality-gate-failure
 ```
 
 Latency summary helper:
@@ -341,6 +342,9 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
   - `p95_latency_ms > 30ms`,
   - `pending_candidates > 0`.
 - The report must be printed before returning a failing process status so CI/user runs can see the failing metrics.
+- `--disable-syllable-match-pass` is an ablation-only eval flag. It must keep exact-text correction enabled while disabling English phonetic, Chinese fuzzy-pinyin, mixed, and alias candidate generation.
+- `--disable-exact-text-pass` is an ablation-only eval flag. It must not change production defaults.
+- `--allow-quality-gate-failure` may change only the process exit status for intentional ablation runs. It must still print `quality_gate_passed: false` and each `quality_gate_failure`.
 - `--diagnostics-out <dir>` is optional. When set, eval must create `<dir>/asr_eval_diagnostics.json` after printing the report.
 - Diagnostics payload must be bounded:
   - include `schema_version`,
@@ -361,6 +365,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 | Candidate sources include exact, English phonetic, Chinese fuzzy-pinyin, mixed, and alias hits | Summary reports both total candidate count and applied count for each match kind. |
 | p95 local latency exceeds 30ms | Print report, mark quality gate failed, then return an error. |
 | pending candidates remain after conversion | Print report, mark quality gate failed, then return an error. |
+| `--disable-syllable-match-pass --allow-quality-gate-failure` is set | Print failed quality gates and return success for comparison scripts. |
 | `--diagnostics-out target/asr_eval_diagnostics` is set | Create `target/asr_eval_diagnostics/asr_eval_diagnostics.json` with bounded per-case payload. |
 | A candidate contains very long text | Serialized diagnostics truncate it without splitting Unicode code points. |
 
@@ -373,9 +378,12 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Unit test for passing quality gates.
 - Unit test for reporting all failed quality gates.
 - Unit test for parsing `--diagnostics-out`.
+- Unit test for parsing personalization pass toggles.
+- Unit test that quality-gate override affects only exit success logic.
 - Unit test for bounded Unicode-safe string truncation.
 - Unit test for bounded diagnostics export and candidate-list capping.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
+- Run `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure` after pass-toggle changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --diagnostics-out target/asr_eval_diagnostics` after diagnostics-format changes.
 
 ---

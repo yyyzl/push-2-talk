@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use push_to_talk_lib::personalization::{
     CandidateDecision, ConversionCandidate, ConversionDiagnostics, CorrectionPairStore, MatchKind,
-    PersonalizationEngine,
+    PersonalizationEngine, PersonalizationEngineConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,6 +20,19 @@ const DIAGNOSTICS_FILE_NAME: &str = "asr_eval_diagnostics.json";
 struct EvalArgs {
     suite_dir: PathBuf,
     diagnostics_out: Option<PathBuf>,
+    disable_exact_text_pass: bool,
+    disable_syllable_match_pass: bool,
+    allow_quality_gate_failure: bool,
+}
+
+impl EvalArgs {
+    fn engine_config(&self) -> PersonalizationEngineConfig {
+        PersonalizationEngineConfig {
+            enable_exact_text_pass: !self.disable_exact_text_pass,
+            enable_syllable_match_pass: !self.disable_syllable_match_pass,
+            ..PersonalizationEngineConfig::default()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,13 +107,14 @@ struct QualityGateSummary {
 
 fn main() -> Result<()> {
     let args = parse_args()?;
+    let engine_config = args.engine_config();
     let suite_dir = resolve_suite_dir(args.suite_dir);
     let pair_path = suite_dir.join("correction_pairs.json");
     let cases_dir = suite_dir.join("cases");
 
     let store = CorrectionPairStore::load_json(&pair_path)
         .with_context(|| format!("加载纠错对失败: {}", pair_path.display()))?;
-    let engine = PersonalizationEngine::new(store);
+    let engine = PersonalizationEngine::with_config(store, engine_config);
     let cases = load_cases(&cases_dir)?;
 
     if cases.is_empty() {
@@ -125,14 +139,20 @@ fn main() -> Result<()> {
     }
 
     print_report(&results);
-    if let Some(output_dir) = args.diagnostics_out {
+    if let Some(output_dir) = &args.diagnostics_out {
         let path = write_diagnostics(&results, &output_dir)?;
         eprintln!("ASR eval diagnostics written: {}", path.display());
     }
     let metrics = compute_metrics(&results);
     let quality_gate = evaluate_quality_gates(&metrics);
 
-    if quality_gate.passed {
+    if should_exit_success(&quality_gate, args.allow_quality_gate_failure) {
+        if !quality_gate.passed {
+            eprintln!(
+                "ASR eval quality gate failed but exit is allowed: {}",
+                quality_gate.failures.join("; ")
+            );
+        }
         Ok(())
     } else {
         anyhow::bail!("ASR eval 未通过: {}", quality_gate.failures.join("; "));
@@ -146,6 +166,9 @@ fn parse_args() -> Result<EvalArgs> {
 fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
     let mut suite_dir = PathBuf::from("tests/asr_eval");
     let mut diagnostics_out = None;
+    let mut disable_exact_text_pass = false;
+    let mut disable_syllable_match_pass = false;
+    let mut allow_quality_gate_failure = false;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -162,6 +185,15 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
                 };
                 diagnostics_out = Some(PathBuf::from(value));
             }
+            "--disable-exact-text-pass" => {
+                disable_exact_text_pass = true;
+            }
+            "--disable-syllable-match-pass" => {
+                disable_syllable_match_pass = true;
+            }
+            "--allow-quality-gate-failure" => {
+                allow_quality_gate_failure = true;
+            }
             _ => {
                 anyhow::bail!("未知参数: {}", arg);
             }
@@ -171,6 +203,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
     Ok(EvalArgs {
         suite_dir,
         diagnostics_out,
+        disable_exact_text_pass,
+        disable_syllable_match_pass,
+        allow_quality_gate_failure,
     })
 }
 
@@ -397,6 +432,13 @@ fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary {
         passed: failures.is_empty(),
         failures,
     }
+}
+
+fn should_exit_success(
+    quality_gate: &QualityGateSummary,
+    allow_quality_gate_failure: bool,
+) -> bool {
+    quality_gate.passed || allow_quality_gate_failure
 }
 
 fn ratio(numerator: usize, denominator: usize) -> f32 {
@@ -756,6 +798,8 @@ mod tests {
             "tests/custom_eval".to_string(),
             "--diagnostics-out".to_string(),
             "target/asr-diagnostics".to_string(),
+            "--disable-syllable-match-pass".to_string(),
+            "--allow-quality-gate-failure".to_string(),
         ])
         .expect("parse args");
 
@@ -764,6 +808,36 @@ mod tests {
             args.diagnostics_out,
             Some(PathBuf::from("target/asr-diagnostics"))
         );
+        assert!(args.disable_syllable_match_pass);
+        assert!(args.allow_quality_gate_failure);
+        let config = args.engine_config();
+        assert!(config.enable_exact_text_pass);
+        assert!(!config.enable_syllable_match_pass);
+    }
+
+    #[test]
+    fn parse_args_can_disable_exact_text_pass() {
+        let args = parse_args_from(["--disable-exact-text-pass".to_string()])
+            .expect("parse exact text flag");
+
+        assert!(args.disable_exact_text_pass);
+        assert!(!args.engine_config().enable_exact_text_pass);
+    }
+
+    #[test]
+    fn quality_gate_failure_override_only_changes_exit_success() {
+        let failed = QualityGateSummary {
+            passed: false,
+            failures: vec!["final_accuracy below 100%".to_string()],
+        };
+        let passed = QualityGateSummary {
+            passed: true,
+            failures: Vec::new(),
+        };
+
+        assert!(!should_exit_success(&failed, false));
+        assert!(should_exit_success(&failed, true));
+        assert!(should_exit_success(&passed, false));
     }
 
     #[test]
