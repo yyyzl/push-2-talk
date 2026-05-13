@@ -222,6 +222,57 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 
 ---
 
+## Scenario: Personalization Candidate Conflicts Use Frequency-Weighted Ranking
+
+### 1. Scope / Trigger
+
+- Trigger: any change to personalization candidate scoring, candidate diagnostics, overlap selection, or correction-pair frequency updates.
+- Multiple correction pairs may match the same ASR span after learning, manual imports, or stale one-off pairs. Selection must prefer the pair that best reflects repeated user behavior without weakening the auto-apply safety threshold.
+
+### 2. Signatures
+
+Candidate diagnostics expose two separate scores:
+
+```rust
+pub struct ConversionCandidate {
+    pub score: f32,
+    pub rank_score: f32,
+}
+```
+
+Core selection API:
+
+```rust
+impl PersonalizationEngine {
+    pub fn convert(&self, text: &str) -> ConversionResult;
+}
+```
+
+### 3. Contracts
+
+- `score` is the candidate confidence used for the automatic application threshold.
+- `rank_score` is used only for ordering candidates after generation. It may include `frequency`, accepted history, or other ranking signals.
+- A candidate with `score < apply_threshold` must not auto-apply even when `rank_score` is high.
+- When two candidates cover the same span length and overlap, prefer higher `rank_score`; use `score` only as a tie-breaker.
+- Longer candidate windows still sort before shorter windows to preserve phrase-level corrections.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Pair A `cloud code -> Cloud Code`, confidence `0.98`, frequency `1`; Pair B `cloud code -> Claude Code`, confidence `0.90`, frequency `10` | Apply Pair B because repeated user behavior wins after both pass threshold. |
+| Pair confidence is below the apply threshold but frequency is very high | Do not apply; keep original text and expose only diagnostics. |
+| Two candidates have the same rank score | Prefer higher `score`, then earlier start offset. |
+| A longer phrase and a shorter sub-token both match | Prefer the longer phrase before rank comparison. |
+
+### 5. Tests Required
+
+- Personalization engine test: repeated same-span pair beats one-off higher-confidence candidate.
+- Personalization engine test: high frequency does not bypass the apply threshold.
+- Run the personalization suite and ASR eval after ranking changes.
+
+---
+
 ## Scenario: Corrected Text May Seed Cross-Language Product Aliases
 
 ### 1. Scope / Trigger

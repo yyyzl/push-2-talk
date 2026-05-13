@@ -27,6 +27,8 @@ pub struct ConversionCandidate {
     pub start: usize,
     pub end: usize,
     pub score: f32,
+    #[serde(default)]
+    pub rank_score: f32,
     pub match_kind: MatchKind,
     pub applied: bool,
 }
@@ -72,6 +74,7 @@ impl PersonalizationEngine {
             let len_b = b.end.saturating_sub(b.start);
             len_b
                 .cmp(&len_a)
+                .then_with(|| b.rank_score.total_cmp(&a.rank_score))
                 .then_with(|| b.score.total_cmp(&a.score))
                 .then_with(|| a.start.cmp(&b.start))
         });
@@ -259,12 +262,16 @@ fn push_candidate(
     if pair.corrected_text == original {
         return;
     }
+    let rank_score = candidate_rank_score(pair, score);
 
     if let Some(existing) = candidates.iter_mut().find(|candidate| {
         candidate.pair_id == pair.id && candidate.start == start && candidate.end == end
     }) {
-        if score > existing.score {
+        if rank_score > existing.rank_score
+            || (rank_score == existing.rank_score && score > existing.score)
+        {
             existing.score = score;
+            existing.rank_score = rank_score;
             existing.match_kind = match_kind;
         }
         return;
@@ -277,9 +284,14 @@ fn push_candidate(
         start,
         end,
         score,
+        rank_score,
         match_kind,
         applied: false,
     });
+}
+
+fn candidate_rank_score(pair: &CorrectionPair, score: f32) -> f32 {
+    score * pair.frequency.max(1) as f32
 }
 
 fn overlaps(a: &ConversionCandidate, b: &ConversionCandidate) -> bool {
@@ -439,6 +451,48 @@ mod tests {
 
         assert_eq!(result.text, "我打开 Claude Code");
         assert!(result.changed);
+    }
+
+    #[test]
+    fn repeated_pair_beats_one_off_candidate_for_same_span() {
+        let mut one_off = CorrectionPair::new("one-off-cloud-code", "cloud code", "Cloud Code");
+        one_off.source = "learned".to_string();
+        one_off.confidence = 0.98;
+        one_off.accepted_count = 1;
+        one_off.frequency = 1;
+
+        let mut repeated = CorrectionPair::new("repeated-cloud-code", "cloud code", "Claude Code");
+        repeated.source = "learned".to_string();
+        repeated.confidence = 0.90;
+        repeated.accepted_count = 10;
+        repeated.frequency = 10;
+
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![one_off, repeated]));
+        let result = engine.convert("我打开 cloud code");
+
+        assert_eq!(result.text, "我打开 Claude Code");
+        assert!(result.changed);
+    }
+
+    #[test]
+    fn frequency_does_not_bypass_apply_threshold() {
+        let mut pair =
+            CorrectionPair::new("low-confidence-cloud-code", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.confidence = DEFAULT_APPLY_THRESHOLD - 0.01;
+        pair.accepted_count = 100;
+        pair.frequency = 100;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+        let result = engine.convert("我打开 cloud code");
+
+        assert_eq!(result.text, "我打开 cloud code");
+        assert!(!result.changed);
+        assert!(result
+            .diagnostics
+            .candidates
+            .iter()
+            .any(|candidate| candidate.rank_score > DEFAULT_APPLY_THRESHOLD));
+        assert!(result.diagnostics.applied.is_empty());
     }
 
     #[test]
