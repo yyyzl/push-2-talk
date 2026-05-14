@@ -9,6 +9,7 @@ use std::time::Instant;
 mod correction_pair_store;
 mod engine;
 pub(crate) mod phonetic_keys;
+mod runtime_diagnostics;
 
 pub use correction_pair_store::{
     default_correction_pairs_path, record_accepted_correction_pair,
@@ -18,6 +19,7 @@ pub use engine::{
     CandidateDecision, ConversionCandidate, ConversionDiagnostics, ConversionResult, MatchKind,
     PassDiagnostics, PersonalizationEngine, PersonalizationEngineConfig,
 };
+pub use runtime_diagnostics::write_runtime_diagnostic;
 
 #[derive(Debug, Clone)]
 pub struct PersonalizationRuntimeResult {

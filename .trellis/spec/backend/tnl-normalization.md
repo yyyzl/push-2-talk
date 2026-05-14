@@ -468,13 +468,20 @@ pub fn apply_default_personalization(
     text: String,
 ) -> Result<Option<PersonalizationRuntimeResult>>;
 
+pub fn write_runtime_diagnostic(
+    source_text: &str,
+    result: &PersonalizationRuntimeResult,
+) -> Result<PathBuf>;
+
+fn write_runtime_diagnostic_to_dir(
+    output_dir: &Path,
+    source_text: &str,
+    result: &PersonalizationRuntimeResult,
+    timestamp_ms: u128,
+) -> Result<PathBuf>;
+
 impl NormalPipeline {
     fn maybe_apply_personalization(text: String) -> (String, bool);
-    fn write_personalization_diagnostic(
-        source_text: &str,
-        result: &ConversionResult,
-        elapsed_us: u64,
-    ) -> Result<PathBuf>;
 }
 
 fn apply_assistant_personalization(text: String) -> (String, bool);
@@ -503,6 +510,7 @@ Runtime file shape:
 
 - `apply_personalization_with_store` is the shared runtime entry point that creates `PersonalizationEngine`, runs `convert`, and returns the changed text plus conversion diagnostics and local elapsed time.
 - `apply_default_personalization` loads `%APPDATA%\PushToTalk\personalization\correction_pairs.json` when present; if the file is missing it returns `Ok(None)` and the caller keeps the text unchanged.
+- `write_runtime_diagnostic` is the shared diagnostic writer; dictation and AI assistant callers must use it instead of duplicating payload truncation, filename, and pruning logic.
 - Normal dictation must run shared personalization after TNL and before TNL candidate LLM arbitration / final polishing when TNL is enabled.
 - AI assistant voice mode must run shared personalization after TNL and before `assistant_turn_pending`, usage stats, conversation history insertion, or `AssistantProcessor::process_turn`.
 - If TNL is disabled, runtime personalization remains disabled for parity with the existing dictation path.
@@ -522,8 +530,8 @@ Runtime file shape:
 | Assistant ASR text `我打开 cloud code` and store has `cloud code -> Claude Code` | The pending user instruction and LLM input use `我打开 Claude Code`. |
 | Assistant personalization store load fails | Log a warning and continue with the TNL-normalized instruction. |
 | TNL is disabled | Assistant and dictation skip runtime personalization. |
-| Personalization runs and changes text | Write a bounded diagnostic with `changed = true`, pass summaries, candidate count, and applied count. |
-| Personalization runs and finds no candidate | Write a bounded diagnostic with `changed = false` and zero applied candidates. |
+| Dictation or assistant personalization runs and changes text | Write a bounded diagnostic with `changed = true`, pass summaries, candidate count, and applied count. |
+| Dictation or assistant personalization runs and finds no candidate | Write a bounded diagnostic with `changed = false` and zero applied candidates. |
 | A transcript or candidate contains very long text | Truncate strings without splitting Unicode code points. |
 | More than 20 candidates exist | Persist only the first bounded candidate entries while preserving full `candidate_count`. |
 | More than 200 personalization diagnostics exist for one UTC day | After writing the new file, keep the newest 200 personalization diagnostics and remove older `personalization-*.json` files. |
@@ -553,13 +561,13 @@ Runtime file shape:
 #### Wrong
 
 ```rust
-Self::write_personalization_diagnostic(&source, &result, elapsed_us)?;
+write_runtime_diagnostic(&source, &result)?;
 ```
 
 #### Correct
 
 ```rust
-if let Err(e) = Self::write_personalization_diagnostic(&source, &result, elapsed_us) {
+if let Err(e) = write_runtime_diagnostic(&source, &result) {
     tracing::warn!("write failed, keep dictation path: {}", e);
 }
 ```

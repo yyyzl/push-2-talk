@@ -601,6 +601,9 @@ fn apply_assistant_personalization(text: String) -> (String, bool) {
         }
     };
 
+    if let Err(e) = crate::personalization::write_runtime_diagnostic(&source_text, &result) {
+        tracing::warn!("AI助手: 写入个性化诊断失败，已忽略: {}", e);
+    }
     log_assistant_personalization_result(&source_text, &result.conversion);
     (result.text, result.changed)
 }
