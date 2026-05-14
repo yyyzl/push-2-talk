@@ -17,9 +17,16 @@ export default function NotificationWindow() {
   // 添加新建议
   const addSuggestion = useCallback((suggestion: VocabularyLearningSuggestion) => {
     setSuggestions((prev) => {
-      // 去重：如果已存在相同词汇的建议，不重复添加
-      if (prev.some((s) => s.word === suggestion.word)) {
-        console.log("词汇已存在，跳过:", suggestion.word);
+      // 去重：同一目标词的不同原始错形仍应保留，方便保存不同纠错对。
+      if (
+        prev.some(
+          (s) =>
+            s.word === suggestion.word &&
+            s.original === suggestion.original &&
+            s.corrected === suggestion.corrected,
+        )
+      ) {
+        console.log("学习建议已存在，跳过:", suggestion.word);
         return prev;
       }
       // 限制最大数量，移除最旧的

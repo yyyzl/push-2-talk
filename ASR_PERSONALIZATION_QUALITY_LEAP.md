@@ -268,7 +268,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
    - 学习建议的拒绝/忽略反馈只削弱 learned pair，不能降低、禁用或增加 manual pair 的负反馈计数
    - learned pair 被连续负反馈禁用后，如果用户再次接受同一纠错，应恢复启用并清空连续负反馈计数
    - alias key 只能来自用户接受、手动确认或高置信 LLM 判断，不能对所有混合文本自动扩散
-6. **学习接入**：现有 [learning/coordinator.rs](src-tauri/src/learning/coordinator.rs) + [learning/diff_analyzer.rs](src-tauri/src/learning/diff_analyzer.rs) 增加产出 `CorrectionPairSuggestion`，与现有 `LearningSuggestion` 并行
+6. **学习接入**：现有 [learning/coordinator.rs](src-tauri/src/learning/coordinator.rs) + [learning/diff_analyzer.rs](src-tauri/src/learning/diff_analyzer.rs) 增加产出 `CorrectionPairSuggestion`，与现有 `LearningSuggestion` 并行；阶段性实现里，当目标词已在词库但 `original -> corrected` 仍可形成有效纠错对时，继续发出带 `already_in_dictionary` 标记的纠错建议，用户确认后只保存本地 correction pair，词库 upsert 保持幂等
 7. **置信度更新规则**：
    ```
    用户接受 +0.1

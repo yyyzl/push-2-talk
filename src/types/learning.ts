@@ -16,4 +16,5 @@ export interface VocabularyLearningSuggestion {
   context: string;
   category: 'proper_noun' | 'term' | 'frequent';
   reason: string;
+  already_in_dictionary?: boolean;
 }

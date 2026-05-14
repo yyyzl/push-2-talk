@@ -43,6 +43,13 @@ pub struct LearningSuggestion {
     pub context: String,
     pub category: String,
     pub reason: String,
+    pub already_in_dictionary: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LearningSuggestionRouting {
+    should_emit: bool,
+    already_in_dictionary: bool,
 }
 
 /// 启动学习观察流程
@@ -345,13 +352,26 @@ pub fn start_learning_observation(
 
             // 检查词库是否已存在该词（使用预计算的 HashSet 进行 O(1) 查找）
             let normalized_word = crate::dictionary_utils::normalize_word(&word);
-            if dictionary_word_set.contains(&normalized_word) {
+            let routing = learning_suggestion_routing(
+                &normalized_word,
+                &diff.original_segment,
+                &diff.corrected_segment,
+                &dictionary_word_set,
+            );
+            if !routing.should_emit {
                 tracing::info!(
                     "Learning [{}]: 词汇 \"{}\" 已存在于词库，跳过通知",
                     &observation_id[..8],
                     normalized_word
                 );
                 continue;
+            }
+            if routing.already_in_dictionary {
+                tracing::info!(
+                    "Learning [{}]: 词汇 \"{}\" 已存在于词库，仍发送纠错建议以保存个性化纠错对",
+                    &observation_id[..8],
+                    normalized_word
+                );
             }
 
             // 创建建议（使用规范化后的词汇，确保与词库比对一致）
@@ -364,6 +384,7 @@ pub fn start_learning_observation(
                 context: diff.context.clone(),
                 category: result.category,
                 reason: result.reason,
+                already_in_dictionary: routing.already_in_dictionary,
             };
 
             tracing::info!(
@@ -396,6 +417,28 @@ pub fn start_learning_observation(
 
     // 包装为 Tauri JoinHandle
     tauri::async_runtime::JoinHandle::Tokio(handle)
+}
+
+fn learning_suggestion_routing(
+    normalized_word: &str,
+    original: &str,
+    corrected: &str,
+    dictionary_word_set: &HashSet<String>,
+) -> LearningSuggestionRouting {
+    let already_in_dictionary = dictionary_word_set.contains(normalized_word);
+    LearningSuggestionRouting {
+        should_emit: !already_in_dictionary || has_correction_pair_payload(original, corrected),
+        already_in_dictionary,
+    }
+}
+
+fn has_correction_pair_payload(original: &str, corrected: &str) -> bool {
+    let original = original.trim();
+    let corrected = corrected.trim();
+    !original.is_empty()
+        && !corrected.is_empty()
+        && crate::personalization::phonetic_keys::normalize_surface(original)
+            != crate::personalization::phonetic_keys::normalize_surface(corrected)
 }
 
 /// 观察修正文本
@@ -814,5 +857,53 @@ fn extract_extended_context(
         result.chars().take(MAX_CONTEXT_CHARS).collect()
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dictionary_words(words: &[&str]) -> HashSet<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn learning_suggestion_emits_existing_dictionary_word_when_correction_pair_is_useful() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "cloud code",
+            "Claude Code",
+            &dictionary_words(&["Claude Code"]),
+        );
+
+        assert!(routing.should_emit);
+        assert!(routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_skips_existing_dictionary_word_without_correction_pair() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "Claude Code",
+            "Claude Code",
+            &dictionary_words(&["Claude Code"]),
+        );
+
+        assert!(!routing.should_emit);
+        assert!(routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_emits_new_dictionary_word_normally() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "cloud code",
+            "Claude Code",
+            &HashSet::new(),
+        );
+
+        assert!(routing.should_emit);
+        assert!(!routing.already_in_dictionary);
     }
 }

@@ -181,11 +181,27 @@ await invoke("add_learned_word", {
 });
 ```
 
+Learning suggestion event payload:
+
+```typescript
+interface VocabularyLearningSuggestion {
+  id: string;
+  word: string;
+  original: string;
+  corrected: string;
+  context: string;
+  category: "proper_noun" | "term" | "frequent";
+  reason: string;
+  already_in_dictionary?: boolean;
+}
+```
+
 ### 3. Contracts
 
 - Missing optional fields must preserve legacy dictionary-only behavior.
 - If `original` and `corrected` are both present, non-empty, and not the same after surface normalization, the backend must persist a local personalization correction pair.
 - Accepted learning suggestions should pass the local suggestion `context` through to the correction pair as `surrounding_context`; backend persistence must trim and cap this field before writing JSON.
+- If the suggested `word` already exists in the dictionary but `original`/`corrected` form a valid correction-pair payload, the backend should still emit a learning suggestion with `already_in_dictionary = true` so the user can save the local personalization correction pair.
 - A user-accepted correction pair is considered confirmed enough to be used by the local personalization decoder on the next dictation.
 - Correction pairs are local app data under the PushToTalk config directory. Do not emit them through frontend events unless a UI explicitly needs them.
 - Manual dictionary edits must not require or synthesize `original` / `corrected`.
@@ -197,6 +213,8 @@ await invoke("add_learned_word", {
 |---|---|
 | Manual dictionary add sends only `word` and `source` | Add/update dictionary entry; no personalization pair is written. |
 | Learning Toast accepts `cloud code -> Claude Code` | Add dictionary entry and write a `learned` correction pair. |
+| `Claude Code` already exists in the dictionary, and learning observes `cloud code -> Claude Code` | Emit a correction-focused suggestion with `already_in_dictionary = true`; accepting it writes the correction pair while dictionary upsert remains idempotent. |
+| `Claude Code` already exists in the dictionary, and observed original/corrected normalize to the same text | Skip the duplicate suggestion. |
 | Learning Toast accepts a suggestion with surrounding context | Persist a trimmed, bounded `surrounding_context` on the learned correction pair. |
 | Optional fields are empty or normalize to the same text | Add dictionary entry; skip correction-pair write. |
 | Correction-pair JSON is missing | Create it atomically through the store save path. |
@@ -214,9 +232,10 @@ await invoke("add_learned_word", {
 
 - Backend storage test: accepted correction persists, reloads, and retains category/source/confidence.
 - Backend storage test: accepted correction persists a bounded surrounding context.
+- Backend learning-routing test: existing dictionary words still emit when they carry a useful correction-pair payload.
 - Backend conversion test: a freshly accepted mixed-language pair is confident enough to apply after reload.
 - Backend storage/conversion test: accepted learning does not overwrite or reformat an existing manual correction pair.
-- Frontend build/type-check must cover the extended Toast `invoke` payload.
+- Frontend build/type-check must cover the extended Toast `invoke` payload and the `already_in_dictionary` correction-only display state.
 
 ### 7. Wrong vs Correct
 

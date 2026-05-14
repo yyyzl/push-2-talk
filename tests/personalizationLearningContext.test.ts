@@ -11,3 +11,21 @@ test("学习建议接受时应把上下文传给个性化纠错对", async () =>
   );
   assert.match(source, /suggestion\.context,/);
 });
+
+test("已有词库词的学习建议应展示为保存纠错", async () => {
+  const source = await readFile("src/components/learning/VocabularyLearningToast.tsx", "utf8");
+  const typeSource = await readFile("src/types/index.ts", "utf8");
+
+  assert.match(typeSource, /already_in_dictionary\?:\s*boolean/);
+  assert.match(source, /suggestion\.already_in_dictionary/);
+  assert.match(source, /保存纠错/);
+  assert.match(source, /纠错建议/);
+});
+
+test("纠错建议通知去重应包含原文和修正文", async () => {
+  const source = await readFile("src/windows/NotificationWindow.tsx", "utf8");
+
+  assert.match(source, /s\.word === suggestion\.word/);
+  assert.match(source, /s\.original === suggestion\.original/);
+  assert.match(source, /s\.corrected === suggestion\.corrected/);
+});
