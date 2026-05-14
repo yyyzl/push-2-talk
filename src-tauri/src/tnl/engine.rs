@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::tnl::disfluency::{clean_disfluency, DisfluencyMode};
 use crate::tnl::fuzzy::{is_tech_token, FuzzyMatcher};
 use crate::tnl::is_ascii_digits;
 use crate::tnl::rules::{ExtensionWhitelist, SpokenSymbolMap};
@@ -151,6 +152,8 @@ struct HyphenDictionaryRule {
 
 /// TNL 引擎（可复用，预编译规则）
 pub struct TnlEngine {
+    /// 口语流畅化清洗模式
+    disfluency_mode: DisfluencyMode,
     /// 口语符号映射
     spoken_symbol_map: SpokenSymbolMap,
     /// 技术片段检测器
@@ -167,6 +170,13 @@ impl TnlEngine {
     /// # Arguments
     /// * `dictionary` - 已提纯的词库（用于模糊匹配）
     pub fn new(dictionary: Vec<String>) -> Self {
+        Self::new_with_disfluency_mode(dictionary, DisfluencyMode::Conservative)
+    }
+
+    pub fn new_with_disfluency_mode(
+        dictionary: Vec<String>,
+        disfluency_mode: DisfluencyMode,
+    ) -> Self {
         let spoken_symbol_map = SpokenSymbolMap::new();
         let ext_whitelist = ExtensionWhitelist::new();
         let tech_span_detector = TechSpanDetector::new(ext_whitelist);
@@ -178,6 +188,7 @@ impl TnlEngine {
         };
 
         Self {
+            disfluency_mode,
             spoken_symbol_map,
             tech_span_detector,
             fuzzy_matcher,
@@ -200,8 +211,22 @@ impl TnlEngine {
             return NormalizationResult::unchanged(String::new(), 0);
         }
 
+        let disfluency = clean_disfluency(text, self.disfluency_mode);
+        let input = disfluency.text;
+        if input.is_empty() {
+            let elapsed_us = start.elapsed().as_micros() as u64;
+            return NormalizationResult {
+                text: input,
+                changed: disfluency.changed,
+                applied: Vec::new(),
+                technical_spans: Vec::new(),
+                elapsed_us,
+                diagnostics: None,
+            };
+        }
+
         // 1. Unicode 归一化 (NFC) + 空白折叠
-        let normalized = self.unicode_normalize(text);
+        let normalized = self.unicode_normalize(&input);
 
         // 1.5. 合并连续的空格分隔单字母（如 "T N L" → "TNL"）
         let (normalized, letter_merge_replacements) = merge_spaced_letters(&normalized);
@@ -1361,6 +1386,15 @@ mod tests {
         assert!(result.changed);
         assert!(result.text.contains("Claude"));
         assert!(!result.text.contains("cloud"));
+    }
+
+    #[test]
+    fn test_disfluency_runs_before_phonetic_replacement() {
+        let engine = TnlEngine::new(vec!["Claude".to_string()]);
+
+        let result = engine.normalize("嗯，我最近学习了他们的那个标准产品 cloud");
+
+        assert_eq!(result.text, "我最近学习了他们的那个标准产品 Claude");
     }
 
     #[test]

@@ -92,6 +92,100 @@ if matcher.has_exact_dictionary_match(original) {
 
 ---
 
+## Scenario: Conservative Disfluency Cleaning Runs Before TNL Normalization
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `src-tauri/src/tnl/disfluency.rs`, `TnlEngine::normalize`, or future TNL disfluency configuration.
+- Disfluency cleaning is an early ASR text cleanup pass. It must remove obvious spoken fillers before technical tokenization, while preserving content words that merely share the same prefix.
+
+### 2. Signatures
+
+```rust
+pub enum DisfluencyMode {
+    Off,
+    Conservative,
+    Aggressive,
+}
+
+pub struct DisfluencyResult {
+    pub text: String,
+    pub changed: bool,
+}
+
+pub fn clean_disfluency(text: &str, mode: DisfluencyMode) -> DisfluencyResult;
+
+impl TnlEngine {
+    pub fn new_with_disfluency_mode(
+        dictionary: Vec<String>,
+        disfluency_mode: DisfluencyMode,
+    ) -> Self;
+}
+```
+
+### 3. Contracts
+
+- `TnlEngine::new(dictionary)` uses `DisfluencyMode::Conservative` by default.
+- Disfluency cleaning runs before Unicode normalization, tokenization, technical span detection, spoken-symbol mapping, pinyin, hyphen rewrite, and phonetic dictionary replacement.
+- `DisfluencyMode::Off` must return the input unchanged.
+- Conservative mode may remove only leading/isolated fillers:
+  - filler chars: `嗯`, `啊`, `呃`, `唉`, `哎`, `诶`;
+  - filler phrases: `这个`, `那个`, `就是说`, `怎么说呢`;
+  - a filler is removable only when it is at the start after leading whitespace and followed by a separator, whitespace, or end-of-text.
+- Conservative mode must not remove content words such as `这个东西` or multi-character interjections such as `嗯哼`.
+- Aggressive mode additionally may collapse repeated CJK character runs of length at least 3 and remove simple start-repair fragments such as `我，那个，今天...`.
+- Disfluency cleaning must not depend on dictionary content or LLM availability.
+- Empty output is valid when input is only a filler; `NormalizationResult.changed` must still be true.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Mode `Off`, input `嗯，我准备好了` | Return unchanged text. |
+| Conservative, input `嗯，我准备好了` | Return `我准备好了`. |
+| Conservative, input `这个，我准备好了` | Return `我准备好了`. |
+| Conservative, input `这个东西很重要` | Preserve text unchanged. |
+| Conservative, input `嗯哼，我准备好了` | Preserve text unchanged. |
+| Aggressive, input `我我我想打开设置` | Return `我想打开设置`. |
+| Aggressive, input `嗯嗯嗯，我准备好了` | Return `我准备好了`. |
+| Aggressive, input `我，那个，今天开会` | Return `今天开会`. |
+| TNL with dictionary `Claude`, input `嗯，我最近学习了他们的那个标准产品 cloud` | Return `我最近学习了他们的那个标准产品 Claude`. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: the normal dictation path removes obvious sentence-start fillers before technical correction.
+- Base: natural text without leading fillers keeps the previous TNL behavior.
+- Bad: `这个东西很重要` becomes `东西很重要`.
+- Bad: disfluency cleaning runs after phonetic replacement and shifts already-collected offsets.
+
+### 6. Tests Required
+
+- Disfluency unit tests for Conservative removal and false-positive preservation.
+- Disfluency unit tests for Off preserving text.
+- Disfluency unit tests for Aggressive repeated-character and false-start cleanup.
+- TNL engine integration test proving disfluency runs before phonetic dictionary replacement.
+- Run the full TNL test suite, normal pipeline tests, assistant pipeline tests, `cargo check`, and ASR eval after changing this pass.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let normalized = self.unicode_normalize(text);
+let replaced = self.apply_phonetic_replacement(&normalized);
+let cleaned = clean_disfluency(&replaced, DisfluencyMode::Conservative);
+```
+
+#### Correct
+
+```rust
+let cleaned = clean_disfluency(text, DisfluencyMode::Conservative).text;
+let normalized = self.unicode_normalize(&cleaned);
+let replaced = self.apply_phonetic_replacement(&normalized);
+```
+
+---
+
 ## Scenario: Mixed-Language Windows Must Not Use English-Only Phonetic Matches
 
 ### 1. Scope / Trigger

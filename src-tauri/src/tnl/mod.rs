@@ -9,6 +9,7 @@
 //! 4. 口语符号映射（仅在技术片段内）
 //! 5. 词库精确/模糊匹配（可选）
 
+pub(crate) mod disfluency;
 mod engine;
 mod fuzzy;
 mod rules;

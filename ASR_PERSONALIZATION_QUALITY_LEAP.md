@@ -497,6 +497,9 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 ### 任务
 
 1. **新建** `src-tauri/src/tnl/disfluency.rs`
+   - 已完成后端第一刀：`clean_disfluency(text, mode)` + `DisfluencyMode::{Off, Conservative, Aggressive}`
+   - `TnlEngine::new()` 默认使用 Conservative，并在 TNL 最早期执行清洗
+   - UI 三档开关尚未接入，下一步应把 `TnlConfig` 扩展为可配置模式
 2. **三档模式**：
    ```rust
    pub enum DisfluencyMode {
