@@ -64,6 +64,8 @@ pub enum TnlCandidateSource {
     DictionaryPhonetic,
     /// 连续单字母合并
     LetterMerge,
+    /// 本地个性化纠错对候选
+    PersonalizationCorrectionPair,
 }
 
 impl From<&ReplacementReason> for TnlCandidateSource {

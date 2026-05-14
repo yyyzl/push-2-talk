@@ -15,7 +15,8 @@ use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::personalization::{
-    apply_default_personalization, write_runtime_diagnostic, ConversionResult,
+    apply_default_personalization, personalization_candidates_to_tnl_diagnostics,
+    write_runtime_diagnostic, ConversionResult,
 };
 use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
@@ -94,11 +95,13 @@ impl NormalPipeline {
         };
 
         // 2.5. 本地个性化二次解码（MVP：仅当 correction_pairs.json 存在时启用）
-        let (text, personalization_changed) = if tnl_enabled {
+        let (text, personalization_changed, personalization_diagnostics) = if tnl_enabled {
             Self::maybe_apply_personalization(text)
         } else {
-            (text, false)
+            (text, false, None)
         };
+        let tnl_diagnostics =
+            Self::merge_tnl_diagnostics(tnl_diagnostics, personalization_diagnostics);
 
         // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL/个性化后的文本（text）
 
@@ -259,14 +262,31 @@ impl NormalPipeline {
         }
     }
 
-    fn maybe_apply_personalization(text: String) -> (String, bool) {
+    fn merge_tnl_diagnostics(
+        existing: Option<TnlDiagnostics>,
+        personalization: Option<TnlDiagnostics>,
+    ) -> Option<TnlDiagnostics> {
+        match (existing, personalization) {
+            (None, None) => None,
+            (Some(diagnostics), None) | (None, Some(diagnostics)) => Some(diagnostics),
+            (Some(mut existing), Some(personalization)) => {
+                existing.candidates.extend(personalization.candidates);
+                if existing.arbitration.is_none() {
+                    existing.arbitration = personalization.arbitration;
+                }
+                Some(existing)
+            }
+        }
+    }
+
+    fn maybe_apply_personalization(text: String) -> (String, bool, Option<TnlDiagnostics>) {
         let source_text = text.clone();
         let result = match apply_default_personalization(text) {
             Ok(Some(result)) => result,
-            Ok(None) => return (source_text, false),
+            Ok(None) => return (source_text, false, None),
             Err(e) => {
                 tracing::warn!("NormalPipeline: 加载个性化纠错对失败，保守跳过: {}", e);
-                return (source_text, false);
+                return (source_text, false, None);
             }
         };
 
@@ -275,7 +295,17 @@ impl NormalPipeline {
         }
         Self::log_personalization_result(&source_text, &result.conversion);
 
-        (result.text, result.changed)
+        let diagnostics = personalization_candidates_to_tnl_diagnostics(&result.conversion);
+        if let Some(diagnostics) = &diagnostics {
+            if diagnostics.has_pending_llm() {
+                tracing::info!(
+                    "NormalPipeline: 个性化候选进入 LLM 仲裁，候选数: {}",
+                    diagnostics.pending_llm_count()
+                );
+            }
+        }
+
+        (result.text, result.changed, diagnostics)
     }
 
     #[cfg(test)]
@@ -438,5 +468,49 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(text, "I use cloud storage");
+    }
+
+    #[test]
+    fn test_merge_tnl_diagnostics_keeps_existing_and_personalization_candidates() {
+        let existing = TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "tnl-0".to_string(),
+                original: "Cruiser".to_string(),
+                target: "Cursor".to_string(),
+                start: 0,
+                end: 7,
+                score: 0.72,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::DictionaryPhonetic,
+                evidence: vec!["tnl".to_string()],
+                decision: TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+        let personalization = TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "personalization-8-18-0".to_string(),
+                original: "cloud code".to_string(),
+                target: "Claude Code".to_string(),
+                start: 8,
+                end: 18,
+                score: 0.80,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair,
+                evidence: vec!["pair_id:claude-code".to_string()],
+                decision: TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+
+        let merged = NormalPipeline::merge_tnl_diagnostics(Some(existing), Some(personalization))
+            .expect("merged diagnostics");
+
+        assert_eq!(merged.candidates.len(), 2);
+        assert_eq!(merged.pending_llm_count(), 2);
+        assert_eq!(
+            merged.candidates[1].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
     }
 }

@@ -533,6 +533,87 @@ for candidate in accepted {
 
 ---
 
+## Scenario: Medium-Confidence Personalization Candidates Enter LLM Arbitration
+
+### 1. Scope / Trigger
+
+- Trigger: any change to runtime personalization diagnostics, `NormalPipeline` candidate arbitration wiring, or `ConversionCandidate` threshold semantics.
+- The local IME-style decoder should auto-apply only high-confidence correction pairs. Medium-confidence candidates should reuse the existing bounded LLM candidate arbiter instead of being silently dropped.
+
+### 2. Signatures
+
+```rust
+pub(crate) fn personalization_candidates_to_tnl_diagnostics(
+    conversion: &ConversionResult,
+) -> Option<TnlDiagnostics>;
+
+impl NormalPipeline {
+    fn merge_tnl_diagnostics(
+        existing: Option<TnlDiagnostics>,
+        personalization: Option<TnlDiagnostics>,
+    ) -> Option<TnlDiagnostics>;
+}
+
+pub enum TnlCandidateSource {
+    PersonalizationCorrectionPair,
+}
+```
+
+### 3. Contracts
+
+- Only convert personalization candidates when `ConversionResult.changed == false`; if personalization already changed the text, do not forward stale byte offsets to the LLM arbiter.
+- Only `CandidateDecision::BelowApplyThreshold` candidates are eligible for conversion.
+- Candidates with `score >= 0.68` become `TnlCandidateDecision::PendingLlm` and `TnlCandidateRisk::Medium`.
+- Candidates with `0.55 <= score < 0.68` become `TnlCandidateDecision::RejectedLocal` and `TnlCandidateRisk::High`; they stay diagnostic-only and do not trigger LLM arbitration.
+- Candidates with `score < 0.55` are omitted from `TnlDiagnostics`.
+- Converted candidates must use `TnlCandidateSource::PersonalizationCorrectionPair` and preserve original byte offsets, original text, target text, and score.
+- Evidence must include the correction pair id and match kind so logs can trace why the candidate exists.
+- `NormalPipeline` must merge TNL diagnostics and personalization diagnostics before calling `maybe_arbitrate_candidates`.
+- Existing TNL candidates must remain first in the merged list; personalization candidates are appended.
+- If dictionary enhancement is disabled or no LLM processor is configured, merged pending personalization candidates follow the same skip path as TNL pending candidates.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Learned pair candidate score `0.80`, no local apply | Export one `PendingLlm` personalization candidate. |
+| Learned pair candidate score `0.60`, no local apply | Export one `RejectedLocal` personalization candidate; no pending arbitration. |
+| Learned pair candidate score `0.40`, no local apply | Export no TNL candidate. |
+| Personalization already applied a high-confidence candidate | Do not export remaining personalization candidates for arbitration. |
+| TNL diagnostics and personalization diagnostics both exist | Merge candidates into one `TnlDiagnostics` before arbitration. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a borderline `cloud code -> Claude Code` pair can be LLM-arbitrated instead of ignored.
+- Base: high-confidence local personalization still applies without LLM.
+- Bad: a personalization candidate generated before a local replacement is forwarded after the text changed, causing invalid byte offsets.
+
+### 6. Tests Required
+
+- Personalization helper test: medium-confidence below-threshold candidate becomes `PendingLlm` with source `PersonalizationCorrectionPair`.
+- Personalization helper test: low-confidence candidate becomes `RejectedLocal`.
+- Normal pipeline helper test: TNL and personalization diagnostics merge without dropping either candidate list.
+- Run normal pipeline, personalization, LLM post-processor, and ASR eval checks after changing arbitration wiring.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let (text, personalization_changed) = maybe_apply_personalization(text);
+maybe_arbitrate_candidates(processor, enabled, text, tnl_diagnostics).await;
+```
+
+#### Correct
+
+```rust
+let (text, changed, personalization_diagnostics) = maybe_apply_personalization(text);
+let diagnostics = merge_tnl_diagnostics(tnl_diagnostics, personalization_diagnostics);
+maybe_arbitrate_candidates(processor, enabled, text, diagnostics).await;
+```
+
+---
+
 ## Scenario: Runtime Personalization Applies Before Downstream LLM Work
 
 ### 1. Scope / Trigger

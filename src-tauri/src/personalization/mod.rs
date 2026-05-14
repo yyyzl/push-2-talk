@@ -6,6 +6,10 @@
 use anyhow::Result;
 use std::time::Instant;
 
+use crate::tnl::{
+    TnlCandidate, TnlCandidateDecision, TnlCandidateRisk, TnlCandidateSource, TnlDiagnostics,
+};
+
 mod correction_pair_store;
 mod engine;
 pub(crate) mod phonetic_keys;
@@ -21,6 +25,9 @@ pub use engine::{
     PassDiagnostics, PersonalizationEngine, PersonalizationEngineConfig,
 };
 pub use runtime_diagnostics::write_runtime_diagnostic;
+
+const PERSONALIZATION_PENDING_LLM_MIN_SCORE: f32 = 0.68;
+const PERSONALIZATION_DIAGNOSTIC_MIN_SCORE: f32 = 0.55;
 
 #[derive(Debug, Clone)]
 pub struct PersonalizationRuntimeResult {
@@ -57,6 +64,61 @@ pub fn apply_default_personalization(text: String) -> Result<Option<Personalizat
     Ok(Some(apply_personalization_with_store(text, store)))
 }
 
+pub(crate) fn personalization_candidates_to_tnl_diagnostics(
+    conversion: &ConversionResult,
+) -> Option<TnlDiagnostics> {
+    if conversion.changed {
+        return None;
+    }
+
+    let candidates = conversion
+        .diagnostics
+        .candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, candidate)| personalization_candidate_to_tnl_candidate(idx, candidate))
+        .collect::<Vec<_>>();
+
+    TnlDiagnostics::from_candidates(candidates)
+}
+
+fn personalization_candidate_to_tnl_candidate(
+    index: usize,
+    candidate: &ConversionCandidate,
+) -> Option<TnlCandidate> {
+    if candidate.decision != CandidateDecision::BelowApplyThreshold {
+        return None;
+    }
+
+    let (decision, risk) = if candidate.score >= PERSONALIZATION_PENDING_LLM_MIN_SCORE {
+        (TnlCandidateDecision::PendingLlm, TnlCandidateRisk::Medium)
+    } else if candidate.score >= PERSONALIZATION_DIAGNOSTIC_MIN_SCORE {
+        (TnlCandidateDecision::RejectedLocal, TnlCandidateRisk::High)
+    } else {
+        return None;
+    };
+
+    Some(TnlCandidate {
+        id: format!(
+            "personalization-{}-{}-{}",
+            candidate.start, candidate.end, index
+        ),
+        original: candidate.original.clone(),
+        target: candidate.target.clone(),
+        start: candidate.start,
+        end: candidate.end,
+        score: candidate.score,
+        risk,
+        source: TnlCandidateSource::PersonalizationCorrectionPair,
+        evidence: vec![
+            format!("pair_id:{}", candidate.pair_id),
+            format!("match_kind:{:?}", candidate.match_kind),
+            format!("rank_score:{:.3}", candidate.rank_score),
+        ],
+        decision,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,5 +136,50 @@ mod tests {
         assert_eq!(result.text, "我打开 Claude Code");
         assert_eq!(result.conversion.text, "我打开 Claude Code");
         assert_eq!(result.conversion.diagnostics.applied.len(), 1);
+    }
+
+    #[test]
+    fn medium_confidence_candidate_exports_pending_llm_diagnostic() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.accepted_count = 1;
+        pair.confidence = 0.80;
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let result = apply_personalization_with_store("cloud code".to_string(), store);
+        let diagnostics = personalization_candidates_to_tnl_diagnostics(&result.conversion)
+            .expect("medium-confidence candidate should enter LLM arbitration");
+
+        assert!(!result.changed);
+        assert_eq!(diagnostics.candidates.len(), 1);
+        assert_eq!(diagnostics.candidates[0].original, "cloud code");
+        assert_eq!(diagnostics.candidates[0].target, "Claude Code");
+        assert_eq!(
+            diagnostics.candidates[0].decision,
+            crate::tnl::TnlCandidateDecision::PendingLlm
+        );
+        assert_eq!(
+            diagnostics.candidates[0].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
+    }
+
+    #[test]
+    fn low_confidence_candidate_exports_rejected_local_diagnostic() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.accepted_count = 1;
+        pair.confidence = 0.60;
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let result = apply_personalization_with_store("cloud code".to_string(), store);
+        let diagnostics = personalization_candidates_to_tnl_diagnostics(&result.conversion)
+            .expect("low-confidence candidate should stay diagnostic-only");
+
+        assert!(!diagnostics.has_pending_llm());
+        assert_eq!(
+            diagnostics.candidates[0].decision,
+            crate::tnl::TnlCandidateDecision::RejectedLocal
+        );
     }
 }

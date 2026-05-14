@@ -469,8 +469,8 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 7. **决策阈值**（保留 v1 方案里的阈值，但语义更清晰）：
    ```
    confidence >= 0.88  -> 直接替换
-   0.68 <= c < 0.88    -> 进候选池，由 LlmArbiterPass 处理
-   0.55 <= c < 0.68    -> 仅记录诊断
+   0.68 <= c < 0.88    -> 进候选池，由 LlmArbiterPass 处理（已接入普通听写链路：个性化 BelowApplyThreshold 候选会合并到 TNL diagnostics，复用现有 LLM 候选仲裁）
+   0.55 <= c < 0.68    -> 仅记录诊断（已标记为 RejectedLocal，不触发 LLM）
    c < 0.55            -> 丢弃
    ```
 
