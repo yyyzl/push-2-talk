@@ -606,6 +606,77 @@ fs::rename(&temp_path, path)?;
 
 ---
 
+## Scenario: Accepted Learned Pure Chinese Pairs Stay Phonetic-Compatible
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `CorrectionPairStore::upsert_accepted_correction`, learning-accept persistence, or validation before writing learned correction pairs.
+- Learned correction pairs come from observed user edits. The store must reject obviously non-ASR-style pure Chinese rewrites before they can participate in exact, fuzzy-pinyin, or alias matching.
+
+### 2. Signatures
+
+```rust
+impl CorrectionPairStore {
+    pub fn upsert_accepted_correction(
+        &mut self,
+        original_text: &str,
+        corrected_text: &str,
+        category: Option<&str>,
+        surrounding_context: Option<&str>,
+    ) -> Option<CorrectionPair>;
+}
+```
+
+### 3. Contracts
+
+- Empty, identity, or normalized-identity corrections still return `None`.
+- When both `original_text` and `corrected_text` are pure CJK text, accepted learning must require equal character length.
+- When both sides are pure CJK text, accepted learning must require compatible fuzzy-pinyin keys.
+- Non-CJK, ASCII phrase, and mixed Chinese+ASCII corrections are not forced to be equal length by this guard.
+- This validation applies to learned accepted corrections. Existing manual/imported pairs remain explicit user data and are not rewritten by this helper.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Learned accept `狗 -> 猫咪` | Return `None`; do not store the pair. |
+| Learned accept `狗 -> 猫` | Return `None`; do not store the pair. |
+| Learned accept `麻 -> 吗` | Store the pair because length and fuzzy-pinyin key are compatible. |
+| Learned accept `cloud code -> Claude Code` | Store the pair; English phrase length is not constrained. |
+| Learned accept `欧喷 ai -> OpenAI` | Store the pair; mixed Chinese+ASCII length is not constrained. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `麻 -> 吗` can be learned but remains guarded from auto-apply unless manual.
+- Base: `cloud code -> Claude Code` keeps the existing learned-pair path.
+- Bad: a non-phonetic pure Chinese rewrite such as `狗 -> 猫` enters the pair store and later becomes an automatic candidate.
+
+### 6. Tests Required
+
+- Store test: pure Chinese length mismatch returns `None` and leaves lookup empty.
+- Store test: pure Chinese fuzzy-pinyin mismatch returns `None` and leaves lookup empty.
+- Store test: pure Chinese equal-length fuzzy-compatible pair is accepted.
+- Run the personalization suite after this change.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let pair = CorrectionPair::new(id, original_text, corrected_text);
+self.pairs.push(pair);
+```
+
+#### Correct
+
+```rust
+if !is_valid_learned_correction_pair(original_text, corrected_text) {
+    return None;
+}
+```
+
+---
+
 ## Scenario: Learned Single Common English Words and Single Chinese Characters Require Manual Confirmation
 
 ### 1. Scope / Trigger

@@ -283,6 +283,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
 - 不替换常见短词（< 3 字符），除非 pair 是 `manual` 来源
 - 不跨句替换
 - 不替换已经精确命中用户词的片段
+- 纯中文 learned pair 在学习入口必须等长且 fuzzy pinyin 兼容；中英混合和英文短语不强制等长
 - 中文单字 learned pair 默认禁用自动应用，除非来源是 `manual` 显式确认
 - 用户撤销或改回原文后必须降权；连续负反馈后自动禁用该 pair
 - `cloud` 这类常见词只允许在窗口级 key（如 `cloud code`）上自动应用，不允许单词级泛化到任意上下文

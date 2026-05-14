@@ -230,6 +230,7 @@ impl CorrectionPairStore {
         if original_text.is_empty()
             || corrected_text.is_empty()
             || normalize_surface(original_text) == normalize_surface(corrected_text)
+            || !is_valid_learned_correction_pair(original_text, corrected_text)
         {
             return None;
         }
@@ -490,6 +491,25 @@ fn bounded_optional_text(value: Option<&str>) -> Option<String> {
     }
 
     Some(value.chars().take(MAX_SURROUNDING_CONTEXT_CHARS).collect())
+}
+
+fn is_valid_learned_correction_pair(original_text: &str, corrected_text: &str) -> bool {
+    if !is_pure_cjk_text(original_text) || !is_pure_cjk_text(corrected_text) {
+        return true;
+    }
+
+    original_text.chars().count() == corrected_text.chars().count()
+        && compatible_cjk_fuzzy_key(original_text, corrected_text)
+}
+
+fn is_pure_cjk_text(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && text.chars().all(is_cjk_char)
+}
+
+fn compatible_cjk_fuzzy_key(original_text: &str, corrected_text: &str) -> bool {
+    let original_key = build_key_bundle(original_text).zh_pinyin_fuzzy_key;
+    original_key.is_some() && original_key == build_key_bundle(corrected_text).zh_pinyin_fuzzy_key
 }
 
 fn is_single_common_english_word(text: &str) -> bool {
@@ -811,6 +831,39 @@ mod tests {
         assert!(empty.is_none());
         assert!(identity.is_none());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn accepted_pure_chinese_pair_rejects_length_mismatch() {
+        let mut store = CorrectionPairStore::default();
+
+        let pair = store.upsert_accepted_correction("狗", "猫咪", Some("generic"), None);
+
+        assert!(pair.is_none());
+        assert!(store.lookup_by_text("狗").is_empty());
+    }
+
+    #[test]
+    fn accepted_pure_chinese_pair_rejects_phonetic_mismatch() {
+        let mut store = CorrectionPairStore::default();
+
+        let pair = store.upsert_accepted_correction("狗", "猫", Some("generic"), None);
+
+        assert!(pair.is_none());
+        assert!(store.lookup_by_text("狗").is_empty());
+    }
+
+    #[test]
+    fn accepted_pure_chinese_pair_allows_phonetic_compatible_equal_length() {
+        let mut store = CorrectionPairStore::default();
+
+        let pair = store
+            .upsert_accepted_correction("麻", "吗", Some("generic"), None)
+            .expect("phonetic-compatible pair should be accepted");
+
+        assert_eq!(pair.original_text, "麻");
+        assert_eq!(pair.corrected_text, "吗");
+        assert_eq!(store.lookup_by_text("麻").len(), 1);
     }
 
     #[test]
