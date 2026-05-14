@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use crate::tnl::SyllableLattice;
 
@@ -9,6 +9,8 @@ const DEFAULT_MAX_WINDOW_TOKENS: usize = 5;
 const DEFAULT_APPLY_THRESHOLD: f32 = 0.88;
 const EXACT_TEXT_PASS: &str = "exact_text";
 const SYLLABLE_MATCH_PASS: &str = "syllable_match";
+const CONTEXT_RANK_BONUS_PER_TOKEN: f32 = 0.08;
+const MAX_CONTEXT_RANK_BONUS: f32 = 0.24;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PersonalizationEngineConfig {
@@ -198,6 +200,7 @@ impl PersonalizationEngine {
                         end,
                         exact_score(pair),
                         MatchKind::ExactText,
+                        &lattice.source_text,
                     );
                 }
                 exact_summary.record(started_at, candidates.len() - before_count);
@@ -220,6 +223,7 @@ impl PersonalizationEngine {
                             end,
                             auto_score(pair, pair.confidence * 0.97),
                             MatchKind::EnPhonetic,
+                            &lattice.source_text,
                         );
                     }
                 }
@@ -236,6 +240,7 @@ impl PersonalizationEngine {
                             end,
                             auto_score(pair, pair.confidence * 0.9),
                             MatchKind::ZhPinyinFuzzy,
+                            &lattice.source_text,
                         );
                     }
                 }
@@ -252,6 +257,7 @@ impl PersonalizationEngine {
                             end,
                             auto_score(pair, pair.confidence * 0.9),
                             MatchKind::Mixed,
+                            &lattice.source_text,
                         );
                     }
                     for pair in self.store.lookup_by_alias_key(key) {
@@ -263,6 +269,7 @@ impl PersonalizationEngine {
                             end,
                             alias_score(pair),
                             MatchKind::Alias,
+                            &lattice.source_text,
                         );
                     }
                 }
@@ -277,6 +284,7 @@ impl PersonalizationEngine {
                             end,
                             alias_score(pair),
                             MatchKind::Alias,
+                            &lattice.source_text,
                         );
                     }
                 }
@@ -340,11 +348,12 @@ fn push_candidate(
     end: usize,
     score: f32,
     match_kind: MatchKind,
+    source_text: &str,
 ) {
     if pair.corrected_text == original {
         return;
     }
-    let rank_score = candidate_rank_score(pair, score);
+    let rank_score = candidate_rank_score(pair, score, source_text, original);
 
     if let Some(existing) = candidates.iter_mut().find(|candidate| {
         candidate.pair_id == pair.id && candidate.start == start && candidate.end == end
@@ -374,8 +383,67 @@ fn push_candidate(
     });
 }
 
-fn candidate_rank_score(pair: &CorrectionPair, score: f32) -> f32 {
-    score * pair.frequency.max(1) as f32
+fn candidate_rank_score(
+    pair: &CorrectionPair,
+    score: f32,
+    source_text: &str,
+    matched_text: &str,
+) -> f32 {
+    (score * pair.frequency.max(1) as f32) + context_rank_bonus(pair, source_text, matched_text)
+}
+
+fn context_rank_bonus(pair: &CorrectionPair, source_text: &str, matched_text: &str) -> f32 {
+    let Some(surrounding_context) = pair.surrounding_context.as_deref() else {
+        return 0.0;
+    };
+
+    let source_terms = context_terms(source_text);
+    if source_terms.is_empty() {
+        return 0.0;
+    }
+
+    let matched_terms = context_terms(matched_text);
+    let overlap_count = context_terms(surrounding_context)
+        .into_iter()
+        .filter(|term| !matched_terms.contains(term) && source_terms.contains(term))
+        .count();
+
+    (overlap_count as f32 * CONTEXT_RANK_BONUS_PER_TOKEN).min(MAX_CONTEXT_RANK_BONUS)
+}
+
+fn context_terms(text: &str) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            current.push(ch);
+        } else if !current.is_empty() {
+            push_context_term(&mut terms, &current);
+            current.clear();
+        }
+    }
+
+    if !current.is_empty() {
+        push_context_term(&mut terms, &current);
+    }
+
+    terms
+}
+
+fn push_context_term(terms: &mut HashSet<String>, raw: &str) {
+    let term = raw
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+
+    if term.len() >= 2
+        && term.chars().any(|ch| ch.is_ascii_alphabetic())
+        && !crate::tnl::is_common_english_word(&term)
+    {
+        terms.insert(term);
+    }
 }
 
 fn overlaps(a: &ConversionCandidate, b: &ConversionCandidate) -> bool {
@@ -524,6 +592,49 @@ mod tests {
     }
 
     #[test]
+    fn matching_surrounding_context_boosts_same_span_candidate_rank() {
+        let mut jetbrains =
+            CorrectionPair::new("jetbrains-cloud-code", "cloud code", "Claude Code");
+        jetbrains.source = "learned".to_string();
+        jetbrains.confidence = 0.98;
+        jetbrains.accepted_count = 1;
+        jetbrains.frequency = 1;
+        jetbrains.surrounding_context =
+            Some("在 JetBrains 项目里把 cloud code 改成 Claude Code".to_string());
+
+        let mut github = CorrectionPair::new("github-cloud-code", "cloud code", "GitHub Copilot");
+        github.source = "learned".to_string();
+        github.confidence = 0.98;
+        github.accepted_count = 1;
+        github.frequency = 1;
+        github.surrounding_context =
+            Some("在 GitHub issue 里把 cloud code 改成 GitHub Copilot".to_string());
+
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![jetbrains, github]));
+        let result = engine.convert("在 GitHub issue 里打开 cloud code");
+
+        assert_eq!(result.text, "在 GitHub issue 里打开 GitHub Copilot");
+        let github_candidate = result
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.pair_id == "github-cloud-code")
+            .expect("github candidate");
+        let jetbrains_candidate = result
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.pair_id == "jetbrains-cloud-code")
+            .expect("jetbrains candidate");
+        assert!(github_candidate.rank_score > jetbrains_candidate.rank_score);
+        assert_eq!(github_candidate.decision, CandidateDecision::Applied);
+        assert_eq!(
+            jetbrains_candidate.decision,
+            CandidateDecision::SkippedOverlap
+        );
+    }
+
+    #[test]
     fn frequency_does_not_bypass_apply_threshold() {
         let mut pair =
             CorrectionPair::new("low-confidence-cloud-code", "cloud code", "Claude Code");
@@ -544,6 +655,35 @@ mod tests {
         assert!(result.diagnostics.candidates.iter().all(|candidate| {
             candidate.decision == CandidateDecision::BelowApplyThreshold && !candidate.applied
         }));
+        assert!(result.diagnostics.applied.is_empty());
+    }
+
+    #[test]
+    fn context_rank_boost_does_not_bypass_apply_threshold() {
+        let mut pair = CorrectionPair::new(
+            "low-confidence-context-cloud-code",
+            "cloud code",
+            "Claude Code",
+        );
+        pair.source = "learned".to_string();
+        pair.confidence = DEFAULT_APPLY_THRESHOLD - 0.01;
+        pair.accepted_count = 1;
+        pair.frequency = 1;
+        pair.surrounding_context =
+            Some("在 GitHub issue 里把 cloud code 改成 Claude Code".to_string());
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+        let result = engine.convert("在 GitHub issue 里打开 cloud code");
+
+        assert_eq!(result.text, "在 GitHub issue 里打开 cloud code");
+        assert!(!result.changed);
+        let candidate = result
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.pair_id == "low-confidence-context-cloud-code")
+            .expect("candidate");
+        assert!(candidate.rank_score > candidate.score);
+        assert_eq!(candidate.decision, CandidateDecision::BelowApplyThreshold);
         assert!(result.diagnostics.applied.is_empty());
     }
 

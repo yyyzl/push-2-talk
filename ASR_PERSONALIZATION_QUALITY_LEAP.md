@@ -385,6 +385,7 @@ P2 的第一版不追求完整复刻豆包内部 lattice，而是实现**token w
 6. **窗口大小**：默认 `max_size = 5`，覆盖 `cloud code`（2 token）、`use claude code`（3 token）、`switch to claude code now`（5 token）等
 7. **歧义处理**：
    - 一个窗口可能匹配多条 pair（按 frequency × confidence 排序）
+   - 若 pair 保存了 `surrounding_context`，当前文本与历史上下文在命中 span 之外的技术词重合时，只给 `rank_score` 小幅封顶加权；不能改变自动应用阈值
    - 多个窗口可能重叠（按窗口长度优先 + 置信度排序，长窗口优先吃掉短窗口）
    - alias key 命中的候选初始置信度低于字面/英文音近命中，除非来源是 `manual`
    - 若窗口包含常见词且上下文弱，优先进入候选池，不直接替换

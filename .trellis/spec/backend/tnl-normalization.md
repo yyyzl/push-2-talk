@@ -700,7 +700,8 @@ impl PersonalizationEngine {
 ### 3. Contracts
 
 - `score` is the candidate confidence used for the automatic application threshold.
-- `rank_score` is used only for ordering candidates after generation. It may include `frequency`, accepted history, or other ranking signals.
+- `rank_score` is used only for ordering candidates after generation. It may include `frequency`, accepted history, bounded surrounding-context overlap, or other ranking signals.
+- Surrounding-context overlap may add only a small bounded bonus to `rank_score`; it must ignore the matched span's own terms so every same-span candidate does not get the same artificial boost.
 - A candidate with `score < apply_threshold` must not auto-apply even when `rank_score` is high.
 - When two candidates cover the same span length and overlap, prefer higher `rank_score`; use `score` only as a tie-breaker.
 - Longer candidate windows still sort before shorter windows to preserve phrase-level corrections.
@@ -716,7 +717,9 @@ impl PersonalizationEngine {
 | Condition | Expected behavior |
 |---|---|
 | Pair A `cloud code -> Cloud Code`, confidence `0.98`, frequency `1`; Pair B `cloud code -> Claude Code`, confidence `0.90`, frequency `10` | Apply Pair B because repeated user behavior wins after both pass threshold. |
+| Two same-span pairs have equal confidence/frequency, and only one pair's `surrounding_context` overlaps the current text outside the matched span | Prefer the context-matching pair. |
 | Pair confidence is below the apply threshold but frequency is very high | Do not apply; keep original text and expose only diagnostics. |
+| Pair confidence is below the apply threshold but surrounding context overlaps strongly | Do not apply; keep original text and expose only diagnostics. |
 | Two candidates have the same rank score | Prefer higher `score`, then earlier start offset. |
 | A longer phrase and a shorter sub-token both match | Prefer the longer phrase before rank comparison. |
 | Candidate loses due to overlap | Mark `decision = SkippedOverlap` and set `blocked_by_pair_id`. |
@@ -726,6 +729,8 @@ impl PersonalizationEngine {
 
 - Personalization engine test: repeated same-span pair beats one-off higher-confidence candidate.
 - Personalization engine test: high frequency does not bypass the apply threshold.
+- Personalization engine test: matching surrounding context boosts same-span candidate rank.
+- Personalization engine test: context rank boost does not bypass the apply threshold.
 - Personalization engine diagnostics test: skipped-overlap candidate records `blocked_by_pair_id`.
 - Personalization engine diagnostics test: below-threshold candidate records `BelowApplyThreshold`.
 - Run the personalization suite and ASR eval after ranking changes.
