@@ -17,9 +17,7 @@ use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
-use crate::personalization::{
-    default_correction_pairs_path, ConversionResult, CorrectionPairStore, PersonalizationEngine,
-};
+use crate::personalization::{apply_default_personalization, ConversionResult};
 use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 
@@ -283,54 +281,38 @@ impl NormalPipeline {
     }
 
     fn maybe_apply_personalization(text: String) -> (String, bool) {
-        let Ok(path) = default_correction_pairs_path() else {
-            return (text, false);
-        };
-
-        if !path.exists() {
-            return (text, false);
-        }
-
-        let store = match CorrectionPairStore::load_json(&path) {
-            Ok(store) => store,
+        let source_text = text.clone();
+        let result = match apply_default_personalization(text) {
+            Ok(Some(result)) => result,
+            Ok(None) => return (source_text, false),
             Err(e) => {
                 tracing::warn!("NormalPipeline: 加载个性化纠错对失败，保守跳过: {}", e);
-                return (text, false);
+                return (source_text, false);
             }
         };
 
-        let source_text = text.clone();
-        let (text, changed, result, elapsed_us) = Self::run_personalization_with_store(text, store);
-        if let Err(e) = Self::write_personalization_diagnostic(&source_text, &result, elapsed_us) {
+        if let Err(e) = Self::write_personalization_diagnostic(
+            &source_text,
+            &result.conversion,
+            result.elapsed_us,
+        ) {
             tracing::warn!("NormalPipeline: 写入个性化诊断失败，已忽略: {}", e);
         }
-        Self::log_personalization_result(&source_text, &result);
+        Self::log_personalization_result(&source_text, &result.conversion);
 
-        (text, changed)
+        (result.text, result.changed)
     }
 
     #[cfg(test)]
     fn apply_personalization_with_store(
         text: String,
-        store: CorrectionPairStore,
+        store: crate::personalization::CorrectionPairStore,
     ) -> (String, bool) {
         let source_text = text.clone();
-        let (text, changed, result, _) = Self::run_personalization_with_store(text, store);
-        Self::log_personalization_result(&source_text, &result);
+        let result = crate::personalization::apply_personalization_with_store(text, store);
+        Self::log_personalization_result(&source_text, &result.conversion);
 
-        (text, changed)
-    }
-
-    fn run_personalization_with_store(
-        text: String,
-        store: CorrectionPairStore,
-    ) -> (String, bool, ConversionResult, u64) {
-        let engine = PersonalizationEngine::new(store);
-        let started_at = Instant::now();
-        let result = engine.convert(&text);
-        let elapsed_us = started_at.elapsed().as_micros() as u64;
-
-        (result.text.clone(), result.changed, result, elapsed_us)
+        (result.text, result.changed)
     }
 
     fn log_personalization_result(source_text: &str, result: &ConversionResult) {
@@ -648,7 +630,7 @@ impl Default for NormalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::personalization::{CorrectionPair, CorrectionPairStore};
+    use crate::personalization::{CorrectionPair, CorrectionPairStore, PersonalizationEngine};
 
     #[test]
     fn test_pipeline_creation() {

@@ -441,16 +441,33 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 
 ---
 
-## Scenario: Runtime Personalization Diagnostics Are Bounded And Non-Blocking
+## Scenario: Runtime Personalization Applies Before Downstream LLM Work
 
 ### 1. Scope / Trigger
 
-- Trigger: any change to `NormalPipeline` personalization application, runtime diagnostic persistence, or `ConversionDiagnostics` serialization.
-- Runtime diagnostics are for local inspection only. They must help debug the IME-style second decoder without making dictation insertion depend on file I/O success.
+- Trigger: any change to runtime personalization application in `NormalPipeline`, `handle_assistant_mode`, shared personalization helpers, runtime diagnostic persistence, or `ConversionDiagnostics` serialization.
+- Runtime personalization is the local IME-style second decoder. It must run on ASR text after TNL and before downstream LLM work in both dictation and AI assistant voice paths.
+- Runtime diagnostics are for local inspection only. They must help debug the decoder without making dictation insertion or assistant LLM calls depend on file I/O success.
 
 ### 2. Signatures
 
 ```rust
+pub struct PersonalizationRuntimeResult {
+    pub text: String,
+    pub changed: bool,
+    pub conversion: ConversionResult,
+    pub elapsed_us: u64,
+}
+
+pub fn apply_personalization_with_store(
+    text: String,
+    store: CorrectionPairStore,
+) -> PersonalizationRuntimeResult;
+
+pub fn apply_default_personalization(
+    text: String,
+) -> Result<Option<PersonalizationRuntimeResult>>;
+
 impl NormalPipeline {
     fn maybe_apply_personalization(text: String) -> (String, bool);
     fn write_personalization_diagnostic(
@@ -459,6 +476,8 @@ impl NormalPipeline {
         elapsed_us: u64,
     ) -> Result<PathBuf>;
 }
+
+fn apply_assistant_personalization(text: String) -> (String, bool);
 ```
 
 Runtime file shape:
@@ -482,7 +501,11 @@ Runtime file shape:
 
 ### 3. Contracts
 
-- Normal dictation may run `PersonalizationEngine` after TNL when `%APPDATA%\PushToTalk\personalization\correction_pairs.json` exists.
+- `apply_personalization_with_store` is the shared runtime entry point that creates `PersonalizationEngine`, runs `convert`, and returns the changed text plus conversion diagnostics and local elapsed time.
+- `apply_default_personalization` loads `%APPDATA%\PushToTalk\personalization\correction_pairs.json` when present; if the file is missing it returns `Ok(None)` and the caller keeps the text unchanged.
+- Normal dictation must run shared personalization after TNL and before TNL candidate LLM arbitration / final polishing when TNL is enabled.
+- AI assistant voice mode must run shared personalization after TNL and before `assistant_turn_pending`, usage stats, conversation history insertion, or `AssistantProcessor::process_turn`.
+- If TNL is disabled, runtime personalization remains disabled for parity with the existing dictation path.
 - Runtime personalization diagnostics must be written under `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\`.
 - File names must be unique per run, using the `personalization-<timestamp>-<uuid>.json` pattern.
 - Diagnostic payloads must truncate string fields recursively and cap candidate/applied candidate lists.
@@ -496,6 +519,9 @@ Runtime file shape:
 | Condition | Expected behavior |
 |---|---|
 | `correction_pairs.json` is missing | Skip personalization and write no personalization diagnostic. |
+| Assistant ASR text `我打开 cloud code` and store has `cloud code -> Claude Code` | The pending user instruction and LLM input use `我打开 Claude Code`. |
+| Assistant personalization store load fails | Log a warning and continue with the TNL-normalized instruction. |
+| TNL is disabled | Assistant and dictation skip runtime personalization. |
 | Personalization runs and changes text | Write a bounded diagnostic with `changed = true`, pass summaries, candidate count, and applied count. |
 | Personalization runs and finds no candidate | Write a bounded diagnostic with `changed = false` and zero applied candidates. |
 | A transcript or candidate contains very long text | Truncate strings without splitting Unicode code points. |
@@ -506,8 +532,9 @@ Runtime file shape:
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `cloud code -> Claude Code` writes a small JSON file explaining exact/phonetic pass behavior.
+- Good: `cloud code -> Claude Code` changes both dictation text and assistant voice instructions before any downstream LLM call.
 - Base: unrelated text with a loaded pair store writes a no-change diagnostic that remains small.
+- Bad: assistant sends `cloud code` to the LLM even though the same correction pair already fixes normal dictation.
 - Bad: dictation fails or blocks because the diagnostics directory cannot be created.
 
 ### 6. Tests Required
@@ -515,7 +542,10 @@ Runtime file shape:
 - Unit test for `YYYY-MM-DD` diagnostic directory formatting from a fixed Unix timestamp.
 - Unit test for bounded personalization diagnostic JSON: schema version, stage, elapsed time, candidate cap, pass summaries, and truncated text.
 - Unit test for pruning old runtime personalization diagnostics while preserving unrelated diagnostic files.
+- Unit test for shared runtime helper returning changed text, conversion diagnostics, and elapsed time.
+- Unit test for assistant personalization helper correcting a known pair before conversation processing.
 - Run normal pipeline tests after changing runtime personalization diagnostics.
+- Run personalization tests after changing shared runtime helpers.
 - Run `cargo check --no-default-features`.
 
 ### 7. Wrong vs Correct

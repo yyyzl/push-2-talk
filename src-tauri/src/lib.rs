@@ -590,6 +590,68 @@ fn turn_from_outcome(
     }
 }
 
+fn apply_assistant_personalization(text: String) -> (String, bool) {
+    let source_text = text.clone();
+    let result = match crate::personalization::apply_default_personalization(text) {
+        Ok(Some(result)) => result,
+        Ok(None) => return (source_text, false),
+        Err(e) => {
+            tracing::warn!("AI助手: 加载个性化纠错对失败，保守跳过: {}", e);
+            return (source_text, false);
+        }
+    };
+
+    log_assistant_personalization_result(&source_text, &result.conversion);
+    (result.text, result.changed)
+}
+
+#[cfg(test)]
+fn apply_assistant_personalization_with_store(
+    text: String,
+    store: crate::personalization::CorrectionPairStore,
+) -> (String, bool) {
+    let source_text = text.clone();
+    let result = crate::personalization::apply_personalization_with_store(text, store);
+    log_assistant_personalization_result(&source_text, &result.conversion);
+
+    (result.text, result.changed)
+}
+
+fn log_assistant_personalization_result(
+    source_text: &str,
+    result: &crate::personalization::ConversionResult,
+) {
+    if result.changed {
+        tracing::info!(
+            "AI助手 个性化二次解码: {} → {} (应用: {}, 候选: {})",
+            source_text,
+            result.text,
+            result.diagnostics.applied.len(),
+            result.diagnostics.candidates.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod assistant_personalization_tests {
+    use super::*;
+
+    #[test]
+    fn assistant_personalization_with_store_changes_known_pair() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed) =
+            apply_assistant_personalization_with_store("我打开 cloud code".to_string(), store);
+
+        assert!(changed);
+        assert_eq!(text, "我打开 Claude Code");
+    }
+}
+
 /// 将会话历史格式化并发送 transcription_complete 事件（用于 History 记录）
 fn emit_conversation_history(app: &AppHandle, session: &ConversationSession, inserted: bool) {
     if session.turns.is_empty() {
@@ -2873,25 +2935,24 @@ async fn handle_assistant_mode(
         let dict = state.dictionary.lock().unwrap().clone();
         dict
     };
-    let user_instruction = {
-        let tnl_enabled = config::AppConfig::load()
-            .map(|(c, _)| c.tnl_config.enabled)
-            .unwrap_or(true);
-        if tnl_enabled {
-            let engine = tnl::TnlEngine::new(dictionary);
-            let tnl_result = engine.normalize(&asr_text);
-            if tnl_result.changed {
-                tracing::info!(
-                    "AI助手 TNL: {} → {} ({}us)",
-                    asr_text,
-                    tnl_result.text,
-                    tnl_result.elapsed_us
-                );
-            }
-            tnl_result.text
-        } else {
-            asr_text.clone()
+    let tnl_enabled = config::AppConfig::load()
+        .map(|(c, _)| c.tnl_config.enabled)
+        .unwrap_or(true);
+    let user_instruction = if tnl_enabled {
+        let engine = tnl::TnlEngine::new(dictionary);
+        let tnl_result = engine.normalize(&asr_text);
+        if tnl_result.changed {
+            tracing::info!(
+                "AI助手 TNL: {} → {} ({}us)",
+                asr_text,
+                tnl_result.text,
+                tnl_result.elapsed_us
+            );
         }
+        let (text, _) = apply_assistant_personalization(tnl_result.text);
+        text
+    } else {
+        asr_text.clone()
     };
 
     // 5. 获取 processor

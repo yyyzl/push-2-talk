@@ -463,7 +463,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
    - 独立 disable 开关（config 字段）
 6. **重构现有 [pipeline/normal.rs](src-tauri/src/pipeline/normal.rs)**：
    - 第一阶段保持 `TnlEngine::normalize()` 对外 API 不变，内部委托 ConvertPipeline
-   - 第二阶段再让 `NormalPipeline`/`AssistantPipeline` 显式调用 ConvertPipeline
+   - 第二阶段再让 `NormalPipeline`/AI 助手生产路径（`handle_assistant_mode`）显式调用 ConvertPipeline；在完整 ConvertPipeline 落地前，二者先共用 `apply_default_personalization` 运行时入口
    - LLM 仲裁先复用现有 `LlmPostProcessor::arbitrate_tnl_candidates`，稳定后再封装为 `LlmArbiterPass`
 7. **决策阈值**（保留 v1 方案里的阈值，但语义更清晰）：
    ```
