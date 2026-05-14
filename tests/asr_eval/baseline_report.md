@@ -3,7 +3,7 @@
 ## Suite
 
 - Suite: `tests/asr_eval`
-- Cases: 22
+- Cases: 23
 - Seed correction pairs: `tests/asr_eval/correction_pairs.json`
 - Scope: Week 1 ASR personalization mini eval vertical slice
 
@@ -12,37 +12,37 @@
 | Metric | Value |
 |---|---:|
 | final_accuracy | 100.00% |
-| correction_pair_hit_rate | 81.82% |
+| correction_pair_hit_rate | 82.61% |
 | false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.364 |
-| p95_latency_ms | 0.599 |
+| avg_latency_ms | 0.651 |
+| p95_latency_ms | 1.008 |
 | quality_gate_passed | true |
-| candidates_total | 19 |
-| applied_candidates | 18 |
+| candidates_total | 21 |
+| applied_candidates | 19 |
 | below_threshold_candidates | 0 |
-| skipped_overlap_candidates | 1 |
+| skipped_overlap_candidates | 2 |
 | pending_candidates | 0 |
 | exact_text_candidates | 9 |
 | en_phonetic_candidates | 6 |
-| zh_pinyin_fuzzy_candidates | 2 |
+| zh_pinyin_fuzzy_candidates | 3 |
 | mixed_candidates | 1 |
-| alias_candidates | 1 |
+| alias_candidates | 2 |
 | exact_text_applied | 9 |
 | en_phonetic_applied | 6 |
 | zh_pinyin_fuzzy_applied | 1 |
 | mixed_applied | 1 |
-| alias_applied | 1 |
-| exact_text_pass_enabled_cases | 22 |
+| alias_applied | 2 |
+| exact_text_pass_enabled_cases | 23 |
 | exact_text_pass_disabled_cases | 0 |
 | exact_text_pass_candidates | 9 |
 | exact_text_pass_applied | 9 |
-| exact_text_pass_elapsed_us | 2344 |
-| syllable_match_pass_enabled_cases | 22 |
+| exact_text_pass_elapsed_us | 5523 |
+| syllable_match_pass_enabled_cases | 23 |
 | syllable_match_pass_disabled_cases | 0 |
-| syllable_match_pass_candidates | 10 |
-| syllable_match_pass_applied | 9 |
-| syllable_match_pass_elapsed_us | 275 |
+| syllable_match_pass_candidates | 12 |
+| syllable_match_pass_applied | 10 |
+| syllable_match_pass_elapsed_us | 364 |
 
 ## Cases
 
@@ -52,7 +52,8 @@
 | `mvp-claude-code-002` | `tech_mix` | PASS | 1 | 1 | `我打开 claud code` | `我打开 Claude Code` |
 | `mvp-claude-code-003` | `tech_mix` | PASS | 1 | 1 | `我打开 cloud coat` | `我打开 Claude Code` |
 | `mvp-claude-code-004` | `tech_mix` | PASS | 1 | 1 | `我打开 克劳德 code` | `我打开 Claude Code` |
-| `mvp-claude-code-005` | `false_positive_guard` | PASS | 0 | 0 | `I use cloud storage` | `I use cloud storage` |
+| `mvp-claude-code-005` | `tech_mix` | PASS | 1 | 1 | `我打开克劳德 code` | `我打开Claude Code` |
+| `mvp-claude-code-006` | `false_positive_guard` | PASS | 0 | 0 | `I use cloud storage` | `I use cloud storage` |
 | `mvp-openai-001` | `tech_mix` | PASS | 1 | 1 | `我调用 open ai 接口` | `我调用 OpenAI 接口` |
 | `mvp-openai-002` | `tech_mix` | PASS | 1 | 1 | `我调用 open eye 接口` | `我调用 OpenAI 接口` |
 | `mvp-openai-003` | `tech_mix` | PASS | 1 | 1 | `配置 open ai key` | `配置 OpenAI key` |
@@ -81,9 +82,9 @@
 - Tuning command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.88 --max-window-tokens 5`.
 - Threshold stress command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.99 --allow-quality-gate-failure`.
 - Sweep command: `cargo run --bin eval_asr --no-default-features -- --sweep-thresholds 0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure`.
-- Sample sweep: threshold `0.88` passes for window `3` and `5`; threshold `0.99` drops to 13/22 with 10 below-threshold candidates, useful for inspecting conservative cutoff behavior.
+- Sample sweep: threshold `0.88` passes for window `5`; window `3` drops to 21/23 because `克劳德 code` needs a 4-token CJK+ASCII window. Threshold `0.99` drops to 13/23 with 12 below-threshold candidates at window `5`, useful for inspecting conservative cutoff behavior.
 - Ablation command: `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure`.
-- With syllable matching disabled, the sample run passes 13/22 cases with 9 exact-text applications only; the remaining 9 fixes come from English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias paths.
+- With syllable matching disabled, the sample run passes 13/23 cases with 9 exact-text applications only; the remaining 10 fixes come from English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias paths.
 - Diagnostics export schema v2 includes per-case pass summaries for `exact_text` and `syllable_match`.
 - Mixed-language correction pairs do not participate in pure-ASCII English phonetic lookup; this prevents an `欧喷 ai -> OpenAI` pair from rewriting an unrelated ASCII `ai` span.
 - Latency metrics are from a local sample run and cover only `PersonalizationEngine::convert`, not ASR provider time or LLM processing.

@@ -507,6 +507,16 @@ mod tests {
     }
 
     #[test]
+    fn corrects_chinese_alias_without_whitespace_before_name() {
+        let engine = engine();
+
+        assert_eq!(
+            engine.convert("我打开克劳德 code").text,
+            "我打开Claude Code"
+        );
+    }
+
+    #[test]
     fn does_not_generalize_cloud_single_word() {
         let engine = engine();
 

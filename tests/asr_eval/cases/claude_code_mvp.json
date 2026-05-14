@@ -47,6 +47,17 @@
     "audio_id": "mvp-claude-code-005",
     "audio_wav_path": null,
     "provider": "manual-fixture",
+    "raw_asr_text": "我打开克劳德 code",
+    "expected_text": "我打开Claude Code",
+    "user_final_text": "我打开Claude Code",
+    "category": "tech_mix",
+    "notes": "中文连续串内部切分后跨语言 alias key 命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-claude-code-006",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
     "raw_asr_text": "I use cloud storage",
     "expected_text": "I use cloud storage",
     "user_final_text": "I use cloud storage",

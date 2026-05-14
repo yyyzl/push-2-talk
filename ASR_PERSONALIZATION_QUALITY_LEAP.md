@@ -370,6 +370,7 @@ P2 的第一版不追求完整复刻豆包内部 lattice，而是实现**token w
 4. **关键实现细节**：
    - 分词：复用 [tnl/tokenizer.rs](src-tauri/src/tnl/tokenizer.rs)
    - 中文每字的拼音候选（破=`pò`/`pò`，多音字全部展开）
+   - 中文连续串按单字音节生成窗口，保证 `我打开克劳德 code` 这类无空格文本也能切出 `克劳德 code`
    - 英文 Metaphone 拿 primary + alternate 两个 key
    - 中英交界处单独切（"克劳德 code" 切成 `[克劳德][ ][code]`）
    - 生成跨语言 alias key：例如 `克劳德 code` 可以生成 `kelaode|KT`、`kelaode|code`，用于命中用户确认过的 `Claude Code`

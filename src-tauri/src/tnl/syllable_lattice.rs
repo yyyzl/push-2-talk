@@ -35,7 +35,7 @@ impl SyllableLattice {
     pub(crate) fn from_asr_text(text: &str) -> Self {
         let tokens = Tokenizer::tokenize(text)
             .into_iter()
-            .filter_map(content_token)
+            .flat_map(content_tokens)
             .collect();
 
         Self {
@@ -78,17 +78,25 @@ impl SyllableLattice {
     }
 }
 
-fn content_token(token: Token) -> Option<PhoneticToken> {
-    let lang = match token.token_type {
-        TokenType::Chinese => Lang::Cn,
-        TokenType::Ascii => Lang::En,
-        TokenType::Whitespace | TokenType::Symbol => return None,
-    };
-
-    Some(PhoneticToken {
-        byte_range: token.start..token.end,
-        lang,
-    })
+fn content_tokens(token: Token) -> Vec<PhoneticToken> {
+    match token.token_type {
+        TokenType::Chinese => token
+            .text
+            .char_indices()
+            .map(|(offset, ch)| {
+                let start = token.start + offset;
+                PhoneticToken {
+                    byte_range: start..start + ch.len_utf8(),
+                    lang: Lang::Cn,
+                }
+            })
+            .collect(),
+        TokenType::Ascii => vec![PhoneticToken {
+            byte_range: token.start..token.end,
+            lang: Lang::En,
+        }],
+        TokenType::Whitespace | TokenType::Symbol => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -105,7 +113,7 @@ mod tests {
                 .iter()
                 .map(|token| &lattice.source_text[token.byte_range.clone()])
                 .collect::<Vec<_>>(),
-            vec!["我打开", "克劳德", "code"]
+            vec!["我", "打", "开", "克", "劳", "德", "code"]
         );
     }
 
@@ -128,6 +136,24 @@ mod tests {
         assert!(window
             .keys
             .mixed_keys
+            .iter()
+            .any(|key| key == "kelaode|code"));
+    }
+
+    #[test]
+    fn windows_include_cross_language_alias_without_whitespace_before_chinese_name() {
+        let lattice = SyllableLattice::from_asr_text("我打开克劳德 code");
+        let windows = lattice.windows(5);
+        let window = windows
+            .iter()
+            .find(|window| window.text == "克劳德 code")
+            .expect("mixed window without leading whitespace");
+
+        assert!(window.has_chinese);
+        assert!(window.has_ascii);
+        assert!(window
+            .keys
+            .alias_keys
             .iter()
             .any(|key| key == "kelaode|code"));
     }
