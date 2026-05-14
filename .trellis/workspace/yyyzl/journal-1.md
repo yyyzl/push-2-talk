@@ -299,3 +299,44 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: ASR personalization MVP closure
+
+**Date**: 2026-05-15
+**Task**: ASR personalization MVP closure
+**Branch**: `main`
+
+### Summary
+
+完成 ASR 个性化 0-3 MVP 闭环并提交 Phase 4 后端配置入口：观察/撤销/LLM 仲裁反馈回写、中置信仲裁、去口癖、运行时 pass 配置、disfluency 配置；验证 cargo test/check 与 ASR eval 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0fea5b4` | (see git log) |
+| `4d0b77c` | (see git log) |
+| `24a409b` | (see git log) |
+| `fcb80fa` | (see git log) |
+| `075a403` | (see git log) |
+| `6aebf90` | (see git log) |
+| `58cd0a2` | (see git log) |
+| `96e1ce3` | (see git log) |
+| `26703c7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

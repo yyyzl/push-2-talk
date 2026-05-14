@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
-- **Last Active**: 2026-05-12
+- **Total Sessions**: 7
+- **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~301 | Active |
+| `journal-1.md` | ~342 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-05-15 | ASR personalization MVP closure | `0fea5b4`, `4d0b77c`, `24a409b`, `fcb80fa`, `075a403`, `6aebf90`, `58cd0a2`, `96e1ce3`, `26703c7` | `main` |
 | 6 | 2026-05-12 | 修复 AI 助手联网搜索状态与取消流程 | `65e5d32` | `main` |
 | 5 | 2026-05-10 | per-preset LLM 模型选择 (issue #12) | `199f34a` | `main` |
 | 4 | 2026-05-09 | GitNexus 升级 + hook 接入；归档 TNL 候选仲裁任务 | `50ef68a`, `446eb19` | `main` |
