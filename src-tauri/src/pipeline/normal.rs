@@ -15,9 +15,9 @@ use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::personalization::{
-    apply_default_personalization, personalization_candidates_to_tnl_diagnostics,
+    apply_default_personalization_with_config, personalization_candidates_to_tnl_diagnostics,
     record_personalization_arbitration_feedback_from_tnl, write_runtime_diagnostic,
-    ConversionResult,
+    ConversionResult, PersonalizationEngineConfig,
 };
 use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
@@ -75,9 +75,10 @@ impl NormalPipeline {
         );
 
         // 2. TNL 技术规范化（如果启用）
-        let tnl_enabled = AppConfig::load()
-            .map(|(c, _)| c.tnl_config.enabled)
-            .unwrap_or(true);
+        let tnl_config = AppConfig::load()
+            .map(|(c, _)| c.tnl_config)
+            .unwrap_or_default();
+        let tnl_enabled = tnl_config.enabled;
         let (text, tnl_changed, tnl_diagnostics) = if tnl_enabled {
             let engine = TnlEngine::new(dictionary.clone());
             let tnl_result = engine.normalize(&asr_text);
@@ -97,7 +98,10 @@ impl NormalPipeline {
 
         // 2.5. 本地个性化二次解码（MVP：仅当 correction_pairs.json 存在时启用）
         let (text, personalization_changed, personalization_diagnostics) = if tnl_enabled {
-            Self::maybe_apply_personalization(text)
+            Self::maybe_apply_personalization(
+                text,
+                PersonalizationEngineConfig::from_tnl_config(&tnl_config),
+            )
         } else {
             (text, false, None)
         };
@@ -300,9 +304,12 @@ impl NormalPipeline {
         }
     }
 
-    fn maybe_apply_personalization(text: String) -> (String, bool, Option<TnlDiagnostics>) {
+    fn maybe_apply_personalization(
+        text: String,
+        config: PersonalizationEngineConfig,
+    ) -> (String, bool, Option<TnlDiagnostics>) {
         let source_text = text.clone();
-        let result = match apply_default_personalization(text) {
+        let result = match apply_default_personalization_with_config(text, config) {
             Ok(Some(result)) => result,
             Ok(None) => return (source_text, false, None),
             Err(e) => {

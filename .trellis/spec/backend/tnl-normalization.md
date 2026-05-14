@@ -186,6 +186,90 @@ let replaced = self.apply_phonetic_replacement(&normalized);
 
 ---
 
+## Scenario: Runtime Personalization Pass Config Uses TnlConfig
+
+### 1. Scope / Trigger
+
+- Trigger: any change to runtime personalization pass switches, threshold/window tuning, `TnlConfig`, `PersonalizationEngineConfig`, `NormalPipeline`, or assistant voice instruction normalization.
+- Phase 0 eval controls and production runtime must stay isomorphic: a threshold or pass switch tested in `eval_asr` must map to the same engine behavior in normal dictation and assistant voice input.
+
+### 2. Signatures
+
+```rust
+pub struct TnlConfig {
+    pub enabled: bool,
+    pub enable_personalization_exact_text_pass: bool,
+    pub enable_personalization_syllable_match_pass: bool,
+    pub personalization_max_window_tokens: usize,
+    pub personalization_apply_threshold: f32,
+}
+
+impl PersonalizationEngineConfig {
+    pub fn from_tnl_config(config: &TnlConfig) -> Self;
+}
+
+pub fn apply_default_personalization_with_config(
+    text: String,
+    config: PersonalizationEngineConfig,
+) -> Result<Option<PersonalizationRuntimeResult>>;
+```
+
+### 3. Contracts
+
+- Legacy configs with only `tnl_config.enabled` must deserialize with safe defaults.
+- Defaults must match `eval_asr` defaults:
+  - `enable_personalization_exact_text_pass = true`
+  - `enable_personalization_syllable_match_pass = true`
+  - `personalization_max_window_tokens = 5`
+  - `personalization_apply_threshold = 0.88`
+- `NormalPipeline` must derive `PersonalizationEngineConfig` from the loaded `TnlConfig` before calling runtime personalization.
+- `handle_assistant_mode` must derive the same config for assistant voice instructions.
+- Existing `apply_default_personalization(text)` remains the default-config compatibility wrapper.
+- Disabling `enable_personalization_syllable_match_pass` must prevent phonetic, pinyin, mixed, and alias matches while preserving exact-text matches.
+- Disabling these passes must not change the behavior of `TnlEngine::normalize`; it only controls the correction-pair personalization layer after TNL.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Legacy JSON `{ "tnl_config": { "enabled": true } }` | Deserializes and backfills all personalization fields with defaults. |
+| Default `TnlConfig` | Maps to exact on, syllable on, window 5, threshold 0.88. |
+| Assistant voice input with syllable pass disabled and pair `cloud code -> Claude Code` alias `kelaode\|code` | `我打开 克劳德 code` stays unchanged. |
+| Runtime personalization with syllable pass disabled | `pass_summaries` includes `syllable_match` with `enabled=false`. |
+| Exact-text pass enabled and syllable pass disabled | Literal `cloud code` may still match, alias/phonetic variants must not. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `eval_asr --disable-syllable-match-pass` and runtime `TnlConfig.enable_personalization_syllable_match_pass=false` produce the same class of behavior.
+- Base: old configs behave exactly like the previous default runtime: both personalization passes enabled, threshold 0.88, max window 5.
+- Bad: eval pass switches work, but normal dictation still uses `PersonalizationEngineConfig::default()` and ignores runtime config.
+- Bad: assistant voice instructions apply alias corrections even after syllable pass is disabled.
+
+### 6. Tests Required
+
+- Config serde/default tests for legacy `tnl_config`.
+- Mapping test for `PersonalizationEngineConfig::from_tnl_config`.
+- Runtime personalization test proving syllable pass disable suppresses alias/phonetic matching.
+- Assistant personalization test proving voice instruction personalization respects runtime pass config.
+- Run personalization, config, normal pipeline, assistant personalization, full backend lib tests, `cargo check`, and ASR eval after changing this wiring.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let result = apply_default_personalization(text)?;
+```
+
+#### Correct
+
+```rust
+let engine_config = PersonalizationEngineConfig::from_tnl_config(&tnl_config);
+let result = apply_default_personalization_with_config(text, engine_config)?;
+```
+
+---
+
 ## Scenario: Mixed-Language Windows Must Not Use English-Only Phonetic Matches
 
 ### 1. Scope / Trigger

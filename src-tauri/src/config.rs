@@ -662,16 +662,53 @@ pub struct TnlConfig {
     /// 是否启用 TNL（默认启用）
     #[serde(default = "default_enable_tnl")]
     pub enabled: bool,
+    /// 个性化纠错对精确文本 Pass 开关
+    #[serde(default = "default_enable_personalization_exact_text_pass")]
+    pub enable_personalization_exact_text_pass: bool,
+    /// 个性化音节格/alias Pass 开关
+    #[serde(default = "default_enable_personalization_syllable_match_pass")]
+    pub enable_personalization_syllable_match_pass: bool,
+    /// 个性化窗口最大 token 数
+    #[serde(default = "default_personalization_max_window_tokens")]
+    pub personalization_max_window_tokens: usize,
+    /// 个性化本地自动应用阈值
+    #[serde(default = "default_personalization_apply_threshold")]
+    pub personalization_apply_threshold: f32,
 }
 
 fn default_enable_tnl() -> bool {
     true
 }
 
+fn default_enable_personalization_exact_text_pass() -> bool {
+    true
+}
+
+fn default_enable_personalization_syllable_match_pass() -> bool {
+    true
+}
+
+fn default_personalization_max_window_tokens() -> usize {
+    5
+}
+
+fn default_personalization_apply_threshold() -> f32 {
+    0.88
+}
+
 impl Default for TnlConfig {
     fn default() -> Self {
+        let enable_personalization_exact_text_pass =
+            default_enable_personalization_exact_text_pass();
+        let enable_personalization_syllable_match_pass =
+            default_enable_personalization_syllable_match_pass();
+
         Self {
             enabled: default_enable_tnl(),
+            enable_personalization_exact_text_pass,
+            enable_personalization_syllable_match_pass,
+            personalization_max_window_tokens: default_personalization_max_window_tokens(),
+            personalization_apply_threshold: default_personalization_apply_threshold(),
         }
     }
 }
@@ -1951,6 +1988,7 @@ impl AppConfig {
 mod tests {
     use super::{
         AppConfig, AsrConfig, AsrLanguageMode, AssistantConfig, LlmConfig, LlmPreset, SearchConfig,
+        TnlConfig,
     };
 
     #[test]
@@ -1994,6 +2032,33 @@ mod tests {
         assert!(!cfg.assistant_config.enable_web_search);
         assert_eq!(cfg.assistant_config.web_search_max_loops, 3);
         assert_eq!(cfg.search_config.max_results, 5);
+    }
+
+    #[test]
+    fn tnl_config_defaults_enable_personalization_passes() {
+        let cfg = TnlConfig::default();
+
+        assert!(cfg.enabled);
+        assert!(cfg.enable_personalization_exact_text_pass);
+        assert!(cfg.enable_personalization_syllable_match_pass);
+        assert_eq!(cfg.personalization_max_window_tokens, 5);
+        assert!((cfg.personalization_apply_threshold - 0.88).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn app_config_legacy_json_backfills_tnl_personalization_fields() {
+        let json = r#"{
+            "tnl_config": {
+                "enabled": true
+            }
+        }"#;
+
+        let cfg: AppConfig = serde_json::from_str(json).expect("旧配置必须能反序列化");
+
+        assert!(cfg.tnl_config.enable_personalization_exact_text_pass);
+        assert!(cfg.tnl_config.enable_personalization_syllable_match_pass);
+        assert_eq!(cfg.tnl_config.personalization_max_window_tokens, 5);
+        assert!((cfg.tnl_config.personalization_apply_threshold - 0.88).abs() < f32::EPSILON);
     }
 
     // ============================================================================

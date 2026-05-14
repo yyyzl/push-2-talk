@@ -42,7 +42,15 @@ pub fn apply_personalization_with_store(
     text: String,
     store: CorrectionPairStore,
 ) -> PersonalizationRuntimeResult {
-    let engine = PersonalizationEngine::new(store);
+    apply_personalization_with_store_and_config(text, store, PersonalizationEngineConfig::default())
+}
+
+pub fn apply_personalization_with_store_and_config(
+    text: String,
+    store: CorrectionPairStore,
+    config: PersonalizationEngineConfig,
+) -> PersonalizationRuntimeResult {
+    let engine = PersonalizationEngine::with_config(store, config);
     let started_at = Instant::now();
     let conversion = engine.convert(&text);
     let elapsed_us = started_at.elapsed().as_micros() as u64;
@@ -56,13 +64,22 @@ pub fn apply_personalization_with_store(
 }
 
 pub fn apply_default_personalization(text: String) -> Result<Option<PersonalizationRuntimeResult>> {
+    apply_default_personalization_with_config(text, PersonalizationEngineConfig::default())
+}
+
+pub fn apply_default_personalization_with_config(
+    text: String,
+    config: PersonalizationEngineConfig,
+) -> Result<Option<PersonalizationRuntimeResult>> {
     let path = default_correction_pairs_path()?;
     if !path.exists() {
         return Ok(None);
     }
 
     let store = CorrectionPairStore::load_json(&path)?;
-    Ok(Some(apply_personalization_with_store(text, store)))
+    Ok(Some(apply_personalization_with_store_and_config(
+        text, store, config,
+    )))
 }
 
 pub(crate) fn personalization_candidates_to_tnl_diagnostics(
@@ -199,6 +216,34 @@ mod tests {
         assert_eq!(result.text, "我打开 Claude Code");
         assert_eq!(result.conversion.text, "我打开 Claude Code");
         assert_eq!(result.conversion.diagnostics.applied.len(), 1);
+    }
+
+    #[test]
+    fn runtime_config_can_disable_syllable_match_pass() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = CorrectionPairStore::new(vec![pair]);
+        let config = PersonalizationEngineConfig {
+            enable_syllable_match_pass: false,
+            ..PersonalizationEngineConfig::default()
+        };
+
+        let result = apply_personalization_with_store_and_config(
+            "我打开 克劳德 code".to_string(),
+            store,
+            config,
+        );
+
+        assert!(!result.changed);
+        assert_eq!(result.text, "我打开 克劳德 code");
+        assert!(result
+            .conversion
+            .diagnostics
+            .pass_summaries
+            .iter()
+            .any(|summary| summary.name == "syllable_match" && !summary.enabled));
     }
 
     #[test]

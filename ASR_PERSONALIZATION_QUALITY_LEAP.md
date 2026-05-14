@@ -473,6 +473,11 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
    0.55 <= c < 0.68    -> 仅记录诊断（已标记为 RejectedLocal，不触发 LLM）
    c < 0.55            -> 丢弃
    ```
+8. **运行时配置同构**：
+   - 已把个性化二次解码的 `enable_exact_text_pass`、`enable_syllable_match_pass`、`max_window_tokens`、`apply_threshold` 接入 `TnlConfig`
+   - `NormalPipeline` 和 AI 助手语音指令路径都从 `TnlConfig` 派生 `PersonalizationEngineConfig`
+   - 默认值与 eval 默认值一致：exact on、syllable on、window=5、threshold=0.88
+   - 这使 eval 的 pass 开关/阈值实验可以映射到真实运行路径，而不是只存在于评测 CLI
 
 ### 工程量
 
@@ -485,6 +490,23 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 - 评测集总命中率比 Phase 2 末再提 5-10 个百分点
 - LLM 仲裁触发率下降（因为更多高置信替换在 SyllableMatchPass 截胡）
 - 现有 TNL 回归测试保持通过，尤其是"精确词库命中优先于音近纠错"合约
+
+---
+
+## Phase 0-3 闭环状态（当前）
+
+已完成 MVP 垂直闭环，不等同于完整 80-120 条真实样本评测集：
+
+1. **Phase 0**：`eval_asr`、26 条 mini eval、baseline report、schema v4 diagnostics、threshold/window sweep 已跑通
+2. **Phase 1**：CorrectionPairStore JSON 旁路存储、原子写入、生命周期字段、alias key、接受/拒绝/撤销/观察/LLM 仲裁反馈回写已接入
+3. **Phase 2**：SyllableLattice token window、英文音近、中文 fuzzy pinyin、mixed/alias key、跨句保护、窗口上限已接入
+4. **Phase 3**：ExactText 与 SyllableMatch 分级 pass、pass summary、运行时配置开关、普通听写中置信 LLM 仲裁与反馈回写已接入
+
+剩余不阻塞闭环但属于增强项：
+
+- Phase 0B：扩展到 80-120 条真实错误样本
+- 完整 ConvertPipeline trait 化：当前为了降低风险仍由 `PersonalizationEngine` + `TnlEngine` 渐进承载
+- 助手路径的中置信候选云端仲裁：当前助手语音指令会使用本地个性化高置信替换，但未把中置信候选送入独立 LLM 仲裁
 
 ---
 

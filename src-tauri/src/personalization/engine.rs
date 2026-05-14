@@ -31,6 +31,17 @@ impl Default for PersonalizationEngineConfig {
     }
 }
 
+impl PersonalizationEngineConfig {
+    pub fn from_tnl_config(config: &crate::config::TnlConfig) -> Self {
+        Self {
+            max_window_tokens: config.personalization_max_window_tokens,
+            apply_threshold: config.personalization_apply_threshold,
+            enable_exact_text_pass: config.enable_personalization_exact_text_pass,
+            enable_syllable_match_pass: config.enable_personalization_syllable_match_pass,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversionResult {
     pub text: String,
@@ -482,6 +493,22 @@ mod tests {
         pair.confidence = 0.98;
         pair.alias_keys.push("kelaode|code".to_string());
         PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]))
+    }
+
+    #[test]
+    fn config_maps_from_tnl_config() {
+        let mut tnl_config = crate::config::TnlConfig::default();
+        tnl_config.enable_personalization_exact_text_pass = false;
+        tnl_config.enable_personalization_syllable_match_pass = false;
+        tnl_config.personalization_max_window_tokens = 3;
+        tnl_config.personalization_apply_threshold = 0.99;
+
+        let config = PersonalizationEngineConfig::from_tnl_config(&tnl_config);
+
+        assert!(!config.enable_exact_text_pass);
+        assert!(!config.enable_syllable_match_pass);
+        assert_eq!(config.max_window_tokens, 3);
+        assert!((config.apply_threshold - 0.99).abs() < f32::EPSILON);
     }
 
     #[test]

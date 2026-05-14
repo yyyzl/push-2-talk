@@ -590,16 +590,20 @@ fn turn_from_outcome(
     }
 }
 
-fn apply_assistant_personalization(text: String) -> (String, bool) {
+fn apply_assistant_personalization(
+    text: String,
+    config: crate::personalization::PersonalizationEngineConfig,
+) -> (String, bool) {
     let source_text = text.clone();
-    let result = match crate::personalization::apply_default_personalization(text) {
-        Ok(Some(result)) => result,
-        Ok(None) => return (source_text, false),
-        Err(e) => {
-            tracing::warn!("AI助手: 加载个性化纠错对失败，保守跳过: {}", e);
-            return (source_text, false);
-        }
-    };
+    let result =
+        match crate::personalization::apply_default_personalization_with_config(text, config) {
+            Ok(Some(result)) => result,
+            Ok(None) => return (source_text, false),
+            Err(e) => {
+                tracing::warn!("AI助手: 加载个性化纠错对失败，保守跳过: {}", e);
+                return (source_text, false);
+            }
+        };
 
     if let Err(e) = crate::personalization::write_runtime_diagnostic(&source_text, &result) {
         tracing::warn!("AI助手: 写入个性化诊断失败，已忽略: {}", e);
@@ -613,8 +617,22 @@ fn apply_assistant_personalization_with_store(
     text: String,
     store: crate::personalization::CorrectionPairStore,
 ) -> (String, bool) {
+    apply_assistant_personalization_with_store_and_config(
+        text,
+        store,
+        crate::personalization::PersonalizationEngineConfig::default(),
+    )
+}
+
+#[cfg(test)]
+fn apply_assistant_personalization_with_store_and_config(
+    text: String,
+    store: crate::personalization::CorrectionPairStore,
+    config: crate::personalization::PersonalizationEngineConfig,
+) -> (String, bool) {
     let source_text = text.clone();
-    let result = crate::personalization::apply_personalization_with_store(text, store);
+    let result =
+        crate::personalization::apply_personalization_with_store_and_config(text, store, config);
     log_assistant_personalization_result(&source_text, &result.conversion);
 
     (result.text, result.changed)
@@ -652,6 +670,29 @@ mod assistant_personalization_tests {
 
         assert!(changed);
         assert_eq!(text, "我打开 Claude Code");
+    }
+
+    #[test]
+    fn assistant_personalization_respects_runtime_pass_config() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+        let config = crate::personalization::PersonalizationEngineConfig {
+            enable_syllable_match_pass: false,
+            ..crate::personalization::PersonalizationEngineConfig::default()
+        };
+
+        let (text, changed) = apply_assistant_personalization_with_store_and_config(
+            "我打开 克劳德 code".to_string(),
+            store,
+            config,
+        );
+
+        assert!(!changed);
+        assert_eq!(text, "我打开 克劳德 code");
     }
 }
 
@@ -2938,9 +2979,10 @@ async fn handle_assistant_mode(
         let dict = state.dictionary.lock().unwrap().clone();
         dict
     };
-    let tnl_enabled = config::AppConfig::load()
-        .map(|(c, _)| c.tnl_config.enabled)
-        .unwrap_or(true);
+    let tnl_config = config::AppConfig::load()
+        .map(|(c, _)| c.tnl_config)
+        .unwrap_or_default();
+    let tnl_enabled = tnl_config.enabled;
     let user_instruction = if tnl_enabled {
         let engine = tnl::TnlEngine::new(dictionary);
         let tnl_result = engine.normalize(&asr_text);
@@ -2952,7 +2994,10 @@ async fn handle_assistant_mode(
                 tnl_result.elapsed_us
             );
         }
-        let (text, _) = apply_assistant_personalization(tnl_result.text);
+        let (text, _) = apply_assistant_personalization(
+            tnl_result.text,
+            crate::personalization::PersonalizationEngineConfig::from_tnl_config(&tnl_config),
+        );
         text
     } else {
         asr_text.clone()
