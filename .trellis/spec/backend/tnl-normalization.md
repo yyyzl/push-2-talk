@@ -625,6 +625,8 @@ File paths:
 - If the final rename fails after creating `.bak`, best-effort restore `.bak` to the target path.
 - `upsert_accepted_correction_json` and `record_rejected_correction_json` must persist only through `save_json`.
 - Loading invalid JSON must still return an error instead of overwriting unknown/corrupt content with an empty store.
+- JSON `CorrectionPair` lifecycle metadata is additive and backward-compatible: `created_at`, `updated_at`, and `last_seen_at` are optional when loading older files.
+- Newly created correction pairs should set all three lifecycle timestamps. Accept/reject feedback must refresh `updated_at` and `last_seen_at` while preserving an existing `created_at`.
 
 ### 4. Validation & Error Matrix
 
@@ -645,6 +647,7 @@ File paths:
 ### 6. Tests Required
 
 - Unit test: saving over an existing file with a stale `.bak` reloads the new pair and removes `.bak` / `.tmp`.
+- Unit tests: accepted and rejected correction feedback preserve/persist lifecycle timestamps.
 - Existing accepted/rejected persistence tests must continue to pass.
 - Run personalization tests and `cargo check --no-default-features`.
 

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AppConfig;
 
@@ -44,6 +45,12 @@ pub struct CorrectionPair {
     pub accepted_count: u32,
     #[serde(default)]
     pub rejected_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -64,12 +71,20 @@ fn default_enabled() -> bool {
     true
 }
 
+fn current_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 impl CorrectionPair {
     pub fn new(
         id: impl Into<String>,
         original_text: impl Into<String>,
         corrected_text: impl Into<String>,
     ) -> Self {
+        let now = current_unix_millis();
         let mut pair = Self {
             id: id.into(),
             original_text: original_text.into(),
@@ -87,6 +102,9 @@ impl CorrectionPair {
             confidence: default_confidence(),
             accepted_count: 0,
             rejected_count: 0,
+            last_seen_at: Some(now),
+            created_at: Some(now),
+            updated_at: Some(now),
             enabled: true,
         };
         pair.ensure_keys();
@@ -134,6 +152,15 @@ impl CorrectionPair {
                 .any(|stale_alias| stale_alias.eq_ignore_ascii_case(alias))
         });
         self.ensure_keys();
+    }
+
+    fn touch_lifecycle(&mut self, now: u64) {
+        if self.created_at.is_none() {
+            self.created_at = Some(now);
+        }
+        let timestamp = now.max(self.created_at.unwrap_or(now));
+        self.updated_at = Some(timestamp);
+        self.last_seen_at = Some(timestamp);
     }
 
     pub fn normalized_original(&self) -> String {
@@ -237,6 +264,7 @@ impl CorrectionPairStore {
 
         let id = learned_pair_id(original_text, corrected_text);
         let normalized_original = normalize_surface(original_text);
+        let now = current_unix_millis();
         let category = category
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -261,6 +289,7 @@ impl CorrectionPairStore {
             existing.accepted_count = existing.accepted_count.saturating_add(1);
             existing.confidence = existing.confidence.max(0.98);
             existing.enabled = true;
+            existing.touch_lifecycle(now);
             return Some(existing.clone());
         }
 
@@ -272,6 +301,7 @@ impl CorrectionPairStore {
         pair.confidence = 0.98;
         pair.accepted_count = 1;
         pair.enabled = true;
+        pair.touch_lifecycle(now);
         pair.ensure_keys();
         self.pairs.push(pair.clone());
         Some(pair)
@@ -320,6 +350,7 @@ impl CorrectionPairStore {
         if pair.rejected_count >= DISABLE_AFTER_REJECTS {
             pair.enabled = false;
         }
+        pair.touch_lifecycle(current_unix_millis());
 
         Some(pair.clone())
     }
@@ -580,6 +611,9 @@ mod tests {
             confidence: 0.98,
             accepted_count: 0,
             rejected_count: 0,
+            last_seen_at: None,
+            created_at: None,
+            updated_at: None,
             enabled: true,
         }]);
 
@@ -632,6 +666,30 @@ mod tests {
     }
 
     #[test]
+    fn accepted_correction_pair_tracks_lifecycle_timestamps() {
+        let mut store = CorrectionPairStore::default();
+
+        let first = store
+            .upsert_accepted_correction("cloud code", "Claude Code", Some("proper_noun"), None)
+            .expect("pair should be stored");
+        let created_at = first.created_at.expect("created timestamp");
+        let updated_at = first.updated_at.expect("updated timestamp");
+        let last_seen_at = first.last_seen_at.expect("last seen timestamp");
+
+        assert!(updated_at >= created_at);
+        assert!(last_seen_at >= created_at);
+
+        let second = store
+            .upsert_accepted_correction("cloud code", "Claude Code", Some("proper_noun"), None)
+            .expect("pair should be updated");
+
+        assert_eq!(second.created_at, Some(created_at));
+        assert!(second.updated_at.expect("second updated timestamp") >= updated_at);
+        assert!(second.last_seen_at.expect("second last seen timestamp") >= last_seen_at);
+        assert_eq!(second.accepted_count, 2);
+    }
+
+    #[test]
     fn accepted_correction_pair_persists_bounded_surrounding_context() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let path = temp.path().join("correction_pairs.json");
@@ -653,6 +711,42 @@ mod tests {
             .expect("surrounding context");
         assert_eq!(context.chars().count(), MAX_SURROUNDING_CONTEXT_CHARS);
         assert!(context.starts_with("前前前"));
+    }
+
+    #[test]
+    fn rejected_correction_pair_tracks_lifecycle_timestamps() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        let accepted = CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+            None,
+        )
+        .expect("save accepted pair")
+        .expect("accepted pair");
+        let accepted_created_at = accepted.created_at.expect("accepted created timestamp");
+        let accepted_updated_at = accepted.updated_at.expect("accepted updated timestamp");
+
+        let rejected = CorrectionPairStore::record_rejected_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+        )
+        .expect("record reject")
+        .expect("rejected pair");
+
+        assert_eq!(rejected.created_at, Some(accepted_created_at));
+        assert!(rejected.updated_at.expect("rejected updated timestamp") >= accepted_updated_at);
+        assert!(rejected.last_seen_at.is_some());
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let persisted = store.lookup_by_text("cloud code")[0];
+        assert_eq!(persisted.created_at, rejected.created_at);
+        assert_eq!(persisted.updated_at, rejected.updated_at);
+        assert_eq!(persisted.last_seen_at, rejected.last_seen_at);
     }
 
     #[test]
