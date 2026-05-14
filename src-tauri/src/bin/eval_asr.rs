@@ -71,6 +71,30 @@ impl EvalArgs {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct EvalRunConfig {
+    suite_dir: String,
+    enable_exact_text_pass: bool,
+    enable_syllable_match_pass: bool,
+    apply_threshold: f32,
+    max_window_tokens: usize,
+    allow_quality_gate_failure: bool,
+}
+
+impl EvalRunConfig {
+    fn from_args(args: &EvalArgs) -> Self {
+        let engine_config = args.engine_config();
+        Self {
+            suite_dir: args.suite_dir.display().to_string(),
+            enable_exact_text_pass: engine_config.enable_exact_text_pass,
+            enable_syllable_match_pass: engine_config.enable_syllable_match_pass,
+            apply_threshold: engine_config.apply_threshold,
+            max_window_tokens: engine_config.max_window_tokens,
+            allow_quality_gate_failure: args.allow_quality_gate_failure,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct EvalCase {
     audio_id: String,
@@ -192,7 +216,8 @@ fn run_single_eval(args: &EvalArgs, store: &CorrectionPairStore, cases: &[EvalCa
     let results = evaluate_cases(store, cases, args.engine_config());
     print_report(&results);
     if let Some(output_dir) = &args.diagnostics_out {
-        let path = write_diagnostics(&results, &output_dir)?;
+        let run_config = EvalRunConfig::from_args(args);
+        let path = write_diagnostics(&results, &output_dir, &run_config)?;
         eprintln!("ASR eval diagnostics written: {}", path.display());
     }
     let metrics = compute_metrics(&results);
@@ -601,11 +626,15 @@ fn print_sweep_report(rows: &[SweepRow]) {
     }
 }
 
-fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBuf> {
+fn write_diagnostics(
+    results: &[CaseResult],
+    output_dir: &Path,
+    run_config: &EvalRunConfig,
+) -> Result<PathBuf> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("创建诊断目录失败: {}", output_dir.display()))?;
     let path = output_dir.join(DIAGNOSTICS_FILE_NAME);
-    let payload = EvalDiagnosticsPayload::from_results(results);
+    let payload = EvalDiagnosticsPayload::from_results(results, run_config);
     let content = serde_json::to_string_pretty(&payload)?;
     fs::write(&path, content).with_context(|| format!("写入诊断文件失败: {}", path.display()))?;
     Ok(path)
@@ -879,17 +908,19 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 #[derive(Debug, Serialize)]
 struct EvalDiagnosticsPayload {
     schema_version: u8,
+    eval_config: EvalRunConfig,
     metrics: EvalMetrics,
     quality_gate: QualityGateSummary,
     cases: Vec<EvalCaseDiagnostics>,
 }
 
 impl EvalDiagnosticsPayload {
-    fn from_results(results: &[CaseResult]) -> Self {
+    fn from_results(results: &[CaseResult], run_config: &EvalRunConfig) -> Self {
         let metrics = compute_metrics(results);
         let quality_gate = evaluate_quality_gates(&metrics);
         Self {
-            schema_version: 3,
+            schema_version: 4,
+            eval_config: run_config.clone(),
             metrics,
             quality_gate,
             cases: results
@@ -1349,12 +1380,14 @@ mod tests {
         assert!(conversion.diagnostics.candidates.len() > MAX_DIAGNOSTIC_CANDIDATES);
         result.diagnostics = conversion.diagnostics;
 
-        let path = write_diagnostics(&[result], temp.path()).expect("write diagnostics");
+        let run_config = default_run_config();
+        let path =
+            write_diagnostics(&[result], temp.path(), &run_config).expect("write diagnostics");
         let payload: Value =
             serde_json::from_str(&fs::read_to_string(path).expect("read diagnostics"))
                 .expect("parse diagnostics");
 
-        assert_eq!(payload["schema_version"], 3);
+        assert_eq!(payload["schema_version"], 4);
         let case = &payload["cases"][0];
         assert_eq!(
             case["candidates"].as_array().expect("candidates").len(),
@@ -1394,12 +1427,14 @@ mod tests {
         exact_case.diagnostics.applied = exact_case.diagnostics.candidates.clone();
         exact_case.applied_count = exact_case.diagnostics.applied.len();
 
-        let path = write_diagnostics(&[exact_case], temp.path()).expect("write diagnostics");
+        let run_config = default_run_config();
+        let path =
+            write_diagnostics(&[exact_case], temp.path(), &run_config).expect("write diagnostics");
         let payload: Value =
             serde_json::from_str(&fs::read_to_string(path).expect("read diagnostics"))
                 .expect("parse diagnostics");
 
-        assert_eq!(payload["schema_version"], 3);
+        assert_eq!(payload["schema_version"], 4);
         assert_eq!(payload["metrics"]["total"], 1);
         assert_eq!(payload["metrics"]["passed"], 1);
         assert_eq!(payload["metrics"]["correction_pair_hit_rate"], 1.0);
@@ -1410,6 +1445,41 @@ mod tests {
             .as_array()
             .expect("quality gate failures")
             .is_empty());
+    }
+
+    #[test]
+    fn diagnostics_export_includes_effective_eval_config() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let args = parse_args_from([
+            "--suite".to_string(),
+            "tests/custom_eval".to_string(),
+            "--disable-syllable-match-pass".to_string(),
+            "--allow-quality-gate-failure".to_string(),
+            "--apply-threshold".to_string(),
+            "0.75".to_string(),
+            "--max-window-tokens".to_string(),
+            "3".to_string(),
+        ])
+        .expect("parse args");
+        let run_config = EvalRunConfig::from_args(&args);
+
+        let path = write_diagnostics(
+            &[case_result_with_counts(CandidateDecisionCounts::default())],
+            temp.path(),
+            &run_config,
+        )
+        .expect("write diagnostics");
+        let payload: Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read diagnostics"))
+                .expect("parse diagnostics");
+
+        assert_eq!(payload["schema_version"], 4);
+        assert_eq!(payload["eval_config"]["suite_dir"], "tests/custom_eval");
+        assert_eq!(payload["eval_config"]["enable_exact_text_pass"], true);
+        assert_eq!(payload["eval_config"]["enable_syllable_match_pass"], false);
+        assert_eq!(payload["eval_config"]["apply_threshold"], 0.75);
+        assert_eq!(payload["eval_config"]["max_window_tokens"], 3);
+        assert_eq!(payload["eval_config"]["allow_quality_gate_failure"], true);
     }
 
     fn case_result_with_counts(decision_counts: CandidateDecisionCounts) -> CaseResult {
@@ -1431,6 +1501,20 @@ mod tests {
             local_latency_ms: 0.0,
             diagnostics: ConversionDiagnostics::default(),
         }
+    }
+
+    fn default_run_config() -> EvalRunConfig {
+        EvalRunConfig::from_args(&EvalArgs {
+            suite_dir: PathBuf::from("tests/asr_eval"),
+            diagnostics_out: None,
+            disable_exact_text_pass: false,
+            disable_syllable_match_pass: false,
+            allow_quality_gate_failure: false,
+            apply_threshold: None,
+            max_window_tokens: None,
+            sweep_thresholds: Vec::new(),
+            sweep_window_tokens: Vec::new(),
+        })
     }
 
     fn candidate_with_match_kind(match_kind: MatchKind, applied: bool) -> ConversionCandidate {

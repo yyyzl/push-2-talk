@@ -167,7 +167,7 @@ flowchart LR
      "diagnostics": { /* 各 Pass 输出，运行时填充 */ }
    }
    ```
-5. **诊断落盘**：每次实际识别都落盘到 `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\` JSON，每个 Pass 的输入/输出/命中/耗时；payload 必须脱敏并限制长度；个性化运行时文件使用 `personalization-<timestamp>-<uuid>.json`，并按天最多保留 200 个个性化诊断文件；eval diagnostics 使用 schema v3，包含顶层 metrics、quality_gate 和 bounded per-case 明细
+5. **诊断落盘**：每次实际识别都落盘到 `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\` JSON，每个 Pass 的输入/输出/命中/耗时；payload 必须脱敏并限制长度；个性化运行时文件使用 `personalization-<timestamp>-<uuid>.json`，并按天最多保留 200 个个性化诊断文件；eval diagnostics 使用 schema v4，包含顶层 eval_config、metrics、quality_gate 和 bounded per-case 明细
 6. **eval runner**：`cargo run --bin eval_asr -- --suite tests/asr_eval/` 一键跑全集
 7. **调参 sweep**：`cargo run --bin eval_asr -- --sweep-thresholds 0.70,0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure` 一次输出阈值/窗口对比表
 

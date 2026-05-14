@@ -353,7 +353,20 @@ struct PassSummaryCounts {
 
 fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary;
 
-fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBuf>;
+struct EvalRunConfig {
+    suite_dir: String,
+    enable_exact_text_pass: bool,
+    enable_syllable_match_pass: bool,
+    apply_threshold: f32,
+    max_window_tokens: usize,
+    allow_quality_gate_failure: bool,
+}
+
+fn write_diagnostics(
+    results: &[CaseResult],
+    output_dir: &Path,
+    run_config: &EvalRunConfig,
+) -> Result<PathBuf>;
 ```
 
 ### 3. Contracts
@@ -388,7 +401,8 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Eval tuning flags must not change production defaults exposed through `PersonalizationEngine::new(store)`.
 - `--diagnostics-out <dir>` is optional. When set, eval must create `<dir>/asr_eval_diagnostics.json` after printing the report.
 - Diagnostics payload must be bounded:
-  - include `schema_version` (`3` after top-level metrics and quality gate export),
+  - include `schema_version` (`4` after effective eval config export),
+  - include top-level `eval_config` with suite path, effective apply threshold, max window tokens, pass enabled flags, and allow-failure flag,
   - include top-level `metrics` with the same aggregate rates/counts as the Markdown report,
   - include top-level `quality_gate` with `passed` and `failures`,
   - include per-case `audio_id`, provider, category, pass/fail, raw/actual/expected text, local latency, candidate count, applied count, candidates, and applied candidates,
@@ -436,6 +450,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Unit test for bounded Unicode-safe string truncation.
 - Unit test for bounded diagnostics export and candidate-list capping.
 - Unit test for diagnostics export schema version and `pass_summaries`.
+- Unit test for diagnostics export effective eval config.
 - Run `cargo run --bin eval_asr --no-default-features` after report-format changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.88 --max-window-tokens 5` after eval tuning flag changes.
 - Run `cargo run --bin eval_asr --no-default-features -- --sweep-thresholds 0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure` after sweep-format changes.

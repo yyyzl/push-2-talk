@@ -91,6 +91,6 @@
 - Sample sweep: threshold `0.88` passes for window `5`; window `3` drops to 24/26 because `克劳德 code` needs a 4-token CJK+ASCII window. Threshold `0.99` drops to 16/26 with 13 below-threshold candidates at window `5`, useful for inspecting conservative cutoff behavior.
 - Ablation command: `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure`.
 - With syllable matching disabled, the sample run passes 16/26 cases with 9 exact-text applications only; the remaining 10 fixes come from English phonetic, Chinese fuzzy-pinyin, and alias paths.
-- Diagnostics export schema v3 includes top-level metrics and quality gate status in addition to bounded per-case details and pass summaries.
+- Diagnostics export schema v4 includes effective eval config, top-level metrics, and quality gate status in addition to bounded per-case details and pass summaries.
 - Mixed-language correction pairs do not participate in pure-ASCII English phonetic lookup or pure-Chinese fuzzy-pinyin lookup; this prevents an `欧喷 ai -> OpenAI` pair from rewriting unrelated `ai` or `欧盆` spans.
 - Latency metrics are from a local sample run and cover only `PersonalizationEngine::convert`, not ASR provider time or LLM processing.
