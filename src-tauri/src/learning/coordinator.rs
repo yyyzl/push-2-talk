@@ -14,7 +14,7 @@ use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
 use crate::config::{AppConfig, LearningConfig};
-use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs};
+use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs, DiffResult};
 use crate::learning::llm_judge::LlmJudge;
 use crate::learning::validator::is_asr_text_present;
 
@@ -375,17 +375,14 @@ pub fn start_learning_observation(
             }
 
             // 创建建议（使用规范化后的词汇，确保与词库比对一致）
-            let suggestion_id = uuid::Uuid::new_v4().to_string();
-            let suggestion = LearningSuggestion {
-                id: suggestion_id,
-                word: normalized_word.clone(),
-                original: diff.original_segment.clone(),
-                corrected: diff.corrected_segment.clone(),
-                context: diff.context.clone(),
-                category: result.category,
-                reason: result.reason,
-                already_in_dictionary: routing.already_in_dictionary,
-            };
+            let suggestion = build_learning_suggestion(
+                normalized_word.clone(),
+                &diff,
+                &extended_context,
+                result.category,
+                result.reason,
+                routing,
+            );
 
             tracing::info!(
                 "Learning [{}]: 发送学习建议到前端 - 词汇: \"{}\", 分类: \"{}\", 原因: \"{}\"",
@@ -439,6 +436,26 @@ fn has_correction_pair_payload(original: &str, corrected: &str) -> bool {
         && !corrected.is_empty()
         && crate::personalization::phonetic_keys::normalize_surface(original)
             != crate::personalization::phonetic_keys::normalize_surface(corrected)
+}
+
+fn build_learning_suggestion(
+    normalized_word: String,
+    diff: &DiffResult,
+    extended_context: &str,
+    category: String,
+    reason: String,
+    routing: LearningSuggestionRouting,
+) -> LearningSuggestion {
+    LearningSuggestion {
+        id: Uuid::new_v4().to_string(),
+        word: normalized_word,
+        original: diff.original_segment.clone(),
+        corrected: diff.corrected_segment.clone(),
+        context: extended_context.to_string(),
+        category,
+        reason,
+        already_in_dictionary: routing.already_in_dictionary,
+    }
 }
 
 /// 观察修正文本
@@ -905,5 +922,36 @@ mod tests {
 
         assert!(routing.should_emit);
         assert!(!routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_uses_extended_context_for_persistence() {
+        let diff = crate::learning::diff_analyzer::DiffResult {
+            original_segment: "cloud code".to_string(),
+            corrected_segment: "Claude Code".to_string(),
+            context: "短上下文 cloud code".to_string(),
+            orig_start: 0,
+            orig_end: 10,
+            curr_start: 0,
+            curr_end: 11,
+        };
+        let routing = LearningSuggestionRouting {
+            should_emit: true,
+            already_in_dictionary: false,
+        };
+
+        let suggestion = build_learning_suggestion(
+            "Claude Code".to_string(),
+            &diff,
+            "在 JetBrains 项目里保存 Claude Code 的纠错上下文",
+            "proper_noun".to_string(),
+            "技术产品名".to_string(),
+            routing,
+        );
+
+        assert_eq!(
+            suggestion.context,
+            "在 JetBrains 项目里保存 Claude Code 的纠错上下文"
+        );
     }
 }

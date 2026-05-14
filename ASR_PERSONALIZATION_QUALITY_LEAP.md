@@ -216,7 +216,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
 2. **存储落地顺序**：
    - MVP：先用 `%APPDATA%\PushToTalk\personalization\correction_pairs.json` 旁路存储，降低数据库迁移风险；写入必须走同目录 `.tmp` + `.bak` 原子替换
    - 同一 `original_text` 被用户再次接受为不同 `corrected_text` 时，必须刷新 pair id 与派生 key，并清理旧目标生成的跨语言 alias，避免旧 alias 指向新目标
-   - 接受学习建议时把前端已有的短上下文 `context` 作为 `surrounding_context` 写入 pair；后端必须 trim + 字符数上限裁剪，避免把输入框历史或长文本无界落盘
+   - 接受学习建议时把前端已有的短上下文 `context` 作为 `surrounding_context` 写入 pair；后端必须 trim + 字符数上限裁剪，避免把输入框历史或长文本无界落盘；阶段性实现里，`context` 使用学习 LLM 判断时同一段 bounded extended context，而不是字符级 diff 的短上下文，以便后续 context rank 能复用技术词重合信号
    - corrected text 可对小型保守产品表生成跨语言 alias；例如 `OpenAI` 生成 `oupenai` / `oupen|ai`，让一次 `open ai -> OpenAI` 学习覆盖 `欧盆 ai`
    - 稳定后：引入 SQLite，把 `correction_pairs`、用户词分类、诊断索引统一治理
    - 迁移原则：现有 `AppConfig.dictionary: Vec<String>` 暂不删除，先让 TNL/ASR 继续消费现有词典，CorrectionPairStore 作为新增个性化层

@@ -201,6 +201,7 @@ interface VocabularyLearningSuggestion {
 - Missing optional fields must preserve legacy dictionary-only behavior.
 - If `original` and `corrected` are both present, non-empty, and not the same after surface normalization, the backend must persist a local personalization correction pair.
 - Accepted learning suggestions should pass the local suggestion `context` through to the correction pair as `surrounding_context`; backend persistence must trim and cap this field before writing JSON.
+- `context` should be the same bounded extended context used for the LLM learning judgment, not the shorter character-level diff context, so downstream personalization ranking can reuse the surrounding technical terms that justified the suggestion.
 - If the suggested `word` already exists in the dictionary but `original`/`corrected` form a valid correction-pair payload, the backend should still emit a learning suggestion with `already_in_dictionary = true` so the user can save the local personalization correction pair.
 - A user-accepted correction pair is considered confirmed enough to be used by the local personalization decoder on the next dictation.
 - Correction pairs are local app data under the PushToTalk config directory. Do not emit them through frontend events unless a UI explicitly needs them.
@@ -216,6 +217,7 @@ interface VocabularyLearningSuggestion {
 | `Claude Code` already exists in the dictionary, and learning observes `cloud code -> Claude Code` | Emit a correction-focused suggestion with `already_in_dictionary = true`; accepting it writes the correction pair while dictionary upsert remains idempotent. |
 | `Claude Code` already exists in the dictionary, and observed original/corrected normalize to the same text | Skip the duplicate suggestion. |
 | Learning Toast accepts a suggestion with surrounding context | Persist a trimmed, bounded `surrounding_context` on the learned correction pair. |
+| LLM judge sees extended context around `cloud code -> Claude Code` | Emit that same bounded extended context in `suggestion.context`; do not fall back to the short diff context. |
 | Optional fields are empty or normalize to the same text | Add dictionary entry; skip correction-pair write. |
 | Correction-pair JSON is missing | Create it atomically through the store save path. |
 | Correction-pair JSON is invalid | Return an error for accepted-learning persistence instead of silently overwriting unknown data. |
@@ -233,6 +235,7 @@ interface VocabularyLearningSuggestion {
 - Backend storage test: accepted correction persists, reloads, and retains category/source/confidence.
 - Backend storage test: accepted correction persists a bounded surrounding context.
 - Backend learning-routing test: existing dictionary words still emit when they carry a useful correction-pair payload.
+- Backend learning suggestion test: emitted `context` uses the bounded extended context that was passed to the LLM judge.
 - Backend conversion test: a freshly accepted mixed-language pair is confident enough to apply after reload.
 - Backend storage/conversion test: accepted learning does not overwrite or reformat an existing manual correction pair.
 - Frontend build/type-check must cover the extended Toast `invoke` payload and the `already_in_dictionary` correction-only display state.
