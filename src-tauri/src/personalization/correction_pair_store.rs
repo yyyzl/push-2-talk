@@ -149,7 +149,9 @@ impl CorrectionPair {
     }
 
     pub fn requires_manual_for_auto_apply(&self) -> bool {
-        !self.is_manual() && is_single_common_english_word(&self.original_text)
+        !self.is_manual()
+            && (is_single_common_english_word(&self.original_text)
+                || is_single_chinese_char(&self.original_text))
     }
 }
 
@@ -503,6 +505,23 @@ fn is_single_common_english_word(text: &str) -> bool {
     crate::tnl::is_common_english_word(word) || PERSONALIZATION_RISKY_SINGLE_WORDS.contains(&word)
 }
 
+fn is_single_chinese_char(text: &str) -> bool {
+    let mut chars = text.trim().chars();
+    let Some(ch) = chars.next() else {
+        return false;
+    };
+
+    chars.next().is_none() && is_cjk_char(ch)
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    let code = ch as u32;
+    (0x4E00..=0x9FFF).contains(&code)
+        || (0x3400..=0x4DBF).contains(&code)
+        || (0x20000..=0x2CEAF).contains(&code)
+        || (0xF900..=0xFAFF).contains(&code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +553,18 @@ mod tests {
         assert!(!key.is_empty());
         assert_eq!(store.lookup_by_en_phonetic(key).len(), 1);
         assert_eq!(store.lookup_by_alias_key("kelaode|code").len(), 1);
+    }
+
+    #[test]
+    fn learned_single_chinese_char_requires_manual_auto_apply() {
+        let mut pair = CorrectionPair::new("learned-ma", "麻", "吗");
+        pair.source = "learned".to_string();
+
+        assert!(pair.requires_manual_for_auto_apply());
+
+        pair.source = "manual".to_string();
+
+        assert!(!pair.requires_manual_for_auto_apply());
     }
 
     #[test]

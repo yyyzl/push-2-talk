@@ -61,5 +61,16 @@
     "confidence": 0.98,
     "frequency": 2,
     "alias_keys": []
+  },
+  {
+    "id": "mvp-learned-single-zh-ma",
+    "original_text": "麻",
+    "corrected_text": "吗",
+    "source": "learned",
+    "category": "generic",
+    "confidence": 0.98,
+    "frequency": 1,
+    "accepted_count": 1,
+    "alias_keys": []
   }
 ]

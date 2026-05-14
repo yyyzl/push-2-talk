@@ -557,6 +557,38 @@ mod tests {
     }
 
     #[test]
+    fn learned_single_chinese_char_pair_does_not_auto_apply() {
+        let mut pair = CorrectionPair::new("learned-ma", "麻", "吗");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.98;
+        pair.accepted_count = 1;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+
+        let result = engine.convert("麻烦打开设置");
+
+        assert_eq!(result.text, "麻烦打开设置");
+        assert!(!result.changed);
+        assert!(result
+            .diagnostics
+            .candidates
+            .iter()
+            .all(|candidate| candidate.score < DEFAULT_APPLY_THRESHOLD));
+    }
+
+    #[test]
+    fn manual_single_chinese_char_pair_can_auto_apply() {
+        let mut pair = CorrectionPair::new("manual-ma", "麻", "吗");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+
+        let result = engine.convert("麻烦打开设置");
+
+        assert_eq!(result.text, "吗烦打开设置");
+        assert!(result.changed);
+    }
+
+    #[test]
     fn learned_multi_word_pair_with_common_word_still_auto_applies() {
         let mut pair = CorrectionPair::new("learned-cloud-code", "cloud code", "Claude Code");
         pair.source = "learned".to_string();

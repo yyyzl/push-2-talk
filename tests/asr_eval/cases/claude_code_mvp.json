@@ -75,5 +75,16 @@
     "category": "false_positive_guard",
     "notes": "音节窗口不能跨句读标点把 cloud 和 code 合并成短语",
     "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-single-zh-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "麻烦打开设置",
+    "expected_text": "麻烦打开设置",
+    "user_final_text": "麻烦打开设置",
+    "category": "false_positive_guard",
+    "notes": "learned 中文单字纠错对不应自动应用",
+    "diagnostics": null
   }
 ]

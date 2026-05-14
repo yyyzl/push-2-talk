@@ -606,12 +606,12 @@ fs::rename(&temp_path, path)?;
 
 ---
 
-## Scenario: Learned Single Common English Words Require Manual Confirmation
+## Scenario: Learned Single Common English Words and Single Chinese Characters Require Manual Confirmation
 
 ### 1. Scope / Trigger
 
-- Trigger: any change to personalization correction-pair scoring, common-English-word protection, or automatic exact/phonetic/alias application thresholds.
-- Common English words such as `code`, `open`, `use`, and `server` are high-risk when learned as single-word correction pairs. Personalization may add a small ASR-risk supplement such as `cloud` without changing existing TNL fuzzy behavior.
+- Trigger: any change to personalization correction-pair scoring, common-English-word protection, single-character Chinese protection, or automatic exact/phonetic/alias application thresholds.
+- Common English words such as `code`, `open`, `use`, and `server` are high-risk when learned as single-word correction pairs. Single Chinese characters are also high-risk because they often appear inside longer words. Personalization may add a small ASR-risk supplement such as `cloud` without changing existing TNL fuzzy behavior.
 
 ### 2. Signatures
 
@@ -634,7 +634,8 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 ### 3. Contracts
 
 - A non-manual correction pair whose `original_text` is exactly one common ASCII word must not auto-apply, even when the pair has high confidence.
-- Manual single-word pairs may still auto-apply. Manual source is the explicit user override.
+- A non-manual correction pair whose `original_text` is exactly one CJK character must not auto-apply, even when the pair has high confidence.
+- Manual single-word or single-character pairs may still auto-apply. Manual source is the explicit user override.
 - Accepted-learning updates must not overwrite or reformat an existing manual correction pair for the same original text.
 - Reject feedback from learning suggestions must not lower confidence, increment reject counters, or disable manual correction pairs.
 - Accepted learning feedback for a previously rejected learned pair must re-enable the pair and reset the consecutive reject streak.
@@ -652,6 +653,8 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 | Manual pair `cloud code -> Claude Code`, later accepted learning says `cloud code -> claude code` | Preserve manual casing, id, category, counters, keys, and conversion behavior. |
 | Manual pair `cloud code -> Claude Code`, learning dismiss sends the same original/corrected text | Preserve confidence, reject count, enabled state, and conversion behavior. |
 | Learned pair `cloud code -> Claude Code`, input `我打开 cloud code` | Replace the phrase. |
+| Learned pair `麻 -> 吗`, input `麻烦打开设置` | Keep `麻烦打开设置`; no automatic replacement. |
+| Manual pair `麻 -> 吗`, input `麻烦打开设置` | Replace according to the manual pair. |
 | Learned pair `cloud code -> Claude Code` is disabled by repeated rejects, then accepted again | Restore exact conversion and reset `rejected_count` to 0. |
 | TNL common-word list misses a generally risky token | Add it to the shared TNL list with a regression test. |
 | A token is risky only for learned correction pairs, but valid for existing TNL dictionary correction | Add it to the personalization supplement instead of the TNL list. |
@@ -660,6 +663,8 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 
 - Personalization engine test: learned single common word does not auto-apply.
 - Personalization engine test: manual single common word still auto-applies.
+- Personalization engine/storage test: learned single Chinese character does not auto-apply.
+- Personalization engine test: manual single Chinese character still auto-applies.
 - Personalization storage/engine test: accepted learning does not overwrite or reformat an existing manual pair.
 - Personalization storage/engine test: reject feedback does not weaken an existing manual pair.
 - Personalization storage/engine test: accepted learning clears prior reject streak for a learned pair.
