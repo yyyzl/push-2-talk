@@ -272,7 +272,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
 7. **置信度更新规则**：
    ```
    用户接受 +0.1
-   再次观察到同样修正 +0.05
+   再次观察到同样修正 +0.05（已接入 Learning Observer：若词库已有目标词且本地已存在同一 learned pair，则静默增强 frequency/confidence，不重复弹学习建议）
    手动确认 +0.3
    LLM 仲裁接受 +0.05
    用户撤销 -0.2

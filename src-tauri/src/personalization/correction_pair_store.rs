@@ -9,6 +9,9 @@ use crate::config::AppConfig;
 
 use super::phonetic_keys::{build_key_bundle, normalize_surface};
 
+const ACCEPT_CONFIDENCE_DELTA: f32 = 0.10;
+const ACCEPTED_AUTO_APPLY_CONFIDENCE_FLOOR: f32 = 0.98;
+const OBSERVED_CONFIDENCE_DELTA: f32 = 0.05;
 const REJECT_CONFIDENCE_DELTA: f32 = 0.20;
 const DISABLE_AFTER_REJECTS: u32 = 3;
 const MAX_SURROUNDING_CONTEXT_CHARS: usize = 256;
@@ -287,7 +290,7 @@ impl CorrectionPairStore {
             existing.surrounding_context = surrounding_context;
             existing.frequency = existing.frequency.saturating_add(1).max(1);
             existing.accepted_count = existing.accepted_count.saturating_add(1);
-            existing.confidence = existing.confidence.max(0.98);
+            existing.confidence = accepted_confidence(existing.confidence);
             existing.enabled = true;
             existing.touch_lifecycle(now);
             return Some(existing.clone());
@@ -298,13 +301,57 @@ impl CorrectionPairStore {
         pair.category = category;
         pair.surrounding_context = surrounding_context;
         pair.frequency = 1;
-        pair.confidence = 0.98;
+        pair.confidence = accepted_confidence(pair.confidence);
         pair.accepted_count = 1;
         pair.enabled = true;
         pair.touch_lifecycle(now);
         pair.ensure_keys();
         self.pairs.push(pair.clone());
         Some(pair)
+    }
+
+    pub fn record_observed_correction_json(
+        path: impl AsRef<Path>,
+        original_text: &str,
+        corrected_text: &str,
+    ) -> Result<Option<CorrectionPair>> {
+        if !path.as_ref().exists() {
+            return Ok(None);
+        }
+
+        let mut store = Self::load_json(&path)?;
+        let pair = store.record_observed_correction(original_text, corrected_text);
+        if pair.is_some() {
+            store.save_json(path)?;
+        }
+        Ok(pair)
+    }
+
+    pub fn record_observed_correction(
+        &mut self,
+        original_text: &str,
+        corrected_text: &str,
+    ) -> Option<CorrectionPair> {
+        let normalized_original = normalize_surface(original_text);
+        let normalized_corrected = normalize_surface(corrected_text);
+        if normalized_original.is_empty()
+            || normalized_corrected.is_empty()
+            || normalized_original == normalized_corrected
+        {
+            return None;
+        }
+
+        let pair = self.pairs.iter_mut().find(|pair| {
+            pair.enabled
+                && !pair.is_manual()
+                && normalize_surface(&pair.original_text) == normalized_original
+                && normalize_surface(&pair.corrected_text) == normalized_corrected
+        })?;
+
+        pair.frequency = pair.frequency.saturating_add(1).max(1);
+        pair.confidence = increase_confidence(pair.confidence, OBSERVED_CONFIDENCE_DELTA);
+        pair.touch_lifecycle(current_unix_millis());
+        Some(pair.clone())
     }
 
     pub fn record_rejected_correction_json(
@@ -346,7 +393,7 @@ impl CorrectionPairStore {
         })?;
 
         pair.rejected_count = pair.rejected_count.saturating_add(1);
-        pair.confidence = (pair.confidence - REJECT_CONFIDENCE_DELTA).max(0.0);
+        pair.confidence = decrease_confidence(pair.confidence, REJECT_CONFIDENCE_DELTA);
         if pair.rejected_count >= DISABLE_AFTER_REJECTS {
             pair.enabled = false;
         }
@@ -469,6 +516,18 @@ pub fn record_rejected_correction_pair(
     CorrectionPairStore::record_rejected_correction_json(path, original_text, corrected_text)
 }
 
+pub fn record_observed_correction_pair(
+    original_text: Option<&str>,
+    corrected_text: Option<&str>,
+) -> Result<Option<CorrectionPair>> {
+    let (Some(original_text), Some(corrected_text)) = (original_text, corrected_text) else {
+        return Ok(None);
+    };
+
+    let path = default_correction_pairs_path()?;
+    CorrectionPairStore::record_observed_correction_json(path, original_text, corrected_text)
+}
+
 fn push_unique(values: &mut Vec<String>, value: String) {
     if value.is_empty() || values.iter().any(|existing| existing == &value) {
         return;
@@ -533,6 +592,19 @@ fn bounded_optional_text(value: Option<&str>) -> Option<String> {
     }
 
     Some(value.chars().take(MAX_SURROUNDING_CONTEXT_CHARS).collect())
+}
+
+fn accepted_confidence(confidence: f32) -> f32 {
+    increase_confidence(confidence, ACCEPT_CONFIDENCE_DELTA)
+        .max(ACCEPTED_AUTO_APPLY_CONFIDENCE_FLOOR)
+}
+
+fn increase_confidence(confidence: f32, delta: f32) -> f32 {
+    (confidence + delta).clamp(0.0, 1.0)
+}
+
+fn decrease_confidence(confidence: f32, delta: f32) -> f32 {
+    (confidence - delta).clamp(0.0, 1.0)
 }
 
 fn is_valid_learned_correction_pair(original_text: &str, corrected_text: &str) -> bool {
@@ -747,6 +819,85 @@ mod tests {
         assert_eq!(persisted.created_at, rejected.created_at);
         assert_eq!(persisted.updated_at, rejected.updated_at);
         assert_eq!(persisted.last_seen_at, rejected.last_seen_at);
+    }
+
+    #[test]
+    fn observed_correction_pair_strengthens_existing_learned_pair() {
+        let mut pair = CorrectionPair::new("learned-claude", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.90;
+        pair.frequency = 2;
+        pair.accepted_count = 1;
+        let mut store = CorrectionPairStore::new(vec![pair]);
+
+        let observed = store
+            .record_observed_correction("Cloud Code", "Claude Code")
+            .expect("existing learned pair should be observed");
+
+        assert_eq!(observed.frequency, 3);
+        assert_eq!(observed.accepted_count, 1);
+        assert_eq!(observed.rejected_count, 0);
+        assert!((observed.confidence - 0.95).abs() < f32::EPSILON);
+        assert!(observed.updated_at.is_some());
+        assert!(observed.last_seen_at.is_some());
+    }
+
+    #[test]
+    fn observed_correction_pair_persists_feedback_to_json() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "cloud code",
+            "Claude Code",
+            Some("proper_noun"),
+            None,
+        )
+        .expect("save accepted pair");
+
+        let observed = CorrectionPairStore::record_observed_correction_json(
+            &path,
+            "Cloud Code",
+            "Claude Code",
+        )
+        .expect("record observed correction")
+        .expect("existing pair should be observed");
+
+        assert_eq!(observed.frequency, 2);
+        assert_eq!(observed.accepted_count, 1);
+        assert!(observed.confidence > ACCEPTED_AUTO_APPLY_CONFIDENCE_FLOOR);
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let persisted = store.lookup_by_text("cloud code")[0];
+        assert_eq!(persisted.frequency, 2);
+        assert_eq!(persisted.accepted_count, 1);
+        assert_eq!(persisted.confidence, observed.confidence);
+    }
+
+    #[test]
+    fn observed_correction_pair_does_not_mutate_manual_or_disabled_pairs() {
+        let mut manual_pair = CorrectionPair::new("manual-claude", "cloud code", "Claude Code");
+        manual_pair.source = "manual".to_string();
+        manual_pair.confidence = 1.0;
+
+        let mut disabled_pair = CorrectionPair::new("learned-copilot", "co pilot", "Copilot");
+        disabled_pair.source = "learned".to_string();
+        disabled_pair.enabled = false;
+
+        let mut store = CorrectionPairStore::new(vec![manual_pair, disabled_pair]);
+
+        assert!(store
+            .record_observed_correction("cloud code", "Claude Code")
+            .is_none());
+        assert!(store
+            .record_observed_correction("co pilot", "Copilot")
+            .is_none());
+
+        let manual = store.lookup_by_text("cloud code")[0];
+        assert_eq!(manual.frequency, 1);
+        assert_eq!(manual.confidence, 1.0);
+        assert!(store.lookup_by_text("co pilot").is_empty());
     }
 
     #[test]

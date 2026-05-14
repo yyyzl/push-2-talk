@@ -358,6 +358,14 @@ pub fn start_learning_observation(
                 &diff.corrected_segment,
                 &dictionary_word_set,
             );
+            if routing.already_in_dictionary
+                && record_existing_correction_observation(
+                    &diff.original_segment,
+                    &diff.corrected_segment,
+                )
+            {
+                continue;
+            }
             if !routing.should_emit {
                 tracing::info!(
                     "Learning [{}]: 词汇 \"{}\" 已存在于词库，跳过通知",
@@ -455,6 +463,27 @@ fn build_learning_suggestion(
         category,
         reason,
         already_in_dictionary: routing.already_in_dictionary,
+    }
+}
+
+fn record_existing_correction_observation(original: &str, corrected: &str) -> bool {
+    match crate::personalization::record_observed_correction_pair(Some(original), Some(corrected)) {
+        Ok(Some(pair)) => {
+            tracing::info!(
+                "Learning: 已记录个性化纠错对再次观察: {} → {} (id: {}, confidence: {:.2}, frequency: {})",
+                pair.original_text,
+                pair.corrected_text,
+                pair.id,
+                pair.confidence,
+                pair.frequency
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("Learning: 记录个性化纠错对再次观察失败: {}", e);
+            false
+        }
     }
 }
 

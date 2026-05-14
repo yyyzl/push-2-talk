@@ -807,6 +807,85 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32;
 
 ---
 
+## Scenario: Re-Observed Learned Correction Pairs Get Lightweight Positive Feedback
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `CorrectionPairStore::record_observed_correction`, learning observation routing, correction-pair feedback persistence, or repeated learning suggestion emission.
+- Re-observation means the learning observer has again seen the same `original -> corrected` edit for an already saved learned pair.
+
+### 2. Signatures
+
+```rust
+impl CorrectionPairStore {
+    pub fn record_observed_correction_json(...) -> Result<Option<CorrectionPair>>;
+    pub fn record_observed_correction(
+        &mut self,
+        original_text: &str,
+        corrected_text: &str,
+    ) -> Option<CorrectionPair>;
+}
+
+pub fn record_observed_correction_pair(
+    original_text: Option<&str>,
+    corrected_text: Option<&str>,
+) -> Result<Option<CorrectionPair>>;
+```
+
+### 3. Contracts
+
+- Re-observation must update only an existing enabled non-manual pair whose normalized `original_text` and `corrected_text` match the observed edit.
+- Re-observation must not create a new pair.
+- Re-observation must increment `frequency`, increase confidence by `0.05` up to `1.0`, and refresh `updated_at` / `last_seen_at`.
+- Re-observation must not increment `accepted_count`; it is weaker than explicit user acceptance.
+- Re-observation must not mutate manual pairs.
+- Re-observation must not re-enable disabled learned pairs; only explicit acceptance can clear a disabled/reject streak.
+- In the learning observer, if the target word already exists in the dictionary and the same correction pair is re-observed, record feedback and skip emitting a duplicate learning Toast.
+- If feedback persistence fails, log a warning and continue with the normal suggestion flow.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Existing learned pair `cloud code -> Claude Code`, observed again | Increment `frequency`, add `0.05` confidence, persist timestamps. |
+| No matching pair exists | Return `None`; do not create JSON content. |
+| Matching pair is manual | Return `None`; preserve manual counters and confidence. |
+| Matching learned pair is disabled | Return `None`; do not re-enable it. |
+| JSON file is missing | Return `Ok(None)`. |
+| JSON file is invalid | Return an error; caller logs and may still emit a suggestion. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a repeated `cloud code -> Claude Code` edit strengthens the existing learned pair and does not show another Toast.
+- Base: first-time useful correction still emits the existing learning suggestion.
+- Bad: observing a previously rejected/disabled pair silently re-enables it without explicit user acceptance.
+
+### 6. Tests Required
+
+- Store test: re-observation strengthens an enabled learned pair without changing `accepted_count`.
+- Store test: JSON re-observation persists `frequency`, confidence, and lifecycle timestamps.
+- Store test: re-observation ignores manual and disabled pairs.
+- Learning routing tests should continue to prove first-time existing-dictionary corrections still emit when no pair is saved yet.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Wrong: creates or re-enables pairs from passive observation.
+store.upsert_accepted_correction(original, corrected, category, context);
+```
+
+#### Correct
+
+```rust
+if let Ok(Some(pair)) = record_observed_correction_pair(Some(original), Some(corrected)) {
+    tracing::info!("observed existing pair {}", pair.id);
+}
+```
+
+---
+
 ## Scenario: Personalization Candidate Conflicts Use Frequency-Weighted Ranking
 
 ### 1. Scope / Trigger
