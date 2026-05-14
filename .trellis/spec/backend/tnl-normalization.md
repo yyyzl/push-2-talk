@@ -459,6 +459,80 @@ fn write_diagnostics(
 
 ---
 
+## Scenario: LLM Candidate Arbitration Applies Non-Overlapping Spans Only
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `LlmPostProcessor::apply_candidate_arbitration_response`, TNL candidate IDs, or future `LlmArbiterPass` replacement application.
+- LLM decisions are advisory. Local code remains responsible for safe span selection before mutating text.
+
+### 2. Signatures
+
+```rust
+impl LlmPostProcessor {
+    fn apply_candidate_arbitration_response(
+        text: &str,
+        diagnostics: TnlDiagnostics,
+        response: &str,
+        elapsed_ms: u64,
+    ) -> Result<TnlCandidateArbitrationResult>;
+}
+```
+
+### 3. Contracts
+
+- Parse LLM decisions into candidate-level `AppliedLlm` / `RejectedLlm` decisions.
+- After parsing all `apply` decisions, run a local non-overlap selector before editing text.
+- Prefer longer accepted spans first; for equal span length, prefer higher candidate `score`; then earlier start offset.
+- Any accepted candidate that overlaps an already-selected accepted candidate must be downgraded to `RejectedLlm` and record `llm_overlap_rejected` evidence.
+- `TnlArbitrationSummary.applied_count` must count only candidates actually applied to text.
+- `TnlArbitrationSummary.rejected_count` must include LLM rejections, missing decisions, and local overlap rejections.
+- Replacement must be applied from right to left after non-overlap selection so byte offsets remain valid.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| LLM accepts `cloud code -> Claude Code` and overlapping `cloud -> Claude` | Apply only the longer phrase; reject the shorter candidate with `llm_overlap_rejected`. |
+| LLM accepts two non-overlapping candidates | Apply both from right to left. |
+| LLM omits a pending candidate decision | Mark that candidate `RejectedLlm` with `llm_missing_decision`. |
+| More than `MAX_ARBITRATION_CANDIDATES` pending candidates exist | Extra candidates stay `SkippedLimit`; they are not applied even if response mentions them. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `cloud code` becomes exactly `Claude Code` when both phrase and sub-token candidates are accepted.
+- Base: a single accepted candidate still updates text and diagnostics.
+- Bad: applying overlapping accepted candidates produces corrupted text such as `Claudee Code`.
+
+### 6. Tests Required
+
+- LLM arbitration test: single accepted candidate updates text and marks `AppliedLlm`.
+- LLM arbitration test: missing decision marks `RejectedLlm`.
+- LLM arbitration test: overlapping accepted candidates keep only the longest/highest-ranked non-overlapping span and count the loser as rejected.
+- Run the broader `llm_post_processor` tests after changing arbitration selection.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+for candidate in accepted {
+    output.replace_range(candidate.start..candidate.end, &candidate.target);
+}
+```
+
+#### Correct
+
+```rust
+let accepted = select_non_overlapping_accepted_candidates(diagnostics, accepted_indices);
+// Helper returns accepted candidates sorted from right to left.
+for candidate in accepted {
+    output.replace_range(candidate.start..candidate.end, &candidate.target);
+}
+```
+
+---
+
 ## Scenario: Runtime Personalization Applies Before Downstream LLM Work
 
 ### 1. Scope / Trigger
