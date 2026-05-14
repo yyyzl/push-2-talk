@@ -176,6 +176,7 @@ flowchart LR
 ```
 final_accuracy            最终文本完全匹配率
 correction_pair_hit_rate  纠错对命中率
+exact_text_hit_rate       字面纠错对覆盖率
 syllable_match_hit_rate   音节格命中率
 false_replacement_rate    误替换率（必须监控防退化）
 llm_arbiter_trigger_rate  LLM 仲裁触发率

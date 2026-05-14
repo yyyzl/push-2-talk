@@ -142,6 +142,8 @@ struct EvalMetrics {
     passed: usize,
     final_accuracy: f32,
     correction_pair_hit_rate: f32,
+    exact_text_hit_rate: f32,
+    syllable_match_hit_rate: f32,
     false_replacement_count: usize,
     false_replacement_rate: f32,
     latency: LatencySummary,
@@ -469,6 +471,14 @@ fn print_report(results: &[CaseResult]) {
         metrics.correction_pair_hit_rate * 100.0
     );
     println!(
+        "- exact_text_hit_rate: {:.2}%",
+        metrics.exact_text_hit_rate * 100.0
+    );
+    println!(
+        "- syllable_match_hit_rate: {:.2}%",
+        metrics.syllable_match_hit_rate * 100.0
+    );
+    println!(
         "- false_replacement_rate: {:.2}%",
         metrics.false_replacement_rate * 100.0
     );
@@ -555,18 +565,20 @@ fn print_report(results: &[CaseResult]) {
 fn print_sweep_report(rows: &[SweepRow]) {
     println!("# ASR Eval Sweep");
     println!();
-    println!("| Threshold | WindowTokens | Passed | Accuracy | HitRate | FalseReplacement | P95(ms) | Applied | BelowThreshold | QualityGate |");
-    println!("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|");
+    println!("| Threshold | WindowTokens | Passed | Accuracy | HitRate | ExactHit | SyllableHit | FalseReplacement | P95(ms) | Applied | BelowThreshold | QualityGate |");
+    println!("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|");
 
     for row in rows {
         println!(
-            "| {:.2} | {} | {}/{} | {:.2}% | {:.2}% | {:.2}% | {:.3} | {} | {} | {} |",
+            "| {:.2} | {} | {}/{} | {:.2}% | {:.2}% | {:.2}% | {:.2}% | {:.2}% | {:.3} | {} | {} | {} |",
             row.apply_threshold,
             row.max_window_tokens,
             row.metrics.passed,
             row.metrics.total,
             row.metrics.final_accuracy * 100.0,
             row.metrics.correction_pair_hit_rate * 100.0,
+            row.metrics.exact_text_hit_rate * 100.0,
+            row.metrics.syllable_match_hit_rate * 100.0,
             row.metrics.false_replacement_rate * 100.0,
             row.metrics.latency.p95_ms,
             row.metrics.decision_counts.applied,
@@ -610,6 +622,20 @@ fn compute_metrics(results: &[CaseResult]) -> EvalMetrics {
             .count(),
         total,
     );
+    let exact_text_hit_rate = ratio(
+        results
+            .iter()
+            .filter(|result| result_has_exact_text_hit(result))
+            .count(),
+        total,
+    );
+    let syllable_match_hit_rate = ratio(
+        results
+            .iter()
+            .filter(|result| result_has_syllable_match_hit(result))
+            .count(),
+        total,
+    );
     let false_replacement_count = results
         .iter()
         .filter(|result| {
@@ -632,6 +658,8 @@ fn compute_metrics(results: &[CaseResult]) -> EvalMetrics {
         passed,
         final_accuracy,
         correction_pair_hit_rate,
+        exact_text_hit_rate,
+        syllable_match_hit_rate,
         false_replacement_count,
         false_replacement_rate,
         latency: summarize_latency_ms(&latencies),
@@ -640,6 +668,22 @@ fn compute_metrics(results: &[CaseResult]) -> EvalMetrics {
         applied_match_counts: summarize_applied_match_kinds(results),
         pass_summary_totals: summarize_pass_summaries(results),
     }
+}
+
+fn result_has_exact_text_hit(result: &CaseResult) -> bool {
+    result
+        .diagnostics
+        .applied
+        .iter()
+        .any(|candidate| candidate.match_kind == MatchKind::ExactText)
+}
+
+fn result_has_syllable_match_hit(result: &CaseResult) -> bool {
+    result
+        .diagnostics
+        .applied
+        .iter()
+        .any(|candidate| candidate.match_kind != MatchKind::ExactText)
 }
 
 fn evaluate_quality_gates(metrics: &EvalMetrics) -> QualityGateSummary {
@@ -1022,6 +1066,34 @@ mod tests {
     }
 
     #[test]
+    fn compute_metrics_reports_pass_hit_rates_by_case() {
+        let mut exact_case = case_result_with_counts(CandidateDecisionCounts::default());
+        exact_case.diagnostics.applied =
+            vec![candidate_with_match_kind(MatchKind::ExactText, true)];
+        exact_case.applied_count = exact_case.diagnostics.applied.len();
+
+        let mut syllable_case = case_result_with_counts(CandidateDecisionCounts::default());
+        syllable_case.diagnostics.applied =
+            vec![candidate_with_match_kind(MatchKind::EnPhonetic, true)];
+        syllable_case.applied_count = syllable_case.diagnostics.applied.len();
+
+        let mut combined_case = case_result_with_counts(CandidateDecisionCounts::default());
+        combined_case.diagnostics.applied = vec![
+            candidate_with_match_kind(MatchKind::ExactText, true),
+            candidate_with_match_kind(MatchKind::Alias, true),
+        ];
+        combined_case.applied_count = combined_case.diagnostics.applied.len();
+
+        let untouched_case = case_result_with_counts(CandidateDecisionCounts::default());
+
+        let metrics = compute_metrics(&[exact_case, syllable_case, combined_case, untouched_case]);
+
+        assert_eq!(metrics.correction_pair_hit_rate, 0.75);
+        assert_eq!(metrics.exact_text_hit_rate, 0.50);
+        assert_eq!(metrics.syllable_match_hit_rate, 0.50);
+    }
+
+    #[test]
     fn summarize_pass_summaries_counts_each_pass_independently() {
         let mut first = case_result_with_counts(CandidateDecisionCounts::default());
         first.diagnostics.pass_summaries = vec![
@@ -1062,6 +1134,8 @@ mod tests {
             passed: 5,
             final_accuracy: 1.0,
             correction_pair_hit_rate: 0.80,
+            exact_text_hit_rate: 0.40,
+            syllable_match_hit_rate: 0.40,
             false_replacement_count: 0,
             false_replacement_rate: 0.0,
             latency: LatencySummary {
@@ -1085,6 +1159,8 @@ mod tests {
             passed: 4,
             final_accuracy: 0.80,
             correction_pair_hit_rate: 0.60,
+            exact_text_hit_rate: 0.20,
+            syllable_match_hit_rate: 0.40,
             false_replacement_count: 1,
             false_replacement_rate: 0.20,
             latency: LatencySummary {

@@ -13,6 +13,8 @@
 |---|---:|
 | final_accuracy | 100.00% |
 | correction_pair_hit_rate | 73.08% |
+| exact_text_hit_rate | 34.62% |
+| syllable_match_hit_rate | 38.46% |
 | false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
 | avg_latency_ms | 0.538 |
@@ -81,6 +83,7 @@
 - The false-positive guards confirm that phrase-level pairs do not generalize to common words such as `cloud`, `open`, `type`, and `wind`, do not merge phrase windows across sentence punctuation, keep learned single Chinese characters below the auto-apply threshold, and prevent mixed pairs from matching only their Chinese head.
 - The TypeScript cases verify that conservative plural-suffix normalization lets `types script` and `types scripts` share the `type script` phonetic key.
 - Match-kind metrics show the current mini eval is covered by exact text, English phonetic, Chinese fuzzy-pinyin, and alias hits. Mixed input coverage now includes corrected-text product aliases such as `open ai -> OpenAI` covering `欧盆 ai` without a duplicate mixed pair.
+- Pass hit-rate metrics separate the fallback exact-text path from the syllable/window second-decoding path at case level, so threshold sweeps can show whether improvements come from P1 or P2 behavior.
 - Pass summary metrics show `exact_text` and `syllable_match` contribution separately; elapsed values are local sample timings and should be compared directionally.
 - Tuning command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.88 --max-window-tokens 5`.
 - Threshold stress command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.99 --allow-quality-gate-failure`.

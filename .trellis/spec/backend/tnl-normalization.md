@@ -359,6 +359,7 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 ### 3. Contracts
 
 - Measure only local conversion time around `PersonalizationEngine::convert`; do not include ASR provider time, audio loading, or LLM calls.
+- Report `correction_pair_hit_rate`, `exact_text_hit_rate`, and `syllable_match_hit_rate`; pass hit rates are case-level rates based on whether at least one applied candidate from that pass exists in the case.
 - Report `avg_latency_ms` and `p95_latency_ms` in the top-level Markdown summary.
 - Report `false_replacement_rate` alongside `false_replacement_count`.
 - Report candidate decision totals: `candidates_total`, `applied_candidates`, `below_threshold_candidates`, `skipped_overlap_candidates`, and `pending_candidates`.
