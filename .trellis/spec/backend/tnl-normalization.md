@@ -121,11 +121,18 @@ impl TnlEngine {
         disfluency_mode: DisfluencyMode,
     ) -> Self;
 }
+
+pub struct TnlConfig {
+    pub enabled: bool,
+    pub disfluency_mode: DisfluencyMode,
+}
 ```
 
 ### 3. Contracts
 
 - `TnlEngine::new(dictionary)` uses `DisfluencyMode::Conservative` by default.
+- Runtime normal dictation and assistant voice input must construct `TnlEngine` with `TnlConfig.disfluency_mode`.
+- Legacy configs without `disfluency_mode` must deserialize as `DisfluencyMode::Conservative`.
 - Disfluency cleaning runs before Unicode normalization, tokenization, technical span detection, spoken-symbol mapping, pinyin, hyphen rewrite, and phonetic dictionary replacement.
 - `DisfluencyMode::Off` must return the input unchanged.
 - Conservative mode may remove only leading/isolated fillers:
@@ -150,13 +157,17 @@ impl TnlEngine {
 | Aggressive, input `嗯嗯嗯，我准备好了` | Return `我准备好了`. |
 | Aggressive, input `我，那个，今天开会` | Return `今天开会`. |
 | TNL with dictionary `Claude`, input `嗯，我最近学习了他们的那个标准产品 cloud` | Return `我最近学习了他们的那个标准产品 Claude`. |
+| TNL with mode `Off`, dictionary `Claude`, same input | Return `嗯，我最近学习了他们的那个标准产品 Claude`. |
+| Config JSON `disfluency_mode: "off"` | Loads as `DisfluencyMode::Off`. |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: the normal dictation path removes obvious sentence-start fillers before technical correction.
 - Base: natural text without leading fillers keeps the previous TNL behavior.
+- Base: users can disable this pass via `TnlConfig.disfluency_mode = Off` without disabling other TNL corrections.
 - Bad: `这个东西很重要` becomes `东西很重要`.
 - Bad: disfluency cleaning runs after phonetic replacement and shifts already-collected offsets.
+- Bad: production paths ignore `TnlConfig.disfluency_mode` and always use the hard-coded default.
 
 ### 6. Tests Required
 
@@ -164,6 +175,8 @@ impl TnlEngine {
 - Disfluency unit tests for Off preserving text.
 - Disfluency unit tests for Aggressive repeated-character and false-start cleanup.
 - TNL engine integration test proving disfluency runs before phonetic dictionary replacement.
+- TNL/config test proving `Off` mode keeps leading fillers while preserving later dictionary correction.
+- Config serde/default tests for legacy and explicit `disfluency_mode`.
 - Run the full TNL test suite, normal pipeline tests, assistant pipeline tests, `cargo check`, and ASR eval after changing this pass.
 
 ### 7. Wrong vs Correct
@@ -198,6 +211,7 @@ let replaced = self.apply_phonetic_replacement(&normalized);
 ```rust
 pub struct TnlConfig {
     pub enabled: bool,
+    pub disfluency_mode: DisfluencyMode,
     pub enable_personalization_exact_text_pass: bool,
     pub enable_personalization_syllable_match_pass: bool,
     pub personalization_max_window_tokens: usize,
@@ -218,6 +232,7 @@ pub fn apply_default_personalization_with_config(
 
 - Legacy configs with only `tnl_config.enabled` must deserialize with safe defaults.
 - Defaults must match `eval_asr` defaults:
+  - `disfluency_mode = Conservative`
   - `enable_personalization_exact_text_pass = true`
   - `enable_personalization_syllable_match_pass = true`
   - `personalization_max_window_tokens = 5`

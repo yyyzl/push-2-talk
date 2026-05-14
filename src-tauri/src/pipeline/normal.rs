@@ -80,7 +80,8 @@ impl NormalPipeline {
             .unwrap_or_default();
         let tnl_enabled = tnl_config.enabled;
         let (text, tnl_changed, tnl_diagnostics) = if tnl_enabled {
-            let engine = TnlEngine::new(dictionary.clone());
+            let engine =
+                TnlEngine::new_with_disfluency_mode(dictionary.clone(), tnl_config.disfluency_mode);
             let tnl_result = engine.normalize(&asr_text);
             if tnl_result.changed {
                 tracing::info!(

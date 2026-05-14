@@ -2984,7 +2984,8 @@ async fn handle_assistant_mode(
         .unwrap_or_default();
     let tnl_enabled = tnl_config.enabled;
     let user_instruction = if tnl_enabled {
-        let engine = tnl::TnlEngine::new(dictionary);
+        let engine =
+            tnl::TnlEngine::new_with_disfluency_mode(dictionary, tnl_config.disfluency_mode);
         let tnl_result = engine.normalize(&asr_text);
         if tnl_result.changed {
             tracing::info!(

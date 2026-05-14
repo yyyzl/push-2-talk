@@ -662,6 +662,9 @@ pub struct TnlConfig {
     /// 是否启用 TNL（默认启用）
     #[serde(default = "default_enable_tnl")]
     pub enabled: bool,
+    /// 口语流畅化清洗模式
+    #[serde(default)]
+    pub disfluency_mode: crate::tnl::DisfluencyMode,
     /// 个性化纠错对精确文本 Pass 开关
     #[serde(default = "default_enable_personalization_exact_text_pass")]
     pub enable_personalization_exact_text_pass: bool,
@@ -705,6 +708,7 @@ impl Default for TnlConfig {
 
         Self {
             enabled: default_enable_tnl(),
+            disfluency_mode: crate::tnl::DisfluencyMode::default(),
             enable_personalization_exact_text_pass,
             enable_personalization_syllable_match_pass,
             personalization_max_window_tokens: default_personalization_max_window_tokens(),
@@ -2039,6 +2043,10 @@ mod tests {
         let cfg = TnlConfig::default();
 
         assert!(cfg.enabled);
+        assert_eq!(
+            cfg.disfluency_mode,
+            crate::tnl::DisfluencyMode::Conservative
+        );
         assert!(cfg.enable_personalization_exact_text_pass);
         assert!(cfg.enable_personalization_syllable_match_pass);
         assert_eq!(cfg.personalization_max_window_tokens, 5);
@@ -2055,10 +2063,31 @@ mod tests {
 
         let cfg: AppConfig = serde_json::from_str(json).expect("旧配置必须能反序列化");
 
+        assert_eq!(
+            cfg.tnl_config.disfluency_mode,
+            crate::tnl::DisfluencyMode::Conservative
+        );
         assert!(cfg.tnl_config.enable_personalization_exact_text_pass);
         assert!(cfg.tnl_config.enable_personalization_syllable_match_pass);
         assert_eq!(cfg.tnl_config.personalization_max_window_tokens, 5);
         assert!((cfg.tnl_config.personalization_apply_threshold - 0.88).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn app_config_loads_explicit_tnl_disfluency_mode() {
+        let json = r#"{
+            "tnl_config": {
+                "enabled": true,
+                "disfluency_mode": "off"
+            }
+        }"#;
+
+        let cfg: AppConfig = serde_json::from_str(json).expect("配置必须能反序列化");
+
+        assert_eq!(
+            cfg.tnl_config.disfluency_mode,
+            crate::tnl::DisfluencyMode::Off
+        );
     }
 
     // ============================================================================

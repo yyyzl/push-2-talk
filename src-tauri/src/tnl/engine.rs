@@ -1398,6 +1398,16 @@ mod tests {
     }
 
     #[test]
+    fn test_disfluency_mode_off_keeps_leading_filler() {
+        let engine =
+            TnlEngine::new_with_disfluency_mode(vec!["Claude".to_string()], DisfluencyMode::Off);
+
+        let result = engine.normalize("嗯，我最近学习了他们的那个标准产品 cloud");
+
+        assert_eq!(result.text, "嗯，我最近学习了他们的那个标准产品 Claude");
+    }
+
+    #[test]
     fn test_normalize_phonetic_combined_with_symbol() {
         // 同时测试口语符号映射和音标替换
         let engine = TnlEngine::new(vec!["OpenClaude".to_string()]);

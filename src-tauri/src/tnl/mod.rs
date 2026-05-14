@@ -18,6 +18,7 @@ mod tech_span;
 mod tokenizer;
 mod types;
 
+pub(crate) use disfluency::DisfluencyMode;
 pub use engine::TnlEngine;
 pub(crate) use fuzzy::is_common_english_word;
 pub(crate) use syllable_lattice::SyllableLattice;
