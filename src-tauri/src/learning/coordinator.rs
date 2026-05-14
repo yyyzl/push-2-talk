@@ -284,6 +284,11 @@ pub fn start_learning_observation(
                 continue;
             }
 
+            if record_existing_correction_reversion(&diff.original_segment, &diff.corrected_segment)
+            {
+                continue;
+            }
+
             tracing::info!(
                 "Learning [{}]: 请求 LLM 判断 - 原文: \"{}\" → 修正: \"{}\"",
                 &observation_id[..8],
@@ -482,6 +487,27 @@ fn record_existing_correction_observation(original: &str, corrected: &str) -> bo
         Ok(None) => false,
         Err(e) => {
             tracing::warn!("Learning: 记录个性化纠错对再次观察失败: {}", e);
+            false
+        }
+    }
+}
+
+fn record_existing_correction_reversion(original: &str, corrected: &str) -> bool {
+    match crate::personalization::record_reverted_correction_pair(Some(original), Some(corrected)) {
+        Ok(Some(pair)) => {
+            tracing::info!(
+                "Learning: 已记录个性化纠错对改回原文: {} → {} (id: {}, confidence: {:.2}, rejected: {})",
+                pair.corrected_text,
+                pair.original_text,
+                pair.id,
+                pair.confidence,
+                pair.rejected_count
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("Learning: 记录个性化纠错对改回原文失败: {}", e);
             false
         }
     }

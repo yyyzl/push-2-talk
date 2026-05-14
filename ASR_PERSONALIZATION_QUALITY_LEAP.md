@@ -276,7 +276,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
    手动确认 +0.3
    LLM 仲裁接受 +0.05
    用户撤销 -0.2
-   用户改回原文 -0.3
+   用户改回原文 -0.3（已接入 Learning Observer：若观察到 learned pair 的反向编辑，则强降权并增加 rejected_count，不生成新的反向 pair）
    LLM 仲裁拒绝 -0.05
    ```
 

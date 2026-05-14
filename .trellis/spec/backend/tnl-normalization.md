@@ -886,6 +886,84 @@ if let Ok(Some(pair)) = record_observed_correction_pair(Some(original), Some(cor
 
 ---
 
+## Scenario: User Reverts Learned Correction Pairs As Strong Negative Feedback
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `CorrectionPairStore::record_reverted_correction`, learning observation routing, or feedback deltas for learned correction pairs.
+- Reversion means the observer sees the reverse edit of an existing learned pair: the inserted/corrected target is changed back to the pair's original ASR text.
+
+### 2. Signatures
+
+```rust
+impl CorrectionPairStore {
+    pub fn record_reverted_correction_json(...) -> Result<Option<CorrectionPair>>;
+    pub fn record_reverted_correction(
+        &mut self,
+        original_text: &str,
+        corrected_text: &str,
+    ) -> Option<CorrectionPair>;
+}
+
+pub fn record_reverted_correction_pair(
+    original_text: Option<&str>,
+    corrected_text: Option<&str>,
+) -> Result<Option<CorrectionPair>>;
+```
+
+### 3. Contracts
+
+- Reversion must match an enabled non-manual pair in reverse: observed `original_text` equals pair `corrected_text`, and observed `corrected_text` equals pair `original_text` after surface normalization.
+- Reversion must not create a new pair.
+- Reversion must decrement confidence by `0.30`, increment `rejected_count`, refresh `updated_at` / `last_seen_at`, and disable the pair after the existing reject streak threshold.
+- Reversion must not mutate manual pairs.
+- Reversion must not re-enable disabled learned pairs.
+- The learning observer should record a successful reversion before calling the LLM judge and should not emit a learning Toast for that diff.
+- If reversion persistence fails, log a warning and continue with the normal learning flow.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Pair `cloud code -> Claude Code`, observed `Claude Code -> cloud code` | Decrease confidence by `0.30`, increment `rejected_count`, persist timestamps. |
+| Matching pair is manual | Return `None`; preserve manual counters and confidence. |
+| Matching learned pair is disabled | Return `None`; do not re-enable it. |
+| No reverse matching pair exists | Return `None`; continue normal learning flow. |
+| JSON file is missing | Return `Ok(None)`. |
+| JSON file is invalid | Return an error; caller logs and may still continue normal learning flow. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a user changes `Claude Code` back to `cloud code`, so the learned `cloud code -> Claude Code` pair is strongly penalized.
+- Base: a normal first-time edit still reaches the LLM learning judge.
+- Bad: a manual correction pair is weakened by passive observation.
+
+### 6. Tests Required
+
+- Store test: reverse edit penalizes an enabled learned pair by `0.30`.
+- Store test: JSON reverse edit persists confidence and reject counters.
+- Store test: reverse edit ignores manual and disabled pairs.
+- Learning routing tests should continue to pass so first-time corrections still emit suggestions.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Wrong: treats a user reverting our correction as a new positive correction.
+store.upsert_accepted_correction("Claude Code", "cloud code", category, context);
+```
+
+#### Correct
+
+```rust
+if let Ok(Some(pair)) = record_reverted_correction_pair(Some("Claude Code"), Some("cloud code")) {
+    tracing::info!("reverted learned pair {}", pair.id);
+}
+```
+
+---
+
 ## Scenario: Personalization Candidate Conflicts Use Frequency-Weighted Ranking
 
 ### 1. Scope / Trigger
