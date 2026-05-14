@@ -123,6 +123,7 @@ pub enum MatchKind {
 - Mixed Chinese + ASCII windows must query only mixed keys and alias keys.
 - A mixed window must not be replaced solely because its ASCII subset matches an English phonetic pair.
 - A mixed correction pair must not be returned by pure-ASCII English phonetic lookup. Its ASCII tail is not enough evidence to rewrite an unrelated ASCII span.
+- A mixed correction pair must not be returned by pure-Chinese fuzzy-pinyin lookup. Its Chinese head is not enough evidence to rewrite an unrelated Chinese span.
 - If a shorter pure-ASCII sub-window matches, replace only that sub-window, preserving the surrounding Chinese context.
 
 ### 4. Validation & Error Matrix
@@ -134,6 +135,7 @@ pub enum MatchKind {
 | Pair has alias `kelaode\|code`, input `我打开 克劳德 code` | Mixed/alias window may replace `克劳德 code` with `Claude Code`. |
 | Input `I use cloud storage` | No replacement from a `cloud code` pair. |
 | Pair `欧喷 ai -> OpenAI`, input `enable ai mode` | Keep `ai`; mixed-language pair must not match the pure ASCII tail by English phonetic key. |
+| Pair `欧喷 ai -> OpenAI`, input `我调用 欧盆 接口` | Keep `欧盆`; mixed-language pair must not match the pure Chinese head by fuzzy-pinyin key. |
 
 ### 5. Good/Base/Bad Cases
 
@@ -148,6 +150,7 @@ pub enum MatchKind {
 - Regression test asserting the full mixed span is not swallowed.
 - False-positive guard for common English words such as `cloud storage`.
 - Regression test: mixed-language pair does not auto-apply to ASCII tail only.
+- Regression test: mixed-language pair does not auto-apply to Chinese head only.
 
 ### 7. Wrong vs Correct
 

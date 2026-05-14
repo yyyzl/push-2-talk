@@ -287,6 +287,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
 - 中文单字 learned pair 默认禁用自动应用，除非来源是 `manual` 显式确认
 - 用户撤销或改回原文后必须降权；连续负反馈后自动禁用该 pair
 - `cloud` 这类常见词只允许在窗口级 key（如 `cloud code`）上自动应用，不允许单词级泛化到任意上下文
+- mixed pair（如 `欧喷 ai -> OpenAI`）必须完整走 mixed/alias key，不能只凭 ASCII 尾词或中文头部单独命中
 
 ### 查询接口（Phase 2 会用）
 

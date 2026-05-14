@@ -3,7 +3,7 @@
 ## Suite
 
 - Suite: `tests/asr_eval`
-- Cases: 25
+- Cases: 26
 - Seed correction pairs: `tests/asr_eval/correction_pairs.json`
 - Scope: Week 1 ASR personalization mini eval vertical slice
 
@@ -12,20 +12,20 @@
 | Metric | Value |
 |---|---:|
 | final_accuracy | 100.00% |
-| correction_pair_hit_rate | 76.00% |
+| correction_pair_hit_rate | 73.08% |
 | false_replacement_rate | 0.00% |
 | false_replacement_count | 0 |
-| avg_latency_ms | 0.628 |
-| p95_latency_ms | 0.976 |
+| avg_latency_ms | 0.430 |
+| p95_latency_ms | 0.774 |
 | quality_gate_passed | true |
-| candidates_total | 23 |
+| candidates_total | 21 |
 | applied_candidates | 19 |
 | below_threshold_candidates | 2 |
-| skipped_overlap_candidates | 2 |
+| skipped_overlap_candidates | 0 |
 | pending_candidates | 0 |
 | exact_text_candidates | 10 |
 | en_phonetic_candidates | 6 |
-| zh_pinyin_fuzzy_candidates | 4 |
+| zh_pinyin_fuzzy_candidates | 2 |
 | mixed_candidates | 1 |
 | alias_candidates | 2 |
 | exact_text_applied | 9 |
@@ -33,16 +33,16 @@
 | zh_pinyin_fuzzy_applied | 1 |
 | mixed_applied | 1 |
 | alias_applied | 2 |
-| exact_text_pass_enabled_cases | 25 |
+| exact_text_pass_enabled_cases | 26 |
 | exact_text_pass_disabled_cases | 0 |
 | exact_text_pass_candidates | 10 |
 | exact_text_pass_applied | 9 |
-| exact_text_pass_elapsed_us | 6303 |
-| syllable_match_pass_enabled_cases | 25 |
+| exact_text_pass_elapsed_us | 4516 |
+| syllable_match_pass_enabled_cases | 26 |
 | syllable_match_pass_disabled_cases | 0 |
-| syllable_match_pass_candidates | 13 |
+| syllable_match_pass_candidates | 11 |
 | syllable_match_pass_applied | 10 |
-| syllable_match_pass_elapsed_us | 351 |
+| syllable_match_pass_elapsed_us | 307 |
 
 ## Cases
 
@@ -72,21 +72,22 @@
 | `mvp-windsurf-004` | `tech_mix` | PASS | 1 | 1 | `wind surf 插件启动了` | `Windsurf 插件启动了` |
 | `mvp-windsurf-005` | `false_positive_guard` | PASS | 0 | 0 | `The wind speed changed` | `The wind speed changed` |
 | `mvp-openai-zh-001` | `tech_mix` | PASS | 1 | 1 | `我调用 欧盆艾 接口` | `我调用 OpenAI 接口` |
-| `mvp-openai-mixed-001` | `tech_mix` | PASS | 2 | 1 | `我调用 欧盆 ai 接口` | `我调用 OpenAI 接口` |
+| `mvp-openai-mixed-001` | `tech_mix` | PASS | 1 | 1 | `我调用 欧盆 ai 接口` | `我调用 OpenAI 接口` |
+| `mvp-openai-mixed-002` | `false_positive_guard` | PASS | 0 | 0 | `我调用 欧盆 接口` | `我调用 欧盆 接口` |
 
 ## Notes
 
 - This is not a full ASR quality baseline yet. It verifies the local personalization decoder MVP over fixed text fixtures.
-- The false-positive guards confirm that phrase-level pairs do not generalize to common words such as `cloud`, `open`, `type`, and `wind`, do not merge phrase windows across sentence punctuation, and keep learned single Chinese characters below the auto-apply threshold.
+- The false-positive guards confirm that phrase-level pairs do not generalize to common words such as `cloud`, `open`, `type`, and `wind`, do not merge phrase windows across sentence punctuation, keep learned single Chinese characters below the auto-apply threshold, and prevent mixed pairs from matching only their Chinese head.
 - The TypeScript cases verify that conservative plural-suffix normalization lets `types script` and `types scripts` share the `type script` phonetic key.
 - Match-kind metrics show the current mini eval is covered by exact text, English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias hits.
 - Pass summary metrics show `exact_text` and `syllable_match` contribution separately; elapsed values are local sample timings and should be compared directionally.
 - Tuning command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.88 --max-window-tokens 5`.
 - Threshold stress command: `cargo run --bin eval_asr --no-default-features -- --apply-threshold 0.99 --allow-quality-gate-failure`.
 - Sweep command: `cargo run --bin eval_asr --no-default-features -- --sweep-thresholds 0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure`.
-- Sample sweep: threshold `0.88` passes for window `5`; window `3` drops to 23/25 because `克劳德 code` needs a 4-token CJK+ASCII window. Threshold `0.99` drops to 15/25 with 14 below-threshold candidates at window `5`, useful for inspecting conservative cutoff behavior.
+- Sample sweep: threshold `0.88` passes for window `5`; window `3` drops to 24/26 because `克劳德 code` needs a 4-token CJK+ASCII window. Threshold `0.99` drops to 16/26 with 12 below-threshold candidates at window `5`, useful for inspecting conservative cutoff behavior.
 - Ablation command: `cargo run --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure`.
-- With syllable matching disabled, the sample run passes 15/25 cases with 9 exact-text applications only; the remaining 10 fixes come from English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias paths.
+- With syllable matching disabled, the sample run passes 16/26 cases with 9 exact-text applications only; the remaining 10 fixes come from English phonetic, Chinese fuzzy-pinyin, mixed-key, and alias paths.
 - Diagnostics export schema v2 includes per-case pass summaries for `exact_text` and `syllable_match`.
-- Mixed-language correction pairs do not participate in pure-ASCII English phonetic lookup; this prevents an `欧喷 ai -> OpenAI` pair from rewriting an unrelated ASCII `ai` span.
+- Mixed-language correction pairs do not participate in pure-ASCII English phonetic lookup or pure-Chinese fuzzy-pinyin lookup; this prevents an `欧喷 ai -> OpenAI` pair from rewriting unrelated `ai` or `欧盆` spans.
 - Latency metrics are from a local sample run and cover only `PersonalizationEngine::convert`, not ASR provider time or LLM processing.

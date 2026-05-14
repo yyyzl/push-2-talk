@@ -185,5 +185,16 @@
     "category": "tech_mix",
     "notes": "OpenAI 中文同音错字 + ASCII 尾词通过 mixed key 命中",
     "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-mixed-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 欧盆 接口",
+    "expected_text": "我调用 欧盆 接口",
+    "user_final_text": "我调用 欧盆 接口",
+    "category": "false_positive_guard",
+    "notes": "mixed pair 不能只凭中文头部 pinyin key 命中",
+    "diagnostics": null
   }
 ]

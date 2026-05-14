@@ -768,6 +768,20 @@ mod tests {
     }
 
     #[test]
+    fn mixed_language_pair_does_not_auto_apply_to_chinese_head_only() {
+        let mut pair = CorrectionPair::new("openai-mixed", "欧喷 ai", "OpenAI");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+
+        let result = engine.convert("我调用 欧盆 接口");
+
+        assert_eq!(result.text, "我调用 欧盆 接口");
+        assert!(!result.changed);
+        assert!(result.diagnostics.applied.is_empty());
+    }
+
+    #[test]
     fn diagnostics_reports_enabled_pass_summaries() {
         let engine = engine();
 
