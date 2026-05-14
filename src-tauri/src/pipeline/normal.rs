@@ -16,7 +16,8 @@ use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::personalization::{
     apply_default_personalization, personalization_candidates_to_tnl_diagnostics,
-    write_runtime_diagnostic, ConversionResult,
+    record_personalization_arbitration_feedback_from_tnl, write_runtime_diagnostic,
+    ConversionResult,
 };
 use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
@@ -115,6 +116,7 @@ impl NormalPipeline {
         )
         .await;
         let candidate_changed = text != pre_arbitration_text;
+        Self::record_personalization_arbitration_feedback(&tnl_diagnostics);
 
         // 4. 可选 LLM 后处理
         let (final_text, original_text, llm_time_ms) = Self::maybe_polish(
@@ -258,6 +260,25 @@ impl NormalPipeline {
                     Some(diagnostics),
                     Some(CANDIDATE_ARBITRATION_TIMEOUT_MS),
                 )
+            }
+        }
+    }
+
+    fn record_personalization_arbitration_feedback(diagnostics: &Option<TnlDiagnostics>) {
+        let Some(diagnostics) = diagnostics else {
+            return;
+        };
+
+        match record_personalization_arbitration_feedback_from_tnl(diagnostics) {
+            Ok(updated_count) if updated_count > 0 => {
+                tracing::info!(
+                    "NormalPipeline: 个性化 LLM 仲裁反馈已写入，更新纠错对: {}",
+                    updated_count
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("NormalPipeline: 写入个性化 LLM 仲裁反馈失败，已忽略: {}", e);
             }
         }
     }

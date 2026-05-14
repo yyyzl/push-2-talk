@@ -614,6 +614,113 @@ maybe_arbitrate_candidates(processor, enabled, text, diagnostics).await;
 
 ---
 
+## Scenario: LLM Arbitration Feeds Back Into Learned Correction Pairs
+
+### 1. Scope / Trigger
+
+- Trigger: any change to personalization `TnlCandidate` evidence, LLM candidate arbitration decisions, or correction-pair confidence feedback.
+- Medium-confidence personalization candidates are learned-pair hypotheses. Once LLM arbitration makes a real apply/reject decision, that weak signal should update the learned pair instead of being lost.
+
+### 2. Signatures
+
+```rust
+impl CorrectionPairStore {
+    pub fn record_llm_arbitration_feedback_json(
+        path: impl AsRef<Path>,
+        pair_id: &str,
+        accepted: bool,
+    ) -> Result<Option<CorrectionPair>>;
+
+    pub fn record_llm_arbitration_feedback(
+        &mut self,
+        pair_id: &str,
+        accepted: bool,
+    ) -> Option<CorrectionPair>;
+}
+
+pub fn record_llm_arbitration_feedback_pair(
+    pair_id: Option<&str>,
+    accepted: bool,
+) -> Result<Option<CorrectionPair>>;
+
+pub(crate) fn personalization_arbitration_feedback_from_tnl(
+    diagnostics: &TnlDiagnostics,
+) -> Vec<PersonalizationArbitrationFeedback>;
+
+pub(crate) fn record_personalization_arbitration_feedback_from_tnl(
+    diagnostics: &TnlDiagnostics,
+) -> Result<usize>;
+```
+
+### 3. Contracts
+
+- Only candidates with `TnlCandidateSource::PersonalizationCorrectionPair` are eligible for feedback.
+- Only real LLM decisions produce feedback:
+  - `TnlCandidateDecision::AppliedLlm` -> accepted feedback.
+  - `TnlCandidateDecision::RejectedLlm` -> rejected feedback.
+- `RejectedLlm` candidates with `llm_missing_decision` or `llm_overlap_rejected` evidence are not real LLM reject decisions; they must not update the store.
+- Skipped paths (`SkippedDisabled`, `SkippedNoProcessor`, `SkippedTimeout`, `SkippedError`, `SkippedLimit`) must not update the store because no LLM judgment happened.
+- The pair id must come from candidate evidence with the `pair_id:<id>` prefix; candidates without a non-empty pair id are ignored.
+- Feedback updates only existing enabled non-manual learned pairs by exact `pair.id`.
+- Accepted LLM feedback increments `frequency`, increases confidence by `0.05`, and refreshes lifecycle timestamps.
+- Rejected LLM feedback decreases confidence by `0.05` and refreshes lifecycle timestamps.
+- LLM rejection is weak feedback: it must not increment the user reject streak or disable a pair by itself.
+- Manual pairs and disabled pairs must not be mutated by LLM arbitration feedback.
+- Runtime feedback persistence is best-effort. If loading or saving `correction_pairs.json` fails, `NormalPipeline` logs a warning and keeps insertion/polishing behavior unchanged.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Personalization candidate `AppliedLlm` with `pair_id:learned-claude` | Increment that pair's frequency and confidence by `0.05`. |
+| Personalization candidate `RejectedLlm` with `pair_id:learned-claude` | Decrease that pair's confidence by `0.05`; keep `rejected_count` unchanged. |
+| Dictionary phonetic candidate `AppliedLlm` with a fake `pair_id` evidence item | Ignore it. |
+| Personalization candidate `RejectedLocal` | Ignore it; no LLM decision occurred. |
+| Personalization candidate `RejectedLlm` because of `llm_missing_decision` | Ignore it. |
+| Personalization candidate `RejectedLlm` because of `llm_overlap_rejected` | Ignore it. |
+| Candidate has no `pair_id:` evidence | Ignore it. |
+| Matching pair is manual or disabled | Return `None` and preserve pair state. |
+| JSON store is missing | Return `Ok(None)` and keep runtime path unchanged. |
+| JSON store is invalid | Return an error to the caller; runtime logs and continues. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: LLM accepting `cloud code -> Claude Code` nudges the learned pair toward future local auto-apply.
+- Base: LLM rejecting a candidate in one weak context slightly lowers confidence but does not disable the learned pair.
+- Bad: dictionary/TNL candidates or skipped candidates accidentally mutate personalization storage.
+- Bad: an invalid personalization JSON file prevents dictation insertion.
+
+### 6. Tests Required
+
+- Store test: LLM accept updates an enabled learned pair by id, increments frequency, and does not change `accepted_count` / `rejected_count`.
+- Store test: LLM reject subtracts `0.05` without incrementing reject streak or disabling the pair.
+- Store test: JSON feedback persists through `save_json`.
+- Store test: manual, disabled, and missing pairs are ignored.
+- Personalization helper test: feedback extraction includes only personalization `AppliedLlm` / real LLM-reject `RejectedLlm` candidates.
+- Run personalization tests, normal pipeline tests, LLM post-processor tests, `cargo check`, and ASR eval after wiring feedback into `NormalPipeline`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+for candidate in diagnostics.candidates {
+    if candidate.decision == TnlCandidateDecision::RejectedLlm {
+        record_rejected_correction_pair(Some(&candidate.original), Some(&candidate.target))?;
+    }
+}
+```
+
+#### Correct
+
+```rust
+for feedback in personalization_arbitration_feedback_from_tnl(&diagnostics) {
+    record_llm_arbitration_feedback_pair(Some(&feedback.pair_id), feedback.accepted)?;
+}
+```
+
+---
+
 ## Scenario: Runtime Personalization Applies Before Downstream LLM Work
 
 ### 1. Scope / Trigger

@@ -12,6 +12,7 @@ use super::phonetic_keys::{build_key_bundle, normalize_surface};
 const ACCEPT_CONFIDENCE_DELTA: f32 = 0.10;
 const ACCEPTED_AUTO_APPLY_CONFIDENCE_FLOOR: f32 = 0.98;
 const OBSERVED_CONFIDENCE_DELTA: f32 = 0.05;
+const LLM_ARBITRATION_CONFIDENCE_DELTA: f32 = 0.05;
 const REJECT_CONFIDENCE_DELTA: f32 = 0.20;
 const REVERT_CONFIDENCE_DELTA: f32 = 0.30;
 const DISABLE_AFTER_REJECTS: u32 = 3;
@@ -355,6 +356,50 @@ impl CorrectionPairStore {
         Some(pair.clone())
     }
 
+    pub fn record_llm_arbitration_feedback_json(
+        path: impl AsRef<Path>,
+        pair_id: &str,
+        accepted: bool,
+    ) -> Result<Option<CorrectionPair>> {
+        if pair_id.trim().is_empty() || !path.as_ref().exists() {
+            return Ok(None);
+        }
+
+        let mut store = Self::load_json(&path)?;
+        let pair = store.record_llm_arbitration_feedback(pair_id, accepted);
+        if pair.is_some() {
+            store.save_json(path)?;
+        }
+        Ok(pair)
+    }
+
+    pub fn record_llm_arbitration_feedback(
+        &mut self,
+        pair_id: &str,
+        accepted: bool,
+    ) -> Option<CorrectionPair> {
+        let pair_id = pair_id.trim();
+        if pair_id.is_empty() {
+            return None;
+        }
+
+        let pair = self
+            .pairs
+            .iter_mut()
+            .find(|pair| pair.enabled && !pair.is_manual() && pair.id == pair_id)?;
+
+        if accepted {
+            pair.frequency = pair.frequency.saturating_add(1).max(1);
+            pair.confidence =
+                increase_confidence(pair.confidence, LLM_ARBITRATION_CONFIDENCE_DELTA);
+        } else {
+            pair.confidence =
+                decrease_confidence(pair.confidence, LLM_ARBITRATION_CONFIDENCE_DELTA);
+        }
+        pair.touch_lifecycle(current_unix_millis());
+        Some(pair.clone())
+    }
+
     pub fn record_reverted_correction_json(
         path: impl AsRef<Path>,
         original_text: &str,
@@ -563,6 +608,18 @@ pub fn record_observed_correction_pair(
 
     let path = default_correction_pairs_path()?;
     CorrectionPairStore::record_observed_correction_json(path, original_text, corrected_text)
+}
+
+pub fn record_llm_arbitration_feedback_pair(
+    pair_id: Option<&str>,
+    accepted: bool,
+) -> Result<Option<CorrectionPair>> {
+    let Some(pair_id) = pair_id else {
+        return Ok(None);
+    };
+
+    let path = default_correction_pairs_path()?;
+    CorrectionPairStore::record_llm_arbitration_feedback_json(path, pair_id, accepted)
 }
 
 pub fn record_reverted_correction_pair(
@@ -950,6 +1007,105 @@ mod tests {
             .is_none());
         assert!(store
             .record_observed_correction("co pilot", "Copilot")
+            .is_none());
+
+        let manual = store.lookup_by_text("cloud code")[0];
+        assert_eq!(manual.frequency, 1);
+        assert_eq!(manual.confidence, 1.0);
+        assert!(store.lookup_by_text("co pilot").is_empty());
+    }
+
+    #[test]
+    fn llm_arbitration_accept_strengthens_existing_learned_pair_by_id() {
+        let mut pair = CorrectionPair::new("learned-claude", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.80;
+        pair.frequency = 2;
+        pair.accepted_count = 1;
+        pair.rejected_count = 1;
+        let mut store = CorrectionPairStore::new(vec![pair]);
+
+        let accepted = store
+            .record_llm_arbitration_feedback("learned-claude", true)
+            .expect("LLM accept should update existing learned pair");
+
+        assert_eq!(accepted.frequency, 3);
+        assert_eq!(accepted.accepted_count, 1);
+        assert_eq!(accepted.rejected_count, 1);
+        assert!((accepted.confidence - 0.85).abs() < f32::EPSILON);
+        assert!(accepted.enabled);
+        assert!(accepted.updated_at.is_some());
+        assert!(accepted.last_seen_at.is_some());
+    }
+
+    #[test]
+    fn llm_arbitration_reject_weakly_penalizes_without_reject_streak() {
+        let mut pair = CorrectionPair::new("learned-claude", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.80;
+        pair.frequency = 2;
+        pair.accepted_count = 1;
+        pair.rejected_count = 2;
+        let mut store = CorrectionPairStore::new(vec![pair]);
+
+        let rejected = store
+            .record_llm_arbitration_feedback("learned-claude", false)
+            .expect("LLM reject should weakly update existing learned pair");
+
+        assert_eq!(rejected.frequency, 2);
+        assert_eq!(rejected.accepted_count, 1);
+        assert_eq!(rejected.rejected_count, 2);
+        assert!((rejected.confidence - 0.75).abs() < f32::EPSILON);
+        assert!(rejected.enabled);
+    }
+
+    #[test]
+    fn llm_arbitration_feedback_persists_to_json() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+        let mut pair = CorrectionPair::new("learned-claude", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.80;
+        pair.accepted_count = 1;
+        CorrectionPairStore::new(vec![pair])
+            .save_json(&path)
+            .expect("save pair");
+
+        let accepted = CorrectionPairStore::record_llm_arbitration_feedback_json(
+            &path,
+            "learned-claude",
+            true,
+        )
+        .expect("record LLM feedback")
+        .expect("pair should be updated");
+
+        assert!((accepted.confidence - 0.85).abs() < f32::EPSILON);
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        let persisted = store.lookup_by_text("cloud code")[0];
+        assert_eq!(persisted.frequency, 2);
+        assert_eq!(persisted.confidence, accepted.confidence);
+    }
+
+    #[test]
+    fn llm_arbitration_feedback_ignores_manual_disabled_and_missing_pairs() {
+        let mut manual_pair = CorrectionPair::new("manual-claude", "cloud code", "Claude Code");
+        manual_pair.source = "manual".to_string();
+        manual_pair.confidence = 1.0;
+
+        let mut disabled_pair = CorrectionPair::new("learned-copilot", "co pilot", "Copilot");
+        disabled_pair.source = "learned".to_string();
+        disabled_pair.enabled = false;
+
+        let mut store = CorrectionPairStore::new(vec![manual_pair, disabled_pair]);
+
+        assert!(store
+            .record_llm_arbitration_feedback("manual-claude", true)
+            .is_none());
+        assert!(store
+            .record_llm_arbitration_feedback("learned-copilot", false)
+            .is_none());
+        assert!(store
+            .record_llm_arbitration_feedback("missing", true)
             .is_none());
 
         let manual = store.lookup_by_text("cloud code")[0];
