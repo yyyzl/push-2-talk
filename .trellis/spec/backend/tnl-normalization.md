@@ -388,7 +388,9 @@ fn write_diagnostics(results: &[CaseResult], output_dir: &Path) -> Result<PathBu
 - Eval tuning flags must not change production defaults exposed through `PersonalizationEngine::new(store)`.
 - `--diagnostics-out <dir>` is optional. When set, eval must create `<dir>/asr_eval_diagnostics.json` after printing the report.
 - Diagnostics payload must be bounded:
-  - include `schema_version` (`2` after pass summary export),
+  - include `schema_version` (`3` after top-level metrics and quality gate export),
+  - include top-level `metrics` with the same aggregate rates/counts as the Markdown report,
+  - include top-level `quality_gate` with `passed` and `failures`,
   - include per-case `audio_id`, provider, category, pass/fail, raw/actual/expected text, local latency, candidate count, applied count, candidates, and applied candidates,
   - include per-case `pass_summaries`,
   - truncate all string fields recursively to a fixed character limit,

@@ -97,13 +97,13 @@ struct CaseResult {
     diagnostics: ConversionDiagnostics,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 struct LatencySummary {
     avg_ms: f64,
     p95_ms: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct CandidateDecisionCounts {
     total: usize,
     applied: usize,
@@ -112,7 +112,7 @@ struct CandidateDecisionCounts {
     pending: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct MatchKindCounts {
     exact_text: usize,
     en_phonetic: usize,
@@ -121,7 +121,7 @@ struct MatchKindCounts {
     alias: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct PassSummaryCounts {
     enabled_cases: usize,
     disabled_cases: usize,
@@ -130,13 +130,13 @@ struct PassSummaryCounts {
     elapsed_us: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct PassSummaryTotals {
     exact_text: PassSummaryCounts,
     syllable_match: PassSummaryCounts,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 struct EvalMetrics {
     total: usize,
     passed: usize,
@@ -153,7 +153,7 @@ struct EvalMetrics {
     pass_summary_totals: PassSummaryTotals,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct QualityGateSummary {
     passed: bool,
     failures: Vec<String>,
@@ -879,13 +879,19 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 #[derive(Debug, Serialize)]
 struct EvalDiagnosticsPayload {
     schema_version: u8,
+    metrics: EvalMetrics,
+    quality_gate: QualityGateSummary,
     cases: Vec<EvalCaseDiagnostics>,
 }
 
 impl EvalDiagnosticsPayload {
     fn from_results(results: &[CaseResult]) -> Self {
+        let metrics = compute_metrics(results);
+        let quality_gate = evaluate_quality_gates(&metrics);
         Self {
-            schema_version: 2,
+            schema_version: 3,
+            metrics,
+            quality_gate,
             cases: results
                 .iter()
                 .map(EvalCaseDiagnostics::from_result)
@@ -1348,7 +1354,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(path).expect("read diagnostics"))
                 .expect("parse diagnostics");
 
-        assert_eq!(payload["schema_version"], 2);
+        assert_eq!(payload["schema_version"], 3);
         let case = &payload["cases"][0];
         assert_eq!(
             case["candidates"].as_array().expect("candidates").len(),
@@ -1369,6 +1375,41 @@ mod tests {
             .as_str()
             .expect("actual text")
             .ends_with("..."));
+    }
+
+    #[test]
+    fn diagnostics_export_includes_metrics_and_quality_gate_summary() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let mut exact_case = case_result_with_counts(CandidateDecisionCounts {
+            total: 1,
+            applied: 1,
+            below_threshold: 0,
+            skipped_overlap: 0,
+            pending: 0,
+        });
+        exact_case.passed = true;
+        exact_case.actual_text = exact_case.case.expected_text.clone();
+        exact_case.diagnostics.candidates =
+            vec![candidate_with_match_kind(MatchKind::ExactText, true)];
+        exact_case.diagnostics.applied = exact_case.diagnostics.candidates.clone();
+        exact_case.applied_count = exact_case.diagnostics.applied.len();
+
+        let path = write_diagnostics(&[exact_case], temp.path()).expect("write diagnostics");
+        let payload: Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read diagnostics"))
+                .expect("parse diagnostics");
+
+        assert_eq!(payload["schema_version"], 3);
+        assert_eq!(payload["metrics"]["total"], 1);
+        assert_eq!(payload["metrics"]["passed"], 1);
+        assert_eq!(payload["metrics"]["correction_pair_hit_rate"], 1.0);
+        assert_eq!(payload["metrics"]["exact_text_hit_rate"], 1.0);
+        assert_eq!(payload["metrics"]["syllable_match_hit_rate"], 0.0);
+        assert_eq!(payload["quality_gate"]["passed"], true);
+        assert!(payload["quality_gate"]["failures"]
+            .as_array()
+            .expect("quality gate failures")
+            .is_empty());
     }
 
     fn case_result_with_counts(decision_counts: CandidateDecisionCounts) -> CaseResult {
