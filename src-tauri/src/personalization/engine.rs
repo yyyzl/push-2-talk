@@ -527,6 +527,17 @@ mod tests {
     }
 
     #[test]
+    fn does_not_match_phrase_across_sentence_punctuation() {
+        let engine = engine();
+
+        let result = engine.convert("先说 cloud。code 再继续");
+
+        assert_eq!(result.text, "先说 cloud。code 再继续");
+        assert!(!result.changed);
+        assert!(result.diagnostics.applied.is_empty());
+    }
+
+    #[test]
     fn learned_single_common_word_pair_does_not_auto_apply() {
         let mut pair = CorrectionPair::new("learned-cloud", "cloud", "Claude");
         pair.source = "learned".to_string();

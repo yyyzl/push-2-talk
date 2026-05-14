@@ -208,6 +208,7 @@ pub(crate) struct WindowKey {
 - `SyllableLattice` is the single place that turns ASR text into content tokens and bounded token windows.
 - Whitespace and pure symbol tokens are not emitted as content tokens, but window byte ranges may preserve separators between content tokens.
 - Chinese content must be split into single-character syllable tokens so windows can start inside a continuous CJK run such as `我打开克劳德 code`.
+- Windows may span whitespace and safe joiners such as `-`, but must not span sentence or phrase punctuation such as `。`, `，`, `.`, or `,`.
 - Each `WindowKey` must include the original byte range, original window text, generated phonetic key bundle, and language flags.
 - Window count must be bounded by `max_size`; `max_size = 0` returns no windows.
 - Personalization and future ConvertPipeline passes should consume `SyllableLattice::windows()` instead of duplicating token-window loops.
@@ -219,6 +220,8 @@ pub(crate) struct WindowKey {
 | Input `我打开 克劳德 code。` | Content tokens are `我`, `打`, `开`, `克`, `劳`, `德`, `code`; whitespace and punctuation are skipped. |
 | Window text `克劳德 code` | Exposes mixed/alias keys such as `kelaode\|code`. |
 | Input `我打开克劳德 code` | Windows include the inner span `克劳德 code` even though no whitespace precedes `克劳德`. |
+| Input `先说 cloud。code 再继续` | No window is emitted for `cloud。code`; `cloud` and `code` remain separate windows. |
+| Input `打开 cloud-code` | A safe joiner may preserve the phrase window `cloud-code`. |
 | Window text `claud code` | Exposes English phonetic keys. |
 | Six content tokens with `max_size = 3` | Emits a bounded sliding-window set; no window exceeds three content tokens. |
 
@@ -227,6 +230,8 @@ pub(crate) struct WindowKey {
 - Unit test for content-token extraction without whitespace or pure symbols.
 - Unit test for mixed Chinese + ASCII alias keys.
 - Unit test for mixed Chinese + ASCII alias keys when the Chinese product name is glued to preceding CJK text.
+- Unit test that sentence punctuation blocks phrase windows and prevents cross-sentence correction.
+- Unit test that safe joiners such as `-` may still form one window.
 - Unit test for pure ASCII phonetic keys.
 - Unit test for bounded window count.
 

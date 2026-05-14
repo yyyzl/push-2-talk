@@ -375,6 +375,7 @@ P2 的第一版不追求完整复刻豆包内部 lattice，而是实现**token w
    - 中英交界处单独切（"克劳德 code" 切成 `[克劳德][ ][code]`）
    - 生成跨语言 alias key：例如 `克劳德 code` 可以生成 `kelaode|KT`、`kelaode|code`，用于命中用户确认过的 `Claude Code`
    - 跳过纯空白和纯符号 token
+   - 窗口可跨空白和 `-` 等安全连接符，但不能跨 `。/，/./,` 等句读标点，避免把跨句片段误合并成短语
    - 模糊音规整：zh↔z, ch↔c, sh↔s, n↔l, an↔ang, en↔eng, in↔ing
 5. **新增 Pass**：`SyllableMatchPass` 在 ConvertPipeline 里（Phase 3 一起实现）
    ```rust

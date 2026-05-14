@@ -53,6 +53,15 @@ impl SyllableLattice {
         for start_idx in 0..self.tokens.len() {
             let end_limit = (start_idx + max_size).min(self.tokens.len());
             for end_idx in start_idx..end_limit {
+                if end_idx > start_idx
+                    && has_blocking_separator(
+                        &self.source_text[self.tokens[end_idx - 1].byte_range.end
+                            ..self.tokens[end_idx].byte_range.start],
+                    )
+                {
+                    break;
+                }
+
                 let start = self.tokens[start_idx].byte_range.start;
                 let end = self.tokens[end_idx].byte_range.end;
                 if start >= end || end > self.source_text.len() {
@@ -97,6 +106,15 @@ fn content_tokens(token: Token) -> Vec<PhoneticToken> {
         }],
         TokenType::Whitespace | TokenType::Symbol => Vec::new(),
     }
+}
+
+fn has_blocking_separator(gap: &str) -> bool {
+    gap.chars()
+        .any(|ch| !ch.is_whitespace() && !is_safe_window_joiner(ch))
+}
+
+fn is_safe_window_joiner(ch: char) -> bool {
+    matches!(ch, '-' | '_' | '/' | '\\' | '\'' | '’')
 }
 
 #[cfg(test)]
@@ -156,6 +174,24 @@ mod tests {
             .alias_keys
             .iter()
             .any(|key| key == "kelaode|code"));
+    }
+
+    #[test]
+    fn windows_do_not_cross_sentence_punctuation() {
+        let lattice = SyllableLattice::from_asr_text("先说 cloud。code 再继续");
+        let windows = lattice.windows(5);
+
+        assert!(!windows.iter().any(|window| window.text == "cloud。code"));
+        assert!(windows.iter().any(|window| window.text == "cloud"));
+        assert!(windows.iter().any(|window| window.text == "code"));
+    }
+
+    #[test]
+    fn windows_can_cross_safe_joiners() {
+        let lattice = SyllableLattice::from_asr_text("打开 cloud-code");
+        let windows = lattice.windows(5);
+
+        assert!(windows.iter().any(|window| window.text == "cloud-code"));
     }
 
     #[test]
