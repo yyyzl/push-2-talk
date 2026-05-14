@@ -728,6 +728,30 @@ mod tests {
     }
 
     #[test]
+    fn accepted_openai_pair_generates_cross_language_alias_after_reload() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("correction_pairs.json");
+
+        CorrectionPairStore::upsert_accepted_correction_json(
+            &path,
+            "open ai",
+            "OpenAI",
+            Some("proper_noun"),
+            None,
+        )
+        .expect("save pair");
+
+        let store = CorrectionPairStore::load_json(&path).expect("reload store");
+        assert_eq!(store.lookup_by_alias_key("oupen|ai").len(), 1);
+
+        let engine = crate::personalization::PersonalizationEngine::new(store);
+        assert_eq!(
+            engine.convert("我调用 欧盆 ai 接口").text,
+            "我调用 OpenAI 接口"
+        );
+    }
+
+    #[test]
     fn accepted_correction_update_removes_stale_generated_aliases() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let path = temp.path().join("correction_pairs.json");

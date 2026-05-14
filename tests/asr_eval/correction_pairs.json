@@ -53,16 +53,6 @@
     "alias_keys": []
   },
   {
-    "id": "mvp-openai-mixed",
-    "original_text": "欧喷 ai",
-    "corrected_text": "OpenAI",
-    "source": "manual",
-    "category": "product",
-    "confidence": 0.98,
-    "frequency": 2,
-    "alias_keys": []
-  },
-  {
     "id": "mvp-learned-single-zh-ma",
     "original_text": "麻",
     "corrected_text": "吗",

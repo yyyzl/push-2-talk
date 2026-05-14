@@ -247,6 +247,7 @@ fn build_seeded_product_alias_keys(ascii_words: &[String]) -> Vec<String> {
 fn product_pinyin_aliases(word: &str) -> &'static [&'static str] {
     match word {
         "claude" => &["kelaode"],
+        "openai" => &["oupenai", "oupen|ai"],
         _ => &[],
     }
 }
@@ -296,6 +297,14 @@ mod tests {
 
         assert!(keys.alias_keys.iter().any(|key| key == "kelaode|code"));
         assert!(keys.alias_keys.iter().any(|key| key == "kelaode|KT"));
+    }
+
+    #[test]
+    fn corrected_openai_generates_cross_language_aliases() {
+        let keys = build_key_bundle("OpenAI");
+
+        assert!(keys.alias_keys.iter().any(|key| key == "oupenai"));
+        assert!(keys.alias_keys.iter().any(|key| key == "oupen|ai"));
     }
 
     fn assert_shared_key(left: &[String], right: &[String]) {
