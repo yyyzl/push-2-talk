@@ -869,7 +869,7 @@ for candidate in accepted {
 
 ### 1. Scope / Trigger
 
-- Trigger: any change to runtime personalization diagnostics, `NormalPipeline` candidate arbitration wiring, or `ConversionCandidate` threshold semantics.
+- Trigger: any change to runtime personalization diagnostics, `NormalPipeline` / `handle_assistant_mode` candidate arbitration wiring, or `ConversionCandidate` threshold semantics.
 - The local IME-style decoder should auto-apply only high-confidence correction pairs. Medium-confidence candidates should reuse the existing bounded LLM candidate arbiter instead of being silently dropped.
 
 ### 2. Signatures
@@ -884,6 +884,19 @@ impl NormalPipeline {
         existing: Option<TnlDiagnostics>,
         personalization: Option<TnlDiagnostics>,
     ) -> Option<TnlDiagnostics>;
+}
+
+fn merge_assistant_tnl_diagnostics(
+    existing: Option<TnlDiagnostics>,
+    personalization: Option<TnlDiagnostics>,
+) -> Option<TnlDiagnostics>;
+
+impl AssistantProcessor {
+    pub async fn arbitrate_tnl_candidates(
+        &self,
+        text: &str,
+        diagnostics: TnlDiagnostics,
+    ) -> Result<TnlCandidateArbitrationResult>;
 }
 
 pub enum TnlCandidateSource {
@@ -901,8 +914,11 @@ pub enum TnlCandidateSource {
 - Converted candidates must use `TnlCandidateSource::PersonalizationCorrectionPair` and preserve original byte offsets, original text, target text, and score.
 - Evidence must include the correction pair id and match kind so logs can trace why the candidate exists.
 - `NormalPipeline` must merge TNL diagnostics and personalization diagnostics before calling `maybe_arbitrate_candidates`.
+- AI assistant voice mode must merge TNL diagnostics and personalization diagnostics before calling its assistant LLM candidate arbitration path.
 - Existing TNL candidates must remain first in the merged list; personalization candidates are appended.
 - If dictionary enhancement is disabled or no LLM processor is configured, merged pending personalization candidates follow the same skip path as TNL pending candidates.
+- AI assistant voice mode uses the current `AssistantProcessor` LLM client for candidate arbitration and must complete arbitration before `assistant_turn_pending`, usage stats, conversation history insertion, or `AssistantProcessor::process_turn`.
+- AI assistant voice mode must count candidate arbitration elapsed time into the turn's `llm_time_ms`.
 
 ### 4. Validation & Error Matrix
 
@@ -913,6 +929,7 @@ pub enum TnlCandidateSource {
 | Learned pair candidate score `0.40`, no local apply | Export no TNL candidate. |
 | Personalization already applied a high-confidence candidate | Do not export remaining personalization candidates for arbitration. |
 | TNL diagnostics and personalization diagnostics both exist | Merge candidates into one `TnlDiagnostics` before arbitration. |
+| Assistant voice instruction contains a pending personalization candidate | Run assistant candidate arbitration before the user instruction is sent to the main assistant turn. |
 
 ### 5. Good/Base/Bad Cases
 
@@ -925,7 +942,8 @@ pub enum TnlCandidateSource {
 - Personalization helper test: medium-confidence below-threshold candidate becomes `PendingLlm` with source `PersonalizationCorrectionPair`.
 - Personalization helper test: low-confidence candidate becomes `RejectedLocal`.
 - Normal pipeline helper test: TNL and personalization diagnostics merge without dropping either candidate list.
-- Run normal pipeline, personalization, LLM post-processor, and ASR eval checks after changing arbitration wiring.
+- Assistant helper test: medium-confidence personalization candidate is exported for arbitration and assistant diagnostics merge without dropping either candidate list.
+- Run normal pipeline, assistant personalization, personalization, LLM post-processor, and ASR eval checks after changing arbitration wiring.
 
 ### 7. Wrong vs Correct
 
@@ -998,7 +1016,7 @@ pub(crate) fn record_personalization_arbitration_feedback_from_tnl(
 - Rejected LLM feedback decreases confidence by `0.05` and refreshes lifecycle timestamps.
 - LLM rejection is weak feedback: it must not increment the user reject streak or disable a pair by itself.
 - Manual pairs and disabled pairs must not be mutated by LLM arbitration feedback.
-- Runtime feedback persistence is best-effort. If loading or saving `correction_pairs.json` fails, `NormalPipeline` logs a warning and keeps insertion/polishing behavior unchanged.
+- Runtime feedback persistence is best-effort. If loading or saving `correction_pairs.json` fails, the dictation or assistant path logs a warning and keeps insertion/polishing/assistant behavior unchanged.
 
 ### 4. Validation & Error Matrix
 
@@ -1029,7 +1047,7 @@ pub(crate) fn record_personalization_arbitration_feedback_from_tnl(
 - Store test: JSON feedback persists through `save_json`.
 - Store test: manual, disabled, and missing pairs are ignored.
 - Personalization helper test: feedback extraction includes only personalization `AppliedLlm` / real LLM-reject `RejectedLlm` candidates.
-- Run personalization tests, normal pipeline tests, LLM post-processor tests, `cargo check`, and ASR eval after wiring feedback into `NormalPipeline`.
+- Run personalization tests, normal pipeline tests, assistant personalization tests, LLM post-processor tests, `cargo check`, and ASR eval after wiring feedback into runtime paths.
 
 ### 7. Wrong vs Correct
 
@@ -1096,7 +1114,7 @@ impl NormalPipeline {
     fn maybe_apply_personalization(text: String) -> (String, bool);
 }
 
-fn apply_assistant_personalization(text: String) -> (String, bool);
+fn apply_assistant_personalization(text: String) -> (String, bool, Option<TnlDiagnostics>);
 ```
 
 Runtime file shape:

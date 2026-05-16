@@ -55,6 +55,8 @@ use tauri::{
 };
 use tokio_util::sync::CancellationToken;
 
+const ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS: u64 = 800;
+
 // ================== Windows 鼠标位置检测 ==================
 #[cfg(target_os = "windows")]
 #[link(name = "user32")]
@@ -593,18 +595,28 @@ fn turn_from_outcome(
     }
 }
 
+fn add_candidate_arbitration_time(
+    mut outcome: TurnOutcome,
+    candidate_llm_time_ms: Option<u64>,
+) -> TurnOutcome {
+    if let Some(extra) = candidate_llm_time_ms {
+        outcome.llm_time_ms = outcome.llm_time_ms.saturating_add(extra);
+    }
+    outcome
+}
+
 fn apply_assistant_personalization(
     text: String,
     config: crate::personalization::PersonalizationEngineConfig,
-) -> (String, bool) {
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
     let source_text = text.clone();
     let result =
         match crate::personalization::apply_default_personalization_with_config(text, config) {
             Ok(Some(result)) => result,
-            Ok(None) => return (source_text, false),
+            Ok(None) => return (source_text, false, None),
             Err(e) => {
                 tracing::warn!("AI助手: 加载个性化纠错对失败，保守跳过: {}", e);
-                return (source_text, false);
+                return (source_text, false, None);
             }
         };
 
@@ -612,14 +624,24 @@ fn apply_assistant_personalization(
         tracing::warn!("AI助手: 写入个性化诊断失败，已忽略: {}", e);
     }
     log_assistant_personalization_result(&source_text, &result.conversion);
-    (result.text, result.changed)
+    let diagnostics =
+        crate::personalization::personalization_candidates_to_tnl_diagnostics(&result.conversion);
+    if let Some(diagnostics) = &diagnostics {
+        if diagnostics.has_pending_llm() {
+            tracing::info!(
+                "AI助手: 个性化候选进入 LLM 仲裁，候选数: {}",
+                diagnostics.pending_llm_count()
+            );
+        }
+    }
+    (result.text, result.changed, diagnostics)
 }
 
 #[cfg(test)]
 fn apply_assistant_personalization_with_store(
     text: String,
     store: crate::personalization::CorrectionPairStore,
-) -> (String, bool) {
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
     apply_assistant_personalization_with_store_and_config(
         text,
         store,
@@ -632,13 +654,115 @@ fn apply_assistant_personalization_with_store_and_config(
     text: String,
     store: crate::personalization::CorrectionPairStore,
     config: crate::personalization::PersonalizationEngineConfig,
-) -> (String, bool) {
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
     let source_text = text.clone();
     let result =
         crate::personalization::apply_personalization_with_store_and_config(text, store, config);
     log_assistant_personalization_result(&source_text, &result.conversion);
 
-    (result.text, result.changed)
+    let diagnostics =
+        crate::personalization::personalization_candidates_to_tnl_diagnostics(&result.conversion);
+    (result.text, result.changed, diagnostics)
+}
+
+fn merge_assistant_tnl_diagnostics(
+    existing: Option<crate::tnl::TnlDiagnostics>,
+    personalization: Option<crate::tnl::TnlDiagnostics>,
+) -> Option<crate::tnl::TnlDiagnostics> {
+    match (existing, personalization) {
+        (None, None) => None,
+        (Some(diagnostics), None) | (None, Some(diagnostics)) => Some(diagnostics),
+        (Some(mut existing), Some(personalization)) => {
+            existing.candidates.extend(personalization.candidates);
+            if existing.arbitration.is_none() {
+                existing.arbitration = personalization.arbitration;
+            }
+            Some(existing)
+        }
+    }
+}
+
+async fn maybe_arbitrate_assistant_candidates(
+    processor: &AssistantProcessor,
+    text: String,
+    diagnostics: Option<crate::tnl::TnlDiagnostics>,
+) -> (String, Option<crate::tnl::TnlDiagnostics>, Option<u64>) {
+    let Some(diagnostics) = diagnostics else {
+        return (text, None, None);
+    };
+
+    if !diagnostics.has_pending_llm() {
+        return (text, Some(diagnostics), None);
+    }
+
+    tracing::info!(
+        "AI助手: 开始 TNL 候选仲裁，候选数: {}",
+        diagnostics.pending_llm_count()
+    );
+
+    let fallback_diagnostics = diagnostics.clone();
+    let arbitration = tokio::time::timeout(
+        std::time::Duration::from_millis(ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS),
+        processor.arbitrate_tnl_candidates(&text, diagnostics),
+    )
+    .await;
+
+    match arbitration {
+        Ok(Ok(result)) => {
+            tracing::info!("AI助手: TNL 候选仲裁完成 (耗时: {}ms)", result.elapsed_ms);
+            (
+                result.text,
+                Some(result.diagnostics),
+                Some(result.elapsed_ms),
+            )
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("AI助手: TNL 候选仲裁失败，保守跳过: {}", e);
+            let mut diagnostics = fallback_diagnostics;
+            diagnostics.mark_pending_skipped(
+                crate::tnl::TnlCandidateDecision::SkippedError,
+                "arbitration_error",
+                None,
+            );
+            (text, Some(diagnostics), None)
+        }
+        Err(_) => {
+            tracing::warn!("AI助手: TNL 候选仲裁超时，保守跳过");
+            let mut diagnostics = fallback_diagnostics;
+            diagnostics.mark_pending_skipped(
+                crate::tnl::TnlCandidateDecision::SkippedTimeout,
+                "arbitration_timeout",
+                Some(ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS),
+            );
+            (
+                text,
+                Some(diagnostics),
+                Some(ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS),
+            )
+        }
+    }
+}
+
+fn record_assistant_personalization_arbitration_feedback(
+    diagnostics: &Option<crate::tnl::TnlDiagnostics>,
+) {
+    let Some(diagnostics) = diagnostics else {
+        return;
+    };
+
+    match crate::personalization::record_personalization_arbitration_feedback_from_tnl(diagnostics)
+    {
+        Ok(updated_count) if updated_count > 0 => {
+            tracing::info!(
+                "AI助手: 个性化 LLM 仲裁反馈已写入，更新纠错对: {}",
+                updated_count
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!("AI助手: 写入个性化 LLM 仲裁反馈失败，已忽略: {}", e);
+        }
+    }
 }
 
 fn log_assistant_personalization_result(
@@ -668,11 +792,12 @@ mod assistant_personalization_tests {
         pair.confidence = 0.98;
         let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
 
-        let (text, changed) =
+        let (text, changed, diagnostics) =
             apply_assistant_personalization_with_store("我打开 cloud code".to_string(), store);
 
         assert!(changed);
         assert_eq!(text, "我打开 Claude Code");
+        assert!(diagnostics.is_none());
     }
 
     #[test]
@@ -688,7 +813,7 @@ mod assistant_personalization_tests {
             ..crate::personalization::PersonalizationEngineConfig::default()
         };
 
-        let (text, changed) = apply_assistant_personalization_with_store_and_config(
+        let (text, changed, diagnostics) = apply_assistant_personalization_with_store_and_config(
             "我打开 克劳德 code".to_string(),
             store,
             config,
@@ -696,6 +821,91 @@ mod assistant_personalization_tests {
 
         assert!(!changed);
         assert_eq!(text, "我打开 克劳德 code");
+        assert!(diagnostics.is_none());
+    }
+
+    #[test]
+    fn assistant_personalization_exports_medium_confidence_candidate_for_arbitration() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.accepted_count = 1;
+        pair.confidence = 0.80;
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed, diagnostics) =
+            apply_assistant_personalization_with_store("我打开 cloud code".to_string(), store);
+
+        assert!(!changed);
+        assert_eq!(text, "我打开 cloud code");
+        let diagnostics = diagnostics.expect("medium confidence candidate should be exported");
+        assert_eq!(diagnostics.pending_llm_count(), 1);
+        assert_eq!(
+            diagnostics.candidates[0].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
+        assert_eq!(
+            diagnostics.candidates[0].decision,
+            crate::tnl::TnlCandidateDecision::PendingLlm
+        );
+    }
+
+    #[test]
+    fn assistant_merge_keeps_tnl_and_personalization_candidates() {
+        let tnl = crate::tnl::TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "tnl-0".to_string(),
+                original: "Cruiser".to_string(),
+                target: "Cursor".to_string(),
+                start: 0,
+                end: 7,
+                score: 0.72,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::DictionaryPhonetic,
+                evidence: vec!["tnl".to_string()],
+                decision: crate::tnl::TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+        let personalization = crate::tnl::TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "personalization-8-18-0".to_string(),
+                original: "cloud code".to_string(),
+                target: "Claude Code".to_string(),
+                start: 8,
+                end: 18,
+                score: 0.80,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair,
+                evidence: vec!["pair_id:claude-code".to_string()],
+                decision: crate::tnl::TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+
+        let merged = merge_assistant_tnl_diagnostics(Some(tnl), Some(personalization))
+            .expect("merged diagnostics");
+
+        assert_eq!(merged.candidates.len(), 2);
+        assert_eq!(merged.pending_llm_count(), 2);
+        assert_eq!(
+            merged.candidates[1].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
+    }
+
+    #[test]
+    fn assistant_turn_time_includes_candidate_arbitration_time() {
+        let outcome = TurnOutcome {
+            assistant_response: "ok".to_string(),
+            tool_calls: Vec::new(),
+            llm_time_ms: 120,
+            search_time_ms: None,
+        };
+
+        let outcome = add_candidate_arbitration_time(outcome, Some(35));
+
+        assert_eq!(outcome.llm_time_ms, 155);
     }
 }
 
@@ -3148,7 +3358,7 @@ async fn handle_assistant_mode(
         .map(|(c, _)| c.tnl_config)
         .unwrap_or_default();
     let tnl_enabled = tnl_config.enabled;
-    let user_instruction = if tnl_enabled {
+    let (user_instruction, tnl_diagnostics) = if tnl_enabled {
         let engine =
             tnl::TnlEngine::new_with_disfluency_mode(dictionary, tnl_config.disfluency_mode);
         let tnl_result = engine.normalize(&asr_text);
@@ -3160,13 +3370,15 @@ async fn handle_assistant_mode(
                 tnl_result.elapsed_us
             );
         }
-        let (text, _) = apply_assistant_personalization(
+        let (text, _, personalization_diagnostics) = apply_assistant_personalization(
             tnl_result.text,
             crate::personalization::PersonalizationEngineConfig::from_tnl_config(&tnl_config),
         );
-        text
+        let diagnostics =
+            merge_assistant_tnl_diagnostics(tnl_result.diagnostics, personalization_diagnostics);
+        (text, diagnostics)
     } else {
-        asr_text.clone()
+        (asr_text.clone(), None)
     };
 
     // 5. 获取 processor
@@ -3180,6 +3392,9 @@ async fn handle_assistant_mode(
         );
         return;
     };
+    let (user_instruction, tnl_diagnostics, candidate_llm_time_ms) =
+        maybe_arbitrate_assistant_candidates(&processor, user_instruction, tnl_diagnostics).await;
+    record_assistant_personalization_arbitration_feedback(&tnl_diagnostics);
 
     // 6. 检查会话状态：分支新对话 / 追问
     let state = app.state::<AppState>();
@@ -3278,6 +3493,7 @@ async fn handle_assistant_mode(
 
         match result {
             Ok(outcome) => {
+                let outcome = add_candidate_arbitration_time(outcome, candidate_llm_time_ms);
                 let turn = turn_from_outcome(
                     user_instruction.clone(),
                     selected_text.clone(),
@@ -3449,6 +3665,7 @@ async fn handle_assistant_mode(
 
         match result {
             Ok(outcome) => {
+                let outcome = add_candidate_arbitration_time(outcome, candidate_llm_time_ms);
                 let turn = turn_from_outcome(
                     user_instruction.clone(),
                     selected_text.clone(),

@@ -273,6 +273,15 @@ impl LlmPostProcessor {
     pub async fn arbitrate_tnl_candidates(
         &self,
         text: &str,
+        diagnostics: TnlDiagnostics,
+    ) -> Result<TnlCandidateArbitrationResult> {
+        Self::arbitrate_tnl_candidates_with_client(&self.client, text, diagnostics).await
+    }
+
+    /// 使用指定 OpenAI 客户端执行候选仲裁，供普通听写和 AI 助手语音路径复用。
+    pub(crate) async fn arbitrate_tnl_candidates_with_client(
+        client: &OpenAiClient,
+        text: &str,
         mut diagnostics: TnlDiagnostics,
     ) -> Result<TnlCandidateArbitrationResult> {
         let pending_candidates = Self::prepare_candidate_arbitration_candidates(&mut diagnostics);
@@ -288,8 +297,7 @@ impl LlmPostProcessor {
         let user_message =
             Self::build_candidate_arbitration_user_message(text, &pending_candidates);
         let start = Instant::now();
-        let response = self
-            .client
+        let response = client
             .chat_simple(
                 Self::candidate_arbitration_system_prompt(),
                 &user_message,

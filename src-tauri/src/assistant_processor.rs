@@ -11,11 +11,13 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{AssistantConfig, SearchConfig, SharedLlmConfig};
+use crate::llm_post_processor::LlmPostProcessor;
 use crate::openai_client::{
     ChatOptions, Message, OpenAiClient, OpenAiClientConfig, StreamChunk, ToolCall, ToolDefinition,
     ToolFunctionDefinition,
 };
 use crate::search::{AssistantToolCall, SearchRegistry};
+use crate::tnl::{TnlCandidateArbitrationResult, TnlDiagnostics};
 use crate::{ConversationTurn, PromptMode};
 
 /// AI 助手处理器
@@ -149,6 +151,16 @@ impl AssistantProcessor {
                 &user_message,
                 ChatOptions::for_smart_command(),
             )
+            .await
+    }
+
+    /// 对 AI 助手语音指令中的 TNL/个性化中置信候选执行轻量 LLM 仲裁。
+    pub async fn arbitrate_tnl_candidates(
+        &self,
+        text: &str,
+        diagnostics: TnlDiagnostics,
+    ) -> Result<TnlCandidateArbitrationResult> {
+        LlmPostProcessor::arbitrate_tnl_candidates_with_client(&self.client, text, diagnostics)
             .await
     }
 
