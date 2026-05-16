@@ -446,3 +446,36 @@ Preserved runtime dictionary source metadata so selected builtin domain words ra
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: ASR recent hotword runtime source
+
+**Date**: 2026-05-16
+**Task**: ASR recent hotword runtime source
+**Branch**: `main`
+
+### Summary
+
+Implemented runtime-only recent ASR hotwords from successful 24h history, wired them into runtime dictionary refresh, added frontend/runtime flow tests, backend source-priority coverage, and updated ASR hotword spec.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c896d72` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
