@@ -340,3 +340,43 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: ASR 个性化剩余阶段闭环
+
+**Date**: 2026-05-16
+**Task**: ASR 个性化剩余阶段闭环
+**Branch**: `main`
+
+### Summary
+
+完成 Phase 4 前端配置闭环、Phase 5 词库 category metadata、Phase 6 jieba 用户词专名 span、Phase 7 HotwordCompiler 与 provider 等价接入，并补齐 correction pair 编译 API；相关目标测试和 cargo check 已通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b2ca8db` | (see git log) |
+| `a239488` | (see git log) |
+| `a4cc196` | (see git log) |
+| `da480e5` | (see git log) |
+| `c8d149b` | (see git log) |
+| `76b8033` | (see git log) |
+| `efe2735` | (see git log) |
+| `a0b8783` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

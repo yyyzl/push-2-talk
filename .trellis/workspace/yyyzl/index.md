@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-05-15
+- **Total Sessions**: 8
+- **Last Active**: 2026-05-16
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~342 | Active |
+| `journal-1.md` | ~382 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-05-16 | ASR 个性化剩余阶段闭环 | `b2ca8db`, `a239488`, `a4cc196`, `da480e5`, `c8d149b`, `76b8033`, `efe2735`, `a0b8783` | `main` |
 | 7 | 2026-05-15 | ASR personalization MVP closure | `0fea5b4`, `4d0b77c`, `24a409b`, `fcb80fa`, `075a403`, `6aebf90`, `58cd0a2`, `96e1ce3`, `26703c7` | `main` |
 | 6 | 2026-05-12 | 修复 AI 助手联网搜索状态与取消流程 | `65e5d32` | `main` |
 | 5 | 2026-05-10 | per-preset LLM 模型选择 (issue #12) | `199f34a` | `main` |
