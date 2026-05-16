@@ -110,6 +110,15 @@ export function VocabularyLearningToast({
 
   // 分类标签
   const categoryLabels: Record<string, string> = {
+    person: "人名",
+    product: "产品",
+    tool: "工具",
+    phrase: "短语",
+    email: "邮箱",
+    url: "链接",
+    code_symbol: "代码",
+    domain_term: "术语",
+    generic: "通用",
     proper_noun: "专有名词",
     term: "专业术语",
     frequent: "高频词汇",

@@ -1818,7 +1818,7 @@ word|auto|domain_term
 - `generic` category must keep the old compact format (`word` or `word|auto`) unless a later migration deliberately changes the storage schema.
 - `entries_to_words` and frontend `entriesToWords` must strip metadata and return pure user words for ASR/LLM consumers; TNL may read `extract_category` first to route matching paths, but each selected route still receives pure words only.
 - `add_learned_word` may receive `category`; when present, it should persist dictionary metadata while preserving the existing personalization correction-pair category payload.
-- Learning-era categories map only at the dictionary metadata boundary: `proper_noun -> product`, `term -> domain_term`, `frequent -> generic`.
+- Learning suggestions should emit canonical dictionary categories. Legacy learning-era categories remain accepted and map at the dictionary metadata boundary: `proper_noun -> product`, `term -> domain_term`, `frequent -> generic`.
 - Manual source keeps priority over auto source when upserting an existing word. Updating category must not demote a manual entry to auto.
 - Frontend must normalize old object entries and old strings so `DictionaryEntry.category` is always present before rendering.
 

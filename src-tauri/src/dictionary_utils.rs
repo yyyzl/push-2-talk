@@ -59,6 +59,11 @@ fn normalize_dictionary_category(category: Option<&str>) -> Option<&'static str>
     }
 }
 
+/// 标准化词库分类 metadata。
+pub fn normalize_category(category: Option<&str>) -> Option<&'static str> {
+    normalize_dictionary_category(category)
+}
+
 /// 格式化词条（添加来源标记）
 ///
 /// - source = "manual" -> "word"
@@ -192,6 +197,9 @@ mod tests {
 
     #[test]
     fn test_extract_category() {
+        assert_eq!(normalize_category(Some("code_symbol")), Some("code_symbol"));
+        assert_eq!(normalize_category(Some("proper_noun")), Some("product"));
+        assert_eq!(normalize_category(Some("frequent")), Some("generic"));
         assert_eq!(
             extract_category("Claude Code|manual|product"),
             Some("product")

@@ -1,5 +1,13 @@
 // 自动词库学习相关类型定义
 
+import type { DictionaryCategory } from "./index";
+
+export type LearningSuggestionCategory =
+  | DictionaryCategory
+  | "proper_noun"
+  | "term"
+  | "frequent";
+
 /** 学习配置 */
 export interface LearningConfig {
   enabled: boolean;
@@ -14,7 +22,7 @@ export interface VocabularyLearningSuggestion {
   original: string;
   corrected: string;
   context: string;
-  category: 'proper_noun' | 'term' | 'frequent';
+  category: LearningSuggestionCategory;
   reason: string;
   already_in_dictionary?: boolean;
 }

@@ -189,6 +189,12 @@ export type DictionaryCategory =
   | "domain_term"
   | "generic";
 
+export type LearningSuggestionCategory =
+  | DictionaryCategory
+  | "proper_noun"
+  | "term"
+  | "frequent";
+
 // 词库条目
 export interface DictionaryEntry {
   id: string;
@@ -356,7 +362,7 @@ export interface VocabularyLearningSuggestion {
   original: string;
   corrected: string;
   context: string;
-  category: 'proper_noun' | 'term' | 'frequent';
+  category: LearningSuggestionCategory;
   reason: string;
   already_in_dictionary?: boolean;
 }

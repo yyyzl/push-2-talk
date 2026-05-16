@@ -190,7 +190,11 @@ interface VocabularyLearningSuggestion {
   original: string;
   corrected: string;
   context: string;
-  category: "proper_noun" | "term" | "frequent";
+  category:
+    | "person" | "product" | "tool" | "phrase"
+    | "email" | "url" | "code_symbol"
+    | "domain_term" | "generic"
+    | "proper_noun" | "term" | "frequent"; // legacy aliases
   reason: string;
   already_in_dictionary?: boolean;
 }
@@ -203,6 +207,7 @@ interface VocabularyLearningSuggestion {
 - Accepted learning suggestions should pass the local suggestion `context` through to the correction pair as `surrounding_context`; backend persistence must trim and cap this field before writing JSON.
 - `context` should be the same bounded extended context used for the LLM learning judgment, not the shorter character-level diff context, so downstream personalization ranking can reuse the surrounding technical terms that justified the suggestion.
 - If the suggested `word` already exists in the dictionary but `original`/`corrected` form a valid correction-pair payload, the backend should still emit a learning suggestion with `already_in_dictionary = true` so the user can save the local personalization correction pair.
+- Learning suggestions should emit canonical dictionary categories (`person/product/tool/phrase/email/url/code_symbol/domain_term/generic`). Legacy LLM categories must be normalized at the backend boundary: `proper_noun -> product`, `term -> domain_term`, `frequent -> generic`.
 - A user-accepted correction pair is considered confirmed enough to be used by the local personalization decoder on the next dictation.
 - Correction pairs are local app data under the PushToTalk config directory. Do not emit them through frontend events unless a UI explicitly needs them.
 - Manual dictionary edits must not require or synthesize `original` / `corrected`.
@@ -218,6 +223,9 @@ interface VocabularyLearningSuggestion {
 | `Claude Code` already exists in the dictionary, and observed original/corrected normalize to the same text | Skip the duplicate suggestion. |
 | Learning Toast accepts a suggestion with surrounding context | Persist a trimmed, bounded `surrounding_context` on the learned correction pair. |
 | LLM judge sees extended context around `cloud code -> Claude Code` | Emit that same bounded extended context in `suggestion.context`; do not fall back to the short diff context. |
+| LLM judge returns `code_symbol` | Emit `category: "code_symbol"` and let accepted learning persist that dictionary category. |
+| Legacy LLM judge returns `term` | Normalize to `category: "domain_term"` before emitting the suggestion. |
+| LLM judge returns an unknown category | Normalize to `category: "domain_term"` rather than failing the observation. |
 | Optional fields are empty or normalize to the same text | Add dictionary entry; skip correction-pair write. |
 | Correction-pair JSON is missing | Create it atomically through the store save path. |
 | Correction-pair JSON is invalid | Return an error for accepted-learning persistence instead of silently overwriting unknown data. |
