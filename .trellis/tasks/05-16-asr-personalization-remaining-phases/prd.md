@@ -13,7 +13,7 @@
 * 当前词库仍以 `Vec<String>` / `string[]` 存储，旧格式是 `"word"` 或 `"word|auto"`；前端 `DictionaryEntry` 只保留 `source`，没有 `category`。
 * Phase 5 已完成：`DictionaryEntry.category`、`word|source|category` 兼容格式、DictionaryPage 分类微调和后端 round-trip 测试都已闭环。
 * Phase 6 已完成：`jieba-rs` 注入用户词，TNL 能产出 `NamedEntity` span，且旧技术 span 优先级更高。
-* Phase 7 文档要求新增 `personalization/hotword_compiler.rs`，让 ASR providers 统一消费编译后的热词 pack。
+* Phase 7 文档要求新增 `personalization/hotword_compiler.rs`，让 ASR providers 统一消费编译后的热词 pack；编译来源里 `correction_pairs.corrected_text` 权重应低于手动用户词、高于自动用户词。
 * 直接改 ASR provider 运行时路径影响较高：Doubao HTTP `transcribe_bytes` 为 CRITICAL，Qwen HTTP `transcribe_from_memory` 为 HIGH；本切片必须保持现有请求 payload 形状等价，只做编译来源统一、去重、排序和上限裁剪。
 * 当前工作区已有版本号 `1.6.2 -> 1.6.3` 的未提交变更，本任务不把它作为功能改动处理。
 
@@ -44,6 +44,8 @@
 * Qwen HTTP / Qwen Realtime / Doubao HTTP / Doubao Realtime 的现有热词构建逻辑统一改为消费 HotwordCompiler 输出。
 * 本切片保持 provider payload 形状兼容：Qwen 仍输出顿号拼接 corpus text，Doubao 仍输出 `{"word": "..."}`
   hotwords 数组；权重先保留在 pack 中，不强行改变线上请求格式。
+* HotwordCompiler 需要提供合并用户词和 `CorrectionPair` 的 API；旧 provider 接入点暂时继续只传用户词，避免在录音路径里同步加载 correction pair store。
+* `CorrectionPair` 来源只使用 enabled 且 `corrected_text` 非空的 pair；`original_text` 作为 alias/hint 记录，不进入当前 provider payload。
 
 ## Acceptance Criteria
 
@@ -69,6 +71,8 @@
 * [x] Qwen Realtime corpus 通过 HotwordCompiler 限制在 provider 上限内。
 * [x] Doubao HTTP/Realtme hotwords 通过 HotwordCompiler 构建并保持旧 `{"word": ...}` 形状。
 * [x] HotwordCompiler 单测和接入点最小单测通过。
+* [x] HotwordCompiler 新增合并 `CorrectionPair` 的编译 API，且 `corrected_text` 排序低于手动词、高于自动词。
+* [x] TNL/LLM pack 能带出 correction pairs 与 correction hints，禁用/空 pair 被跳过。
 
 ## Definition Of Done
 
@@ -88,8 +92,9 @@
 7. 在 DictionaryPage 复用现有个人词库 UI，增加 category badge/select，并通过现有 `add_learned_word` 持久化微调。
 8. Phase 6 小切片引入 `jieba-rs`，给 `TechSpanDetector` 增加用户词注入构造器和 `NamedEntity` span。
 9. 在 `TnlEngine::new_with_disfluency_mode` 中把纯用户词传给 `TechSpanDetector`，并补充 span 识别回归测试。
-10. Phase 7 小切片新增 `personalization/hotword_compiler.rs`，先只消费现有用户词库，不接最近 24h、当前 App context 和领域词。
+10. Phase 7 小切片新增 `personalization/hotword_compiler.rs`，先消费现有用户词库和已存在的 correction pairs，不接最近 24h、当前 App context 和领域词。
 11. 将 Qwen/Doubao HTTP/Realtme 热词构建替换为 HotwordCompiler helper，并补充 provider 格式单测。
+12. 保留 provider 运行时的同步边界：当前 provider 接入点只传用户词；correction pair 合并先在 HotwordCompiler API 和 pack 测试中闭环，后续再设计缓存/异步加载策略。
 
 ## Decision (ADR-lite)
 
@@ -106,7 +111,7 @@
 * 助手路径中置信候选独立云端仲裁。
 * Phase 5 的 SQLite 分表、索引、phrase trie、不同 lookup path。
 * Phase 6 的 ONNX NER、完整词性权重、SyllableMatchPass 分数调参和离线质量评测。
-* Phase 7 的最近 24h 用词、当前 App context、活跃领域词、缓存复用和完整首次识别命中率评测。
+* Phase 7 的最近 24h 用词、当前 App context、活跃领域词、缓存复用、provider 运行时同步加载 correction pair store 和完整首次识别命中率评测。
 * Phase 8 本地 reranker。
 * 当前未提交的 `1.6.3` 版本号变更。
 
@@ -125,3 +130,4 @@
 * Codex dispatch mode 为 inline，本任务 Phase 2 直接加载 `trellis-before-dev` 后在主会话实现。
 * 2026-05-16 Phase 6 本地验证：真实 `cargo check` 被 Cargo/libcurl schannel 访问 crates.io 的 TLS 握手失败阻断；使用临时本地 `jieba-rs` 0.9 API 兼容 stub 验证新增 `tech_span` / `engine` 目标测试和 `cargo check` 通过，stub 未写入仓库。
 * 2026-05-16 Phase 7 本地验证：使用同一个临时 `jieba-rs` 0.9 API 兼容 stub 跑过 HotwordCompiler 单测、Qwen/Doubao provider 接入单测和 `cargo check`；stub 未写入仓库。
+* 2026-05-16 Phase 7 correction-pair 来源切片：使用同一个临时 `jieba-rs` 0.9 API 兼容 stub 跑过 HotwordCompiler 单测，验证 correction pair 来源排序、去重、跳过禁用/空 pair、TNL/LLM pack hints。
