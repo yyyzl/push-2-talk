@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DICTIONARY_CATEGORY_OPTIONS,
   createDictionaryEntry,
+  entriesToRuntimeFormat,
   entriesToStorageFormat,
   entriesToWords,
   inferDictionaryCategory,
@@ -38,6 +39,11 @@ test("词库 category metadata 应兼容旧格式并保留新格式", () => {
   ];
 
   assert.deepEqual(entriesToStorageFormat(entries), [
+    "Claude Code|auto|product",
+    "团队约定|manual|phrase",
+    "rust",
+  ]);
+  assert.deepEqual(entriesToRuntimeFormat(entries), [
     "Claude Code|auto|product",
     "团队约定|manual|phrase",
     "rust",

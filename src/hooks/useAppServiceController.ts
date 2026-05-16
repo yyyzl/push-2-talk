@@ -28,14 +28,14 @@ import {
 } from "../constants";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
 import {
-  entriesToWords,
+  entriesToRuntimeFormat,
   parseEntry,
   entriesToStorageFormat,
   normalizeDictionaryEntry,
 } from "../utils/dictionaryUtils";
 import {
   fetchBuiltinDomains,
-  getBuiltinWordsForDomains,
+  getBuiltinRuntimeEntriesForDomains,
   normalizeBuiltinDictionaryDomains,
   setBuiltinDomainsSnapshot,
 } from "../utils/builtinDictionary";
@@ -46,27 +46,33 @@ const buildRuntimeDictionary = (
   dictionaryEntries: DictionaryEntry[],
   builtinDomains: string[],
 ): string[] => {
-  const userWords = entriesToWords(dictionaryEntries);
-  const builtinWords = getBuiltinWordsForDomains(builtinDomains);
-  if (builtinWords.length === 0) return userWords;
+  const userEntries = entriesToRuntimeFormat(dictionaryEntries);
+  const builtinEntries = getBuiltinRuntimeEntriesForDomains(builtinDomains);
+  if (builtinEntries.length === 0) return userEntries;
 
   const merged = new Set<string>();
   const result: string[] = [];
 
-  for (const word of userWords) {
+  for (const entry of userEntries) {
+    const word = runtimeEntryWord(entry);
     if (merged.has(word)) continue;
     merged.add(word);
-    result.push(word);
+    result.push(entry);
   }
 
-  for (const word of builtinWords) {
+  for (const entry of builtinEntries) {
+    const word = runtimeEntryWord(entry);
     if (merged.has(word)) continue;
     merged.add(word);
-    result.push(word);
+    result.push(entry);
   }
 
   return result;
 };
+
+function runtimeEntryWord(entry: string): string {
+  return (entry.split("|")[0] || "").trim();
+}
 
 type SaveConfigGatewayOverrides = {
   apiKey?: string;

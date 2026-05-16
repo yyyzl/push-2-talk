@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "HotwordCompiler 来源排序、metadata 提纯和 provider payload 契约"}
+{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "TNL 词库消费入口需要保持纯词匹配行为"}

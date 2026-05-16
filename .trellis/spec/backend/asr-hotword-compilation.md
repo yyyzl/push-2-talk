@@ -109,11 +109,17 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
   - `"word"`
   - `"word|auto"`
   - `"word|source|category"`
+- Runtime dictionary entries may use source metadata beyond persisted user entries:
+  - `"word|domain|domain_term"` for currently selected builtin domains.
+  - `"word|builtin|domain_term"` for future low-priority builtin fallback terms.
+  - `"word|recent|category"` and `"word|app_context|category"` are reserved for later Phase 7 sources.
 - Only the pure `word` segment may enter provider payloads.
 - Empty pure words are skipped.
 - Duplicate words are de-duplicated case-insensitively.
 - Manual user entries outrank automatic entries when duplicates conflict.
 - Correction pair entries use `CorrectionPair.corrected_text` and rank below manual user entries but above automatic user entries.
+- Runtime source priority must remain: manual user > correction pair > recent > app context > automatic user > active domain > builtin fallback.
+- Frontend runtime dictionary construction must preserve source/category metadata for ASR ranking, while persisted config continues to store only user-managed dictionary entries.
 - Correction pairs must be included only when `enabled = true` and `corrected_text.trim()` is not empty.
 - `CorrectionPair.original_text` and `alias_keys` may be retained as aliases/hints in packs, but they must not enter current provider payload text.
 - If a manual dictionary word and a correction pair produce the same pure word, the manual dictionary source wins.
@@ -134,6 +140,8 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 |---|---|
 | Entries contain `Claude Code|auto|product` and `Claude Code|manual|product` | One `Claude Code` hotword remains, with `ManualUser` source and higher weight. |
 | Entries contain `Rust|auto|tool` | Provider payload contains `Rust`, not metadata. |
+| Entries contain `领域术语|domain|domain_term` | Provider payload contains `领域术语`, with `Domain` source ranked below automatic user words. |
+| Runtime dictionary contains selected builtin domain words | They are sent as domain metadata entries, not as manual user entries. |
 | Correction pair `cloud code -> Claude Code`, no manual duplicate | `Claude Code` enters the combined ASR pack as `CorrectionPair`, with `cloud code` retained as an alias/hint. |
 | Manual dictionary contains `Claude Code`, correction pair also corrects to `Claude Code` | The combined pack keeps the manual source. |
 | Correction pair is disabled or corrected text is blank | It is skipped in ASR, TNL, and LLM packs. |

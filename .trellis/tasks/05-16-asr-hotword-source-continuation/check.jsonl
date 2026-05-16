@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "核对热词来源、排序、provider 输出和测试要求是否同步"}
+{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "核对带 metadata 词条不会改变 TNL 纯词匹配语义"}

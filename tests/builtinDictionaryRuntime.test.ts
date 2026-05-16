@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   setBuiltinDomainsSnapshot,
   getBuiltinWordsForDomains,
+  getBuiltinRuntimeEntriesForDomains,
   normalizeBuiltinDictionaryDomains,
   BUILTIN_DICTIONARY_DOMAINS,
   BUILTIN_DICTIONARY_LIMIT,
@@ -30,4 +31,15 @@ test("BUILTIN_DICTIONARY_DOMAINS 向后兼容导出应反映当前 snapshot", ()
 test("BUILTIN_DICTIONARY_LIMIT 应保留导出", () => {
   assert.equal(typeof BUILTIN_DICTIONARY_LIMIT, "number");
   assert.equal(BUILTIN_DICTIONARY_LIMIT, 5);
+});
+
+test("内置领域词运行时应保留 domain 来源元数据", () => {
+  setBuiltinDomainsSnapshot([
+    { name: "AI", words: ["Claude Code", "Windsurf", "Claude Code"] },
+  ]);
+
+  assert.deepEqual(getBuiltinRuntimeEntriesForDomains(["AI"]), [
+    "Claude Code|domain|domain_term",
+    "Windsurf|domain|domain_term",
+  ]);
 });

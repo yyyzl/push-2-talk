@@ -156,6 +156,16 @@ export function entriesToStorageFormat(entries: DictionaryEntry[]): string[] {
 }
 
 /**
+ * 将 DictionaryEntry[] 转换为运行时格式。
+ *
+ * 运行时格式保留 source/category，供后端 HotwordCompiler 计算来源权重；
+ * TNL/LLM 入口负责提纯为纯词，避免 metadata 泄漏到实际文本处理。
+ */
+export function entriesToRuntimeFormat(entries: DictionaryEntry[]): string[] {
+  return entriesToStorageFormat(entries);
+}
+
+/**
  * 将旧格式 string[] 转换为 DictionaryEntry[]（向后兼容）
  */
 export function wordsToEntries(words: string[]): DictionaryEntry[] {

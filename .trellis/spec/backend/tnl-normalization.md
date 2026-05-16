@@ -47,9 +47,11 @@ impl TnlEngine {
 ### 3. Contracts
 
 - `TnlEngine::new_with_disfluency_mode` must pass the current pure user dictionary into `TechSpanDetector::new_with_user_dictionary`.
+- `TnlEngine::new_with_disfluency_mode` must defensively purify runtime dictionary entries before building `TechSpanDetector`, hyphen rewrite rules, or `FuzzyMatcher`.
 - `TechSpanDetector::new(ext_whitelist)` remains the no-dictionary compatibility constructor.
 - The detector uses `jieba-rs` with the embedded default dictionary and injects sanitized user terms via `Jieba::add_word`.
 - If metadata strings such as `word|source|category` leak into this boundary, the detector must use only the first `word` segment.
+- If runtime ASR dictionary metadata such as `word|domain|domain_term` reaches TNL, all TNL matching paths must behave as if the dictionary contained only `word`.
 - User terms shorter than two Unicode scalar values or containing only whitespace/punctuation must not be injected.
 - `Span.start` and `Span.end` are byte offsets, matching Rust string slicing in TNL internals.
 - `NamedEntity` priority must stay below existing URL, email, path, file name, CLI flag, identifier, and version spans so user terms cannot overwrite stronger technical detections.
@@ -61,6 +63,7 @@ impl TnlEngine {
 | Dictionary contains `深度求索`, input `我在用深度求索写代码` | `detect` returns a `SpanType::NamedEntity` span with text `深度求索`. |
 | Dictionary is empty, same input | No `NamedEntity` span is emitted. |
 | Dictionary accidentally contains `深度求索|manual|product` | The injected term is `深度求索`; metadata does not enter jieba. |
+| TNL engine is constructed with `深度求索|domain|domain_term` | Named-entity, fuzzy, and hyphen dictionary paths consume only `深度求索`. |
 | Dictionary term overlaps `test@example.com` | The merged span remains `SpanType::Email`. |
 | Term is a single character such as `马` | Do not inject it as a named entity; avoid noisy one-character spans. |
 

@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::dictionary_utils::extract_word;
 use crate::tnl::disfluency::{clean_disfluency, DisfluencyMode};
 use crate::tnl::fuzzy::{is_tech_token, FuzzyMatcher};
 use crate::tnl::is_ascii_digits;
@@ -177,6 +178,7 @@ impl TnlEngine {
         dictionary: Vec<String>,
         disfluency_mode: DisfluencyMode,
     ) -> Self {
+        let dictionary = purify_dictionary_entries(dictionary);
         let spoken_symbol_map = SpokenSymbolMap::new();
         let ext_whitelist = ExtensionWhitelist::new();
         let tech_span_detector =
@@ -1023,6 +1025,14 @@ impl TnlEngine {
     }
 }
 
+fn purify_dictionary_entries(dictionary: Vec<String>) -> Vec<String> {
+    dictionary
+        .into_iter()
+        .map(|entry| extract_word(&entry).trim().to_string())
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
 impl Default for TnlEngine {
     fn default() -> Self {
         Self::new_without_dictionary()
@@ -1075,6 +1085,17 @@ mod tests {
     #[test]
     fn test_user_dictionary_word_becomes_named_entity_span() {
         let engine = TnlEngine::new(vec!["深度求索".to_string()]);
+
+        let result = engine.normalize("我在用深度求索写代码");
+
+        assert!(result.technical_spans.iter().any(|span| {
+            span.span_type == SpanType::NamedEntity && span.text == "深度求索"
+        }));
+    }
+
+    #[test]
+    fn test_dictionary_metadata_is_purified_before_tnl_matching() {
+        let engine = TnlEngine::new(vec!["深度求索|manual|product".to_string()]);
 
         let result = engine.normalize("我在用深度求索写代码");
 

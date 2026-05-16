@@ -171,10 +171,13 @@ pub fn render_doubao_hotwords(pack: &AsrHotwordPack) -> Vec<Value> {
 }
 
 fn hotword_source_from_entry(entry: &str) -> HotwordSource {
-    if entry.split('|').nth(1).map(str::trim) == Some("auto") {
-        HotwordSource::AutoUser
-    } else {
-        HotwordSource::ManualUser
+    match entry.split('|').nth(1).map(str::trim) {
+        Some("auto") => HotwordSource::AutoUser,
+        Some("recent") => HotwordSource::Recent,
+        Some("app_context") => HotwordSource::AppContext,
+        Some("domain") => HotwordSource::Domain,
+        Some("builtin") => HotwordSource::Builtin,
+        _ => HotwordSource::ManualUser,
     }
 }
 
@@ -397,6 +400,41 @@ mod tests {
             ]
         );
         assert_eq!(pack.words[1].aliases, vec!["winds surf"]);
+    }
+
+    #[test]
+    fn ranks_runtime_domain_and_builtin_sources_below_user_sources() {
+        let entries = vec![
+            "领域术语|domain|domain_term".to_string(),
+            "Rust|auto|tool".to_string(),
+            "用户短语|manual|phrase".to_string(),
+            "内置兜底|builtin|domain_term".to_string(),
+        ];
+        let pairs = vec![CorrectionPair::new("windsurf", "winds surf", "Windsurf")];
+
+        let pack = compile_asr_pack_with_correction_pairs(&entries, &pairs, 10);
+
+        assert_eq!(
+            pack.words
+                .iter()
+                .map(|word| (&word.text, &word.source))
+                .collect::<Vec<_>>(),
+            vec![
+                (&"用户短语".to_string(), &HotwordSource::ManualUser),
+                (&"Windsurf".to_string(), &HotwordSource::CorrectionPair),
+                (&"Rust".to_string(), &HotwordSource::AutoUser),
+                (&"领域术语".to_string(), &HotwordSource::Domain),
+                (&"内置兜底".to_string(), &HotwordSource::Builtin),
+            ]
+        );
+        assert_eq!(
+            render_qwen_corpus_text(&pack),
+            "用户短语、Windsurf、Rust、领域术语、内置兜底"
+        );
+        assert_eq!(
+            render_doubao_hotwords(&pack)[3],
+            serde_json::json!({ "word": "领域术语" })
+        );
     }
 
     #[test]
