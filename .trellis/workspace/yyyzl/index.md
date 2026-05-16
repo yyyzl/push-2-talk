@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-05-16
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~646 | Active |
+| `journal-1.md` | ~679 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-05-16 | Phase 5 learning category taxonomy | `b4127b8` | `main` |
 | 16 | 2026-05-16 | Phase 5 phrase dictionary prepass | `a87384f` | `main` |
 | 15 | 2026-05-16 | Phase 5 TNL category routing | `78af2e2` | `main` |
 | 14 | 2026-05-16 | 助手语音候选仲裁 | `38df5df` | `main` |

@@ -644,3 +644,36 @@ Implemented runtime-only recent ASR hotwords from successful 24h history, wired 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Phase 5 learning category taxonomy
+
+**Date**: 2026-05-16
+**Task**: Phase 5 learning category taxonomy
+**Branch**: `main`
+
+### Summary
+
+将自动词库学习的 LLM 分类升级为完整词库 taxonomy，兼容旧 proper_noun/term/frequent 别名，更新 Toast 标签、TS 类型、事件契约和 Phase 5 路线图。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b4127b8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
