@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-05-16
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~580 | Active |
+| `journal-1.md` | ~613 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-05-16 | Phase 5 TNL category routing | `78af2e2` | `main` |
 | 14 | 2026-05-16 | 助手语音候选仲裁 | `38df5df` | `main` |
 | 13 | 2026-05-16 | 确认口语流畅化 UI 状态 | `43ffbba` | `main` |
 | 12 | 2026-05-16 | ASR 当前应用上下文热词 | `c969d34` | `main` |

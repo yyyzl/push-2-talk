@@ -578,3 +578,36 @@ Implemented runtime-only recent ASR hotwords from successful 24h history, wired 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Phase 5 TNL category routing
+
+**Date**: 2026-05-16
+**Task**: Phase 5 TNL category routing
+**Branch**: `main`
+
+### Summary
+
+接入 TNL 词库 category 路由：email/url 跳过字典改写路径，code_symbol 跳过 phonetic/fuzzy，产品/术语类继续保留音近修正；同步 Phase 5 路线图和 TNL spec。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `78af2e2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
