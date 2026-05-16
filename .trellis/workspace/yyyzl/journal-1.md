@@ -545,3 +545,36 @@ Implemented runtime-only recent ASR hotwords from successful 24h history, wired 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: 助手语音候选仲裁
+
+**Date**: 2026-05-16
+**Task**: 助手语音候选仲裁
+**Branch**: `main`
+
+### Summary
+
+接入 AI 助手语音指令的中置信 TNL/个性化候选仲裁，复用既有 bounded LLM candidate arbiter，并将真实 LLM apply/reject 弱反馈写回 correction pair。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `38df5df` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
