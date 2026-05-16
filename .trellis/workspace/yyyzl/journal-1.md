@@ -380,3 +380,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: ASR 热词运行时 correction pairs 来源
+
+**Date**: 2026-05-16
+**Task**: ASR 热词运行时 correction pairs 来源
+**Branch**: `main`
+
+### Summary
+
+让 Qwen/Doubao HTTP 与 realtime ASR 热词编译消费运行时 correction-pair 快照，服务启动与接受学习词后刷新缓存，保持 provider payload 兼容；hotword 相关目标测试和 cargo check 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `870b19f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
