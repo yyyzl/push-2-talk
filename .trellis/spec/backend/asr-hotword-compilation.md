@@ -113,7 +113,7 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
   - `"word|domain|domain_term"` for currently selected builtin domains.
   - `"word|builtin|domain_term"` for future low-priority builtin fallback terms.
   - `"word|recent|category"` for conservative frontend-derived terms from successful history records in the last 24 hours.
-  - `"word|app_context|category"` is reserved for later Phase 7 current-app context sources.
+  - `"word|app_context|category"` for conservative backend-derived terms from the current target window UIA text.
 - Only the pure `word` segment may enter provider payloads.
 - Empty pure words are skipped.
 - Duplicate words are de-duplicated case-insensitively.
@@ -123,6 +123,8 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 - Frontend runtime dictionary construction must preserve source/category metadata for ASR ranking, while persisted config continues to store only user-managed dictionary entries.
 - Frontend recent hotwords must be runtime-only. They may be included in `start_app` / `update_runtime_config` dictionary payloads, but must not be written to the `save_config` persisted `dictionary` field.
 - Frontend runtime dictionary merge priority must be user dictionary > recent hotwords > selected builtin domain terms, with pure-word de-duplication before sending to the backend.
+- Backend current-App context hotwords must be runtime-only. `start_app` may append `word|app_context|category` entries to the current recording's dictionary snapshot after reading the target window through UIA, but these entries must never be written to persisted config.
+- Current-App context extraction must be conservative, bounded by input length and output count, skip URL/email-like sensitive tokens, and degrade to the original dictionary if UIA fails or returns empty text.
 - Correction pairs must be included only when `enabled = true` and `corrected_text.trim()` is not empty.
 - `CorrectionPair.original_text` and `alias_keys` may be retained as aliases/hints in packs, but they must not enter current provider payload text.
 - If a manual dictionary word and a correction pair produce the same pure word, the manual dictionary source wins.
@@ -147,6 +149,8 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 | Runtime dictionary contains selected builtin domain words | They are sent as domain metadata entries, not as manual user entries. |
 | Successful frontend history from the last 24h contains `Claude Code` | The next runtime dictionary refresh may include `Claude Code|recent|generic`, and provider payloads contain only `Claude Code`. |
 | Frontend history contains failed or older-than-24h records | They are not converted into `recent` runtime hotwords. |
+| Current target window UIA text contains `Claude Code` and `GPT-5.3-Codex` | The current recording dictionary snapshot may append `Claude Code|app_context|generic` and `GPT-5.3-Codex|app_context|code_symbol`; provider payloads contain only pure words. |
+| Current target window UIA read fails, is empty, or only contains ordinary UI labels / URL / email tokens | No app-context hotwords are appended and recording still starts. |
 | Correction pair `cloud code -> Claude Code`, no manual duplicate | `Claude Code` enters the combined ASR pack as `CorrectionPair`, with `cloud code` retained as an alias/hint. |
 | Manual dictionary contains `Claude Code`, correction pair also corrects to `Claude Code` | The combined pack keeps the manual source. |
 | Correction pair is disabled or corrected text is blank | It is skipped in ASR, TNL, and LLM packs. |
@@ -163,9 +167,11 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 - Good: all ASR providers consume the same compiled pure-word pack and differ only in rendering format.
 - Good: runtime ASR clients consume `compile_asr_pack_with_correction_pairs` through an `AppState` correction-pair snapshot that is refreshed on service start and accepted learning updates.
 - Good: frontend derives recent hotwords from local successful history and refreshes runtime config without persisting those entries.
+- Good: backend derives current-App context hotwords from the already captured target window handle and appends them only to the current recording snapshot.
 - Base: with a small clean dictionary, outbound payloads are equivalent to the old direct `entries_to_words` behavior.
 - Bad: Qwen sends metadata strings such as `Claude Code|manual|product`.
 - Bad: `save_config` persists `Claude Code|recent|generic` into the user dictionary.
+- Bad: UIA text content is logged verbatim or persisted as user dictionary data.
 - Bad: provider runtime paths synchronously load `correction_pairs.json` on every audio chunk or request build without a cache strategy.
 - Bad: Doubao payload switches from `{"word": "Claude Code"}` to a weighted object before compatibility is verified.
 - Bad: one provider silently ignores the compiler and reimplements source priority or limits.
@@ -180,6 +186,7 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 - HotwordCompiler unit test proving `recent` ranks below correction pairs and above `app_context` / automatic user words.
 - Frontend runtime test proving recent hotwords come only from successful records within 24h and are formatted as `word|recent|category`.
 - Frontend runtime-flow test proving recent hotwords participate in runtime refresh hashing and are excluded from persisted `save_config` dictionary.
+- Backend app-context hotword tests proving conservative extraction, output limit, URL/email filtering, and runtime-only dictionary snapshot append.
 - HotwordCompiler unit test proving disabled/blank correction pairs are skipped.
 - TNL/LLM pack test proving correction pairs and correction hints are preserved for future consumers.
 - Runtime cache tests proving missing correction-pair files load as an empty ASR hotword source and valid stores hydrate correction pairs.

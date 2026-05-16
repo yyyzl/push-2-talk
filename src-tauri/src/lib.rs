@@ -2649,8 +2649,41 @@ async fn start_app(
             // 注意：这个时间略早于实际音频采集开始，但包含了用户感知到的准备时间
             *recording_start_instant_spawn.lock().unwrap() = Some(std::time::Instant::now());
 
-            // 从 state 获取最新词库（支持热更新）
-            let dictionary = dictionary_state.lock().unwrap().clone();
+            // 从 state 获取最新词库（支持热更新），并为本次录音追加临时上下文热词。
+            let mut dictionary = dictionary_state.lock().unwrap().clone();
+            if let Some(hwnd) = target_hwnd {
+                let context_read_start = std::time::Instant::now();
+                match tokio::task::spawn_blocking(move || {
+                    uia_text_reader::get_focused_window_text(hwnd)
+                })
+                .await
+                {
+                    Ok(Ok(context_text)) if !context_text.trim().is_empty() => {
+                        let before_len = dictionary.len();
+                        dictionary = personalization::augment_dictionary_with_app_context_hotwords(
+                            dictionary,
+                            &context_text,
+                        );
+                        let added_count = dictionary.len().saturating_sub(before_len);
+                        if added_count > 0 {
+                            tracing::debug!(
+                                "已追加当前 App 上下文 ASR 热词: {}（UIA {}ms）",
+                                added_count,
+                                context_read_start.elapsed().as_millis()
+                            );
+                        }
+                    }
+                    Ok(Ok(_)) => {
+                        tracing::debug!("当前 App 上下文为空，跳过临时 ASR 热词追加");
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!("读取当前 App 上下文失败，跳过临时 ASR 热词追加: {}", e);
+                    }
+                    Err(e) => {
+                        tracing::warn!("当前 App 上下文读取任务异常，跳过临时 ASR 热词追加: {}", e);
+                    }
+                }
+            }
             let correction_pairs = asr_correction_pairs.lock().unwrap().clone();
             // 1. 先执行开始录音逻辑 (内部会发送 recording_started 事件)
             handle_recording_start(

@@ -10,12 +10,14 @@ use crate::tnl::{
     TnlCandidate, TnlCandidateDecision, TnlCandidateRisk, TnlCandidateSource, TnlDiagnostics,
 };
 
+mod app_context_hotwords;
 mod correction_pair_store;
 mod engine;
 pub mod hotword_compiler;
 pub(crate) mod phonetic_keys;
 mod runtime_diagnostics;
 
+pub(crate) use app_context_hotwords::augment_dictionary_with_app_context_hotwords;
 pub use correction_pair_store::{
     default_correction_pairs_path, record_accepted_correction_pair,
     record_llm_arbitration_feedback_pair, record_observed_correction_pair,
