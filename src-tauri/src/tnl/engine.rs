@@ -151,11 +151,29 @@ struct HyphenDictionaryRule {
     segments: Vec<String>,
 }
 
+/// 短语词库重写规则
+///
+/// 用于 category=phrase 的固定短语优先匹配。ASCII 短语按词段匹配；
+/// 无空格中文短语按字符匹配，允许 ASR 在字间插入空白。
+#[derive(Debug, Clone)]
+struct PhraseDictionaryRule {
+    canonical: String,
+    segments: Vec<String>,
+    kind: PhraseRuleKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhraseRuleKind {
+    Segmented,
+    CjkCharacters,
+}
+
 #[derive(Debug, Default)]
 struct RoutedDictionary {
     named_entity_words: Vec<String>,
     fuzzy_words: Vec<String>,
     hyphen_words: Vec<String>,
+    phrase_words: Vec<String>,
 }
 
 /// TNL 引擎（可复用，预编译规则）
@@ -170,6 +188,8 @@ pub struct TnlEngine {
     fuzzy_matcher: Option<FuzzyMatcher>,
     /// 连字符词库重写规则（仅针对包含 `-` 的词条）
     hyphen_rules: Vec<HyphenDictionaryRule>,
+    /// 短语词库重写规则（仅针对 category=phrase）
+    phrase_rules: Vec<PhraseDictionaryRule>,
 }
 
 impl TnlEngine {
@@ -193,6 +213,7 @@ impl TnlEngine {
             &dictionary.named_entity_words,
         );
         let hyphen_rules = Self::build_hyphen_rules(&dictionary.hyphen_words);
+        let phrase_rules = Self::build_phrase_rules(&dictionary.phrase_words);
         let fuzzy_matcher = if dictionary.fuzzy_words.is_empty() {
             None
         } else {
@@ -205,6 +226,7 @@ impl TnlEngine {
             tech_span_detector,
             fuzzy_matcher,
             hyphen_rules,
+            phrase_rules,
         }
     }
 
@@ -253,8 +275,11 @@ impl TnlEngine {
         let (mapped_text, symbol_replacements) =
             self.apply_spoken_symbol_mapping(&normalized, &tokens, &tech_spans);
 
+        // 4.5 短语词库优先匹配（如 "claude code" -> "Claude Code"）
+        let (phrase_text, phrase_replacements) = self.apply_phrase_dictionary_rewrite(&mapped_text);
+
         // 5. 拼音词库替换（精确匹配，带声调）
-        let (pinyin_text, pinyin_replacements) = self.apply_pinyin_replacement(&mapped_text);
+        let (pinyin_text, pinyin_replacements) = self.apply_pinyin_replacement(&phrase_text);
 
         // 5.5 连字符词库定向重写（如 "GPT 5.3 Codex" -> "GPT-5.3-Codex"）
         let (hyphen_text, hyphen_replacements) = self.apply_hyphen_dictionary_rewrite(&pinyin_text);
@@ -265,6 +290,7 @@ impl TnlEngine {
         // 合并替换记录
         let mut applied = letter_merge_replacements;
         applied.extend(symbol_replacements);
+        applied.extend(phrase_replacements);
         applied.extend(pinyin_replacements);
         applied.extend(hyphen_replacements);
         applied.extend(phonetic_replacements);
@@ -520,6 +546,75 @@ impl TnlEngine {
             result.push_str(&text[last_end..]);
         }
 
+        (result, replacements)
+    }
+
+    /// 应用短语词库优先匹配。
+    fn apply_phrase_dictionary_rewrite(&self, text: &str) -> (String, Vec<Replacement>) {
+        if text.is_empty() || self.phrase_rules.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+
+        let mut candidates: Vec<(usize, usize, &PhraseDictionaryRule)> = Vec::new();
+        for (start, _) in text.char_indices() {
+            let mut best: Option<(usize, &PhraseDictionaryRule)> = None;
+            for rule in &self.phrase_rules {
+                if let Some(end) = Self::try_match_phrase_rule(text, start, rule) {
+                    if best.map_or(true, |(best_end, _)| end > best_end) {
+                        best = Some((end, rule));
+                    }
+                }
+            }
+
+            if let Some((end, rule)) = best {
+                candidates.push((start, end, rule));
+            }
+        }
+
+        if candidates.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| (b.1 - b.0).cmp(&(a.1 - a.0))));
+
+        let mut selected: Vec<(usize, usize, &PhraseDictionaryRule)> = Vec::new();
+        let mut cursor = 0usize;
+        for candidate in candidates {
+            if candidate.0 < cursor {
+                continue;
+            }
+            cursor = candidate.1;
+            selected.push(candidate);
+        }
+
+        if selected.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+
+        let mut result = String::with_capacity(text.len());
+        let mut replacements = Vec::new();
+        let mut last_end = 0usize;
+
+        for (start, end, rule) in selected {
+            result.push_str(&text[last_end..start]);
+            let original = &text[start..end];
+            result.push_str(&rule.canonical);
+
+            if original != rule.canonical {
+                replacements.push(Replacement {
+                    original: original.to_string(),
+                    replaced: rule.canonical.clone(),
+                    start,
+                    end,
+                    confidence: 1.0,
+                    reason: ReplacementReason::DictionaryExact,
+                });
+            }
+
+            last_end = end;
+        }
+
+        result.push_str(&text[last_end..]);
         (result, replacements)
     }
 
@@ -951,6 +1046,151 @@ impl TnlEngine {
         rules
     }
 
+    /// 从 phrase category 词库构建短语重写规则。
+    fn build_phrase_rules(dictionary: &[String]) -> Vec<PhraseDictionaryRule> {
+        let mut dedup = HashSet::new();
+        let mut rules = Vec::new();
+
+        for word in dictionary {
+            let canonical = word.trim();
+            if canonical.chars().count() < 2 {
+                continue;
+            }
+
+            let (kind, segments) = if canonical.split_whitespace().count() >= 2 {
+                (
+                    PhraseRuleKind::Segmented,
+                    canonical
+                        .split_whitespace()
+                        .map(str::trim)
+                        .filter(|segment| !segment.is_empty())
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
+                )
+            } else if canonical.chars().any(is_cjk_char) {
+                (
+                    PhraseRuleKind::CjkCharacters,
+                    canonical.chars().map(|ch| ch.to_string()).collect(),
+                )
+            } else {
+                continue;
+            };
+
+            if segments.len() < 2 {
+                continue;
+            }
+
+            let dedup_key = canonical.to_lowercase();
+            if dedup.insert(dedup_key) {
+                rules.push(PhraseDictionaryRule {
+                    canonical: canonical.to_string(),
+                    segments,
+                    kind,
+                });
+            }
+        }
+
+        rules
+    }
+
+    fn try_match_phrase_rule(
+        text: &str,
+        start: usize,
+        rule: &PhraseDictionaryRule,
+    ) -> Option<usize> {
+        if rule.segments.is_empty() {
+            return None;
+        }
+
+        if rule.kind == PhraseRuleKind::Segmented && !Self::has_ascii_boundary_before(text, start) {
+            return None;
+        }
+
+        let mut pos = start;
+        for (idx, segment) in rule.segments.iter().enumerate() {
+            pos = Self::match_phrase_segment(text, pos, segment)?;
+            if idx + 1 < rule.segments.len() {
+                pos = match rule.kind {
+                    PhraseRuleKind::Segmented => {
+                        Self::consume_required_phrase_separator(text, pos)?
+                    }
+                    PhraseRuleKind::CjkCharacters => {
+                        Self::consume_optional_phrase_whitespace(text, pos)
+                    }
+                };
+            }
+        }
+
+        if rule.kind == PhraseRuleKind::Segmented && !Self::has_ascii_boundary_after(text, pos) {
+            return None;
+        }
+
+        Some(pos)
+    }
+
+    fn match_phrase_segment(text: &str, pos: usize, segment: &str) -> Option<usize> {
+        let end = pos.checked_add(segment.len())?;
+        let candidate = text.get(pos..end)?;
+        let matched = if segment.is_ascii() {
+            candidate.eq_ignore_ascii_case(segment)
+        } else {
+            candidate == segment
+        };
+
+        if matched {
+            Some(end)
+        } else {
+            None
+        }
+    }
+
+    fn consume_required_phrase_separator(text: &str, start: usize) -> Option<usize> {
+        let mut pos = Self::consume_optional_phrase_whitespace(text, start);
+        if let Some(ch) = text.get(pos..)?.chars().next() {
+            if ch == '-' {
+                pos += ch.len_utf8();
+                pos = Self::consume_optional_phrase_whitespace(text, pos);
+                return Some(pos);
+            }
+        }
+
+        if pos > start {
+            Some(pos)
+        } else {
+            None
+        }
+    }
+
+    fn consume_optional_phrase_whitespace(text: &str, start: usize) -> usize {
+        let mut pos = start;
+        while let Some(ch) = text
+            .get(pos..)
+            .and_then(|remaining| remaining.chars().next())
+        {
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
+        pos
+    }
+
+    fn has_ascii_boundary_before(text: &str, start: usize) -> bool {
+        start == 0
+            || text
+                .as_bytes()
+                .get(start.saturating_sub(1))
+                .map_or(true, |b| !Self::is_ascii_word_byte(*b))
+    }
+
+    fn has_ascii_boundary_after(text: &str, end: usize) -> bool {
+        end >= text.len()
+            || text
+                .as_bytes()
+                .get(end)
+                .map_or(true, |b| !Self::is_ascii_word_byte(*b))
+    }
+
     /// 尝试在 `start` 位置匹配连字符规则，返回匹配结束字节位置
     fn try_match_hyphen_rule(
         bytes: &[u8],
@@ -1050,6 +1290,9 @@ fn route_dictionary_entries(dictionary: Vec<String>) -> RoutedDictionary {
         if allows_fuzzy_route(category) {
             routed.fuzzy_words.push(word.clone());
         }
+        if matches!(category, Some("phrase")) {
+            routed.phrase_words.push(word.clone());
+        }
         if allows_hyphen_route(category) {
             routed.hyphen_words.push(word);
         }
@@ -1068,6 +1311,14 @@ fn allows_fuzzy_route(category: Option<&str>) -> bool {
 
 fn allows_hyphen_route(category: Option<&str>) -> bool {
     !matches!(category, Some("email" | "url"))
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    let code = ch as u32;
+    (0x4E00..=0x9FFF).contains(&code)
+        || (0x3400..=0x4DBF).contains(&code)
+        || (0x20000..=0x2CEAF).contains(&code)
+        || (0xF900..=0xFAFF).contains(&code)
 }
 
 impl Default for TnlEngine {
@@ -1147,19 +1398,24 @@ mod tests {
             "contact@example.com|manual|email".to_string(),
             "docs-example.com|manual|url".to_string(),
             "Claude Code|manual|code_symbol".to_string(),
+            "团队约定|manual|phrase".to_string(),
             "深度求索|manual|product".to_string(),
             "legacy term".to_string(),
         ]);
 
         assert_eq!(
             routed.named_entity_words,
-            vec!["Claude Code", "深度求索", "legacy term"]
+            vec!["Claude Code", "团队约定", "深度求索", "legacy term"]
         );
-        assert_eq!(routed.fuzzy_words, vec!["深度求索", "legacy term"]);
+        assert_eq!(
+            routed.fuzzy_words,
+            vec!["团队约定", "深度求索", "legacy term"]
+        );
         assert_eq!(
             routed.hyphen_words,
-            vec!["Claude Code", "深度求索", "legacy term"]
+            vec!["Claude Code", "团队约定", "深度求索", "legacy term"]
         );
+        assert_eq!(routed.phrase_words, vec!["团队约定"]);
     }
 
     #[test]
@@ -1222,6 +1478,61 @@ mod tests {
             .applied
             .iter()
             .any(|replacement| matches!(replacement.reason, ReplacementReason::DictionaryExact)));
+    }
+
+    #[test]
+    fn test_phrase_category_rewrites_ascii_phrase_case() {
+        let engine = TnlEngine::new(vec!["Claude Code|manual|phrase".to_string()]);
+
+        let result = engine.normalize("打开 claude code");
+
+        assert_eq!(result.text, "打开 Claude Code");
+        assert!(result.applied.iter().any(|replacement| {
+            replacement.original == "claude code"
+                && replacement.replaced == "Claude Code"
+                && matches!(replacement.reason, ReplacementReason::DictionaryExact)
+        }));
+    }
+
+    #[test]
+    fn test_phrase_category_rewrites_cjk_phrase_with_inserted_space() {
+        let engine = TnlEngine::new(vec!["团队约定|manual|phrase".to_string()]);
+
+        let result = engine.normalize("这是团队 约定");
+
+        assert_eq!(result.text, "这是团队约定");
+        assert!(result.applied.iter().any(|replacement| {
+            replacement.original == "团队 约定"
+                && replacement.replaced == "团队约定"
+                && matches!(replacement.reason, ReplacementReason::DictionaryExact)
+        }));
+    }
+
+    #[test]
+    fn test_phrase_category_does_not_cross_punctuation() {
+        let engine = TnlEngine::new(vec!["Claude Code|manual|phrase".to_string()]);
+
+        let result = engine.normalize("先说 claude, code 再继续");
+
+        assert_eq!(result.text, "先说 claude, code 再继续");
+        assert!(!result
+            .applied
+            .iter()
+            .any(|replacement| replacement.replaced == "Claude Code"));
+    }
+
+    #[test]
+    fn test_non_phrase_category_skips_phrase_prepass() {
+        let engine = TnlEngine::new(vec!["Claude Code|manual|product".to_string()]);
+
+        let result = engine.normalize("打开 claude code");
+
+        assert_eq!(result.text, "打开 claude code");
+        assert!(!result.applied.iter().any(|replacement| {
+            replacement.original == "claude code"
+                && replacement.replaced == "Claude Code"
+                && matches!(replacement.reason, ReplacementReason::DictionaryExact)
+        }));
     }
 
     #[test]

@@ -54,6 +54,8 @@ impl TnlEngine {
 - If runtime ASR dictionary metadata such as `word|domain|domain_term` reaches TNL, `person/product/tool/phrase/domain_term/generic` and legacy entries continue to match as pure words.
 - Category-aware TNL routing must keep `email` and `url` entries out of user named-entity injection, hyphen rewrite, and fuzzy/phonetic matching. Built-in URL/email detectors remain responsible for protecting those spans.
 - Category-aware TNL routing must keep `code_symbol` entries out of fuzzy/phonetic matching, while allowing exact technical protection and hyphen-separator canonicalization.
+- Category-aware TNL routing must send only `phrase` entries into the phrase prepass. This prepass runs before pinyin, hyphen, and phonetic dictionary rewrites.
+- The phrase prepass may canonicalize whitespace-separated ASCII phrases case-insensitively and may collapse whitespace inserted between CJK characters in a phrase, but must not consume sentence or phrase punctuation.
 - User terms shorter than two Unicode scalar values or containing only whitespace/punctuation must not be injected.
 - `Span.start` and `Span.end` are byte offsets, matching Rust string slicing in TNL internals.
 - `NamedEntity` priority must stay below existing URL, email, path, file name, CLI flag, identifier, and version spans so user terms cannot overwrite stronger technical detections.
@@ -69,6 +71,9 @@ impl TnlEngine {
 | TNL engine is constructed with `Claude Code|manual|code_symbol` and input `Cloud Code` | Do not phonetic-rewrite to `Claude Code`, and do not emit a phonetic diagnostic candidate for that target. |
 | TNL engine is constructed with `GPT-5.3-Codex|manual|code_symbol` and input `GPT 5.3 Codex` | Exact hyphen canonicalization may rewrite to `GPT-5.3-Codex`. |
 | TNL engine is constructed with `docs-example.com|manual|url` and input `docs example.com` | Do not use the dictionary hyphen rule to create `docs-example.com`. |
+| TNL engine is constructed with `Claude Code|manual|phrase` and input `claude code` | Phrase prepass rewrites to `Claude Code` with `DictionaryExact`. |
+| TNL engine is constructed with `团队约定|manual|phrase` and input `团队 约定` | Phrase prepass rewrites to `团队约定` with `DictionaryExact`. |
+| TNL engine is constructed with `Claude Code|manual|phrase` and input `claude, code` | No phrase rewrite crosses punctuation. |
 | Dictionary term overlaps `test@example.com` | The merged span remains `SpanType::Email`. |
 | Term is a single character such as `马` | Do not inject it as a named entity; avoid noisy one-character spans. |
 
@@ -1827,6 +1832,7 @@ word|auto|domain_term
 | Stored `团队约定|manual|phrase` | Parse as manual/phrase, runtime word `团队约定`. |
 | Stored `Claude Code|manual|code_symbol` reaches TNL | It may be protected/exact-matched, but must not enter fuzzy/phonetic matching. |
 | Stored `docs-example.com|manual|url` reaches TNL | It must be excluded from named-entity, hyphen, and fuzzy/phonetic dictionary routes. |
+| Stored `Claude Code|manual|phrase` reaches TNL | It may enter phrase prepass and existing pure-word fuzzy routes. |
 | Manual update over existing auto product | Stored source becomes manual; category is the requested category if valid. |
 | Auto update over existing manual product | Source remains manual; category may update, but source priority is preserved. |
 | Unknown category arrives from old/future code | Existing valid category is preserved on update; new entries fall back to compact generic storage. |
@@ -1849,6 +1855,7 @@ word|auto|domain_term
 - Backend unit test for `extract_category` normalizing current and learning-era category aliases.
 - Backend unit test for `upsert_entry_with_category` preserving manual-over-auto priority while updating category.
 - Backend TNL tests for category routing: `code_symbol` skips phonetic/fuzzy, `email/url` skip dictionary rewrite routes, and product-like categories still use phonetic/fuzzy.
+- Backend TNL tests for phrase prepass: ASCII phrase casing, CJK inserted whitespace collapse, punctuation boundary, and non-phrase skip.
 - Run `npm run test:ts`, `npm run build`, targeted `cargo test dictionary_utils::tests`, and `cargo check`.
 
 ### 7. Wrong vs Correct
