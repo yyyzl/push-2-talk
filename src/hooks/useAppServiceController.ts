@@ -7,11 +7,13 @@ import type {
   AsrConfig,
   AssistantConfig,
   DictionaryEntry,
+  DisfluencyMode,
   DualHotkeyConfig,
   HotkeyKey,
   LearningConfig,
   LlmConfig,
   SearchConfig,
+  TnlConfig,
 } from "../types";
 import {
   DEFAULT_ASSISTANT_CONFIG,
@@ -22,6 +24,7 @@ import {
   FALLBACK_ASR_PROVIDER,
   VALID_ASR_PROVIDERS,
   normalizeLearningConfig,
+  normalizeTnlConfig,
 } from "../constants";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
 import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
@@ -85,6 +88,9 @@ type ConfigFieldPatchPayload = {
   theme?: string;
   enableMuteOtherApps?: boolean;
   closeAction?: "close" | "minimize" | null;
+  tnlConfig?: {
+    disfluencyMode?: DisfluencyMode;
+  };
 };
 
 type ResolvedSaveConfig = {
@@ -143,6 +149,8 @@ export type UseAppServiceControllerParams = {
   learningConfig: LearningConfig;
   setLearningConfig: React.Dispatch<React.SetStateAction<LearningConfig>>;
 
+  setTnlConfig: React.Dispatch<React.SetStateAction<TnlConfig>>;
+
   dictionary: DictionaryEntry[];
   setDictionary: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
 
@@ -200,6 +208,7 @@ export function useAppServiceController({
   setDualHotkeyConfig,
   learningConfig,
   setLearningConfig,
+  setTnlConfig,
   dictionary,
   setDictionary,
   builtinDictionaryDomains,
@@ -557,6 +566,7 @@ export function useAppServiceController({
         config.learning_config || DEFAULT_LEARNING_CONFIG,
       );
       setLearningConfig(loadedLearningConfig);
+      setTnlConfig(normalizeTnlConfig(config.tnl_config));
 
       if (config.close_action) {
         setCloseAction(config.close_action);
@@ -664,6 +674,7 @@ export function useAppServiceController({
     setBuiltinDictionaryDomains,
     setDualHotkeyConfig,
     setLearningConfig,
+    setTnlConfig,
     setEnableAutostart,
     setEnableMuteOtherApps,
     setEnablePostProcess,

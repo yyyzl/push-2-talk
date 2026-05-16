@@ -14,6 +14,7 @@ import type {
   LearningConfig,
   LlmConfig,
   SearchConfig,
+  TnlConfig,
   UsageStats,
 } from "./types";
 import type { AppPage } from "./pages/types";
@@ -23,6 +24,8 @@ import {
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
   DEFAULT_SEARCH_CONFIG,
+  DEFAULT_TNL_CONFIG,
+  normalizeTnlConfig,
 } from "./constants";
 import { loadUsageStats } from "./utils";
 import { TopStatusBar } from "./components/layout/TopStatusBar";
@@ -88,6 +91,7 @@ function App() {
   const [enablePostProcess, setEnablePostProcess] = useState(false);
   const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(false);
   const [learningConfig, setLearningConfig] = useState<LearningConfig>(DEFAULT_LEARNING_CONFIG);
+  const [tnlConfig, setTnlConfig] = useState<TnlConfig>(DEFAULT_TNL_CONFIG);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
@@ -311,6 +315,7 @@ function App() {
     setAssistantConfig,
     setSearchConfig,
     setLearningConfig,
+    setTnlConfig,
     setEnableMuteOtherApps,
     setTheme,
     setCloseAction,
@@ -377,6 +382,7 @@ function App() {
     setDualHotkeyConfig,
     learningConfig,
     setLearningConfig,
+    setTnlConfig,
     dictionary,
     setDictionary,
     builtinDictionaryDomains,
@@ -438,6 +444,9 @@ function App() {
     theme?: string;
     enableMuteOtherApps?: boolean;
     closeAction?: "close" | "minimize" | null;
+    tnlConfig?: {
+      disfluencyMode?: TnlConfig["disfluency_mode"];
+    };
   }) => {
     cancelAutoSaveDebounce();
     const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
@@ -451,6 +460,7 @@ function App() {
     const previousTheme = theme;
     const previousEnableMuteOtherApps = enableMuteOtherApps;
     const previousLearningConfig = learningConfig;
+    const previousTnlConfig = tnlConfig;
     const previousCloseAction = closeAction;
 
     if (typeof patch.theme === "string") {
@@ -465,6 +475,12 @@ function App() {
     }
     if (patch.closeAction !== undefined) {
       setCloseAction(patch.closeAction);
+    }
+    if (patch.tnlConfig?.disfluencyMode) {
+      setTnlConfig(normalizeTnlConfig({
+        ...tnlConfig,
+        disfluency_mode: patch.tnlConfig.disfluencyMode,
+      }));
     }
 
     setSyncStatus("syncing");
@@ -488,6 +504,9 @@ function App() {
       if (patch.closeAction !== undefined) {
         setCloseAction(previousCloseAction);
       }
+      if (patch.tnlConfig?.disfluencyMode) {
+        setTnlConfig(previousTnlConfig);
+      }
 
       setSyncStatus("error");
       syncTimeoutRef.current = window.setTimeout(() => {
@@ -501,11 +520,13 @@ function App() {
     theme,
     enableMuteOtherApps,
     learningConfig,
+    tnlConfig,
     closeAction,
     patchConfigFields,
     setTheme,
     setEnableMuteOtherApps,
     setLearningConfig,
+    setTnlConfig,
     setCloseAction,
     cancelAutoSaveDebounce,
     releaseConfigSyncWindow,
@@ -866,6 +887,7 @@ function App() {
             status={status}
             theme={theme}
             learningConfig={learningConfig}
+            tnlConfig={tnlConfig}
             setLearningConfig={setLearningConfig}
             setTheme={async (newTheme) => {
               console.log("[App.tsx] setTheme 被调用, newTheme=", newTheme);
@@ -891,6 +913,9 @@ function App() {
             sharedConfig={llmConfig.shared}
             onSetLearningEnabled={async (enabled) => {
               await saveFieldPatchWithStatus({ learningEnabled: enabled });
+            }}
+            onSetDisfluencyMode={async (mode) => {
+              await saveFieldPatchWithStatus({ tnlConfig: { disfluencyMode: mode } });
             }}
             onNavigateToModels={() => setActivePage("models")}
           />

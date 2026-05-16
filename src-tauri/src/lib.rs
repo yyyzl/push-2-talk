@@ -1304,11 +1304,42 @@ fn merge_asr_config_for_save(
 
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+struct TnlConfigFieldPatch {
+    disfluency_mode: Option<crate::tnl::DisfluencyMode>,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 struct ConfigFieldPatch {
     learning_enabled: Option<bool>,
     theme: Option<String>,
     enable_mute_other_apps: Option<bool>,
     close_action: Option<Option<String>>,
+    tnl_config: Option<TnlConfigFieldPatch>,
+}
+
+#[cfg(test)]
+mod config_field_patch_tests {
+    use super::*;
+
+    #[test]
+    fn should_deserialize_tnl_disfluency_mode_patch() {
+        let patch: ConfigFieldPatch = serde_json::from_value(serde_json::json!({
+            "tnlConfig": {
+                "disfluencyMode": "aggressive"
+            }
+        }))
+        .expect("tnl config patch should deserialize");
+
+        assert_eq!(
+            patch
+                .tnl_config
+                .expect("tnl patch")
+                .disfluency_mode
+                .expect("disfluency mode"),
+            crate::tnl::DisfluencyMode::Aggressive
+        );
+    }
 }
 
 // Tauri Commands
@@ -1548,6 +1579,12 @@ async fn patch_config_fields(app: AppHandle, patch: ConfigFieldPatch) -> Result<
                 None => {
                     config.close_action = None;
                 }
+            }
+        }
+
+        if let Some(tnl_patch) = patch.tnl_config {
+            if let Some(mode) = tnl_patch.disfluency_mode {
+                config.tnl_config.disfluency_mode = mode;
             }
         }
 

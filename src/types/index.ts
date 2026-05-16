@@ -145,6 +145,17 @@ export interface SearchConfig {
   enable_fallback: boolean;
 }
 
+export type DisfluencyMode = "off" | "conservative" | "aggressive";
+
+export interface TnlConfig {
+  enabled: boolean;
+  disfluency_mode: DisfluencyMode;
+  enable_personalization_exact_text_pass: boolean;
+  enable_personalization_syllable_match_pass: boolean;
+  personalization_max_window_tokens: number;
+  personalization_apply_threshold: number;
+}
+
 // 应用配置
 export interface AppConfig {
   dashscope_api_key: string;
@@ -157,6 +168,7 @@ export interface AppConfig {
   assistant_config: AssistantConfig;
   search_config: SearchConfig;
   learning_config: LearningConfig;
+  tnl_config: TnlConfig;
   close_action: "close" | "minimize" | null;
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;

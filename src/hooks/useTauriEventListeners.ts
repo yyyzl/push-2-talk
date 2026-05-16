@@ -14,10 +14,16 @@ import type {
   LearningConfig,
   LlmConfig,
   SearchConfig,
+  TnlConfig,
   TranscriptionResult,
   UsageStats,
 } from "../types";
-import { MAX_HISTORY, DEFAULT_LEARNING_CONFIG, normalizeLearningConfig } from "../constants";
+import {
+  DEFAULT_LEARNING_CONFIG,
+  MAX_HISTORY,
+  normalizeLearningConfig,
+  normalizeTnlConfig,
+} from "../constants";
 import { saveHistory, loadUsageStats } from "../utils";
 import { parseEntry } from "../utils/dictionaryUtils";
 import {
@@ -55,6 +61,7 @@ export type UseTauriEventListenersParams = {
   setAssistantConfig?: React.Dispatch<React.SetStateAction<AssistantConfig>>;
   setSearchConfig?: React.Dispatch<React.SetStateAction<SearchConfig>>;
   setLearningConfig?: React.Dispatch<React.SetStateAction<LearningConfig>>;
+  setTnlConfig?: React.Dispatch<React.SetStateAction<TnlConfig>>;
   setEnableMuteOtherApps?: React.Dispatch<React.SetStateAction<boolean>>;
   setTheme?: React.Dispatch<React.SetStateAction<string>>;
   setCloseAction?: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
@@ -96,6 +103,7 @@ export function useTauriEventListeners({
   setAssistantConfig,
   setSearchConfig,
   setLearningConfig,
+  setTnlConfig,
   setEnableMuteOtherApps,
   setTheme,
   setCloseAction,
@@ -269,6 +277,7 @@ export function useTauriEventListeners({
           setLearningConfig?.(
             normalizeLearningConfig(config.learning_config || DEFAULT_LEARNING_CONFIG),
           );
+          setTnlConfig?.(normalizeTnlConfig(config.tnl_config));
           setEnableMuteOtherApps?.(config.enable_mute_other_apps ?? false);
           setTheme?.(config.theme || "light");
 
@@ -362,6 +371,7 @@ export function useTauriEventListeners({
     setAssistantConfig,
     setSearchConfig,
     setLearningConfig,
+    setTnlConfig,
     setEnableMuteOtherApps,
     setTheme,
     setCloseAction,

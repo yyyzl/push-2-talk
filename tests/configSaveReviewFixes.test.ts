@@ -373,3 +373,40 @@ test("A13: 搜索达到轮数上限后应强制基于已有结果生成最终回
     /response\.tool_calls\.is_empty\(\)[\s\S]*\|\| loop_round >= max_loops/,
   );
 });
+
+test("A14: 口语流畅化模式应通过 tnl_config 字段级 patch 完成前后端闭环", async () => {
+  const typesSource = await readSource("src/types/index.ts");
+  const constantsSource = await readSource("src/constants/index.ts");
+  const appSource = await readSource("src/App.tsx");
+  const preferencesSource = await readSource("src/pages/PreferencesPage.tsx");
+  const controllerSource = await readSource("src/hooks/useAppServiceController.ts");
+  const eventsSource = await readSource("src/hooks/useTauriEventListeners.ts");
+  const backendSource = await readSource("src-tauri/src/lib.rs");
+
+  assert.match(typesSource, /export\s+type\s+DisfluencyMode\s*=\s*"off"\s*\|\s*"conservative"\s*\|\s*"aggressive"/);
+  assert.match(typesSource, /export\s+interface\s+TnlConfig\s*\{[\s\S]*disfluency_mode:\s*DisfluencyMode/);
+  assert.match(typesSource, /tnl_config:\s*TnlConfig;/);
+
+  assert.match(constantsSource, /export\s+const\s+DEFAULT_TNL_CONFIG:\s*TnlConfig/);
+  assert.match(constantsSource, /export\s+function\s+normalizeTnlConfig/);
+
+  assert.match(controllerSource, /setTnlConfig:\s*React\.Dispatch<React\.SetStateAction<TnlConfig>>/);
+  assert.match(controllerSource, /setTnlConfig\(normalizeTnlConfig\(config\.tnl_config\)\)/);
+  assert.match(controllerSource, /tnlConfig\?:\s*\{[\s\S]*disfluencyMode\?:\s*DisfluencyMode/);
+
+  assert.match(eventsSource, /setTnlConfig\?:\s*React\.Dispatch<React\.SetStateAction<TnlConfig>>/);
+  assert.match(eventsSource, /setTnlConfig\?\.\(normalizeTnlConfig\(config\.tnl_config\)\)/);
+
+  assert.match(appSource, /const\s+\[tnlConfig,\s*setTnlConfig\]\s*=\s*useState<TnlConfig>\(DEFAULT_TNL_CONFIG\)/);
+  assert.match(appSource, /previousTnlConfig/);
+  assert.match(appSource, /setTnlConfig\(normalizeTnlConfig\(\{[\s\S]*disfluency_mode:\s*patch\.tnlConfig\.disfluencyMode/);
+  assert.match(appSource, /await\s+saveFieldPatchWithStatus\(\{\s*tnlConfig:\s*\{\s*disfluencyMode:\s*mode\s*\}\s*\}\)/);
+
+  assert.match(preferencesSource, /口语流畅化/);
+  assert.match(preferencesSource, /onSetDisfluencyMode:\s*\(mode:\s*DisfluencyMode\)\s*=>\s*Promise<void>/);
+  assert.match(preferencesSource, /DISFLUENCY_MODE_OPTIONS\.map/);
+
+  assert.match(backendSource, /struct\s+TnlConfigFieldPatch\s*\{[\s\S]*disfluency_mode:\s*Option<crate::tnl::DisfluencyMode>/);
+  assert.match(backendSource, /tnl_config:\s*Option<TnlConfigFieldPatch>/);
+  assert.match(backendSource, /config\.tnl_config\.disfluency_mode\s*=\s*mode;/);
+});

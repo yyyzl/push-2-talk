@@ -1,4 +1,16 @@
-import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig, SearchConfig } from '../types';
+import type {
+  AssistantConfig,
+  AsrProvider,
+  AsrProviderMeta,
+  DisfluencyMode,
+  HotkeyKey,
+  LearningConfig,
+  LlmConfig,
+  LlmPreset,
+  SearchConfig,
+  SharedLlmConfig,
+  TnlConfig,
+} from '../types';
 
 // 按键显示名称映射
 export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
@@ -115,6 +127,43 @@ export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
   timeout_secs: 6,
   enable_fallback: true
 };
+
+export const DEFAULT_TNL_CONFIG: TnlConfig = {
+  enabled: true,
+  disfluency_mode: "conservative",
+  enable_personalization_exact_text_pass: true,
+  enable_personalization_syllable_match_pass: true,
+  personalization_max_window_tokens: 5,
+  personalization_apply_threshold: 0.88
+};
+
+const isDisfluencyMode = (mode: unknown): mode is DisfluencyMode =>
+  mode === "off" || mode === "conservative" || mode === "aggressive";
+
+export function normalizeTnlConfig(
+  tnlConfig: Partial<TnlConfig> | null | undefined,
+): TnlConfig {
+  if (!tnlConfig) return DEFAULT_TNL_CONFIG;
+
+  const maxWindowTokens = Number(tnlConfig.personalization_max_window_tokens);
+  const applyThreshold = Number(tnlConfig.personalization_apply_threshold);
+
+  return {
+    ...DEFAULT_TNL_CONFIG,
+    ...tnlConfig,
+    disfluency_mode: isDisfluencyMode(tnlConfig.disfluency_mode)
+      ? tnlConfig.disfluency_mode
+      : DEFAULT_TNL_CONFIG.disfluency_mode,
+    personalization_max_window_tokens:
+      Number.isFinite(maxWindowTokens) && maxWindowTokens > 0
+        ? maxWindowTokens
+        : DEFAULT_TNL_CONFIG.personalization_max_window_tokens,
+    personalization_apply_threshold:
+      Number.isFinite(applyThreshold) && applyThreshold > 0 && applyThreshold <= 1
+        ? applyThreshold
+        : DEFAULT_TNL_CONFIG.personalization_apply_threshold,
+  };
+}
 
 // ASR 服务商元数据
 export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {

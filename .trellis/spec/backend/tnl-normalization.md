@@ -128,11 +128,49 @@ pub struct TnlConfig {
 }
 ```
 
+Frontend mirror and field-level patch payload:
+
+```typescript
+export type DisfluencyMode = "off" | "conservative" | "aggressive";
+
+export interface TnlConfig {
+  enabled: boolean;
+  disfluency_mode: DisfluencyMode;
+  enable_personalization_exact_text_pass: boolean;
+  enable_personalization_syllable_match_pass: boolean;
+  personalization_max_window_tokens: number;
+  personalization_apply_threshold: number;
+}
+
+type ConfigFieldPatchPayload = {
+  tnlConfig?: {
+    disfluencyMode?: DisfluencyMode;
+  };
+};
+```
+
+Backend patch command contract:
+
+```rust
+#[serde(default, rename_all = "camelCase")]
+struct TnlConfigFieldPatch {
+    disfluency_mode: Option<crate::tnl::DisfluencyMode>,
+}
+
+#[serde(default, rename_all = "camelCase")]
+struct ConfigFieldPatch {
+    tnl_config: Option<TnlConfigFieldPatch>,
+}
+```
+
 ### 3. Contracts
 
 - `TnlEngine::new(dictionary)` uses `DisfluencyMode::Conservative` by default.
 - Runtime normal dictation and assistant voice input must construct `TnlEngine` with `TnlConfig.disfluency_mode`.
 - Legacy configs without `disfluency_mode` must deserialize as `DisfluencyMode::Conservative`.
+- The frontend `AppConfig` must include `tnl_config`, and config load / `config_updated` listeners must normalize missing legacy fields through a frontend `DEFAULT_TNL_CONFIG`.
+- Preferences UI must save disfluency mode through `patch_config_fields` with payload `tnlConfig.disfluencyMode`; full `save_config` currently preserves `existing.tnl_config` and is not the source of truth for this lightweight switch.
+- `patch_config_fields` may update only the requested `config.tnl_config.disfluency_mode` field and must preserve other `TnlConfig` fields such as personalization pass toggles, window size, and threshold.
 - Disfluency cleaning runs before Unicode normalization, tokenization, technical span detection, spoken-symbol mapping, pinyin, hyphen rewrite, and phonetic dictionary replacement.
 - `DisfluencyMode::Off` must return the input unchanged.
 - Conservative mode may remove only leading/isolated fillers:
@@ -159,6 +197,9 @@ pub struct TnlConfig {
 | TNL with dictionary `Claude`, input `嗯，我最近学习了他们的那个标准产品 cloud` | Return `我最近学习了他们的那个标准产品 Claude`. |
 | TNL with mode `Off`, dictionary `Claude`, same input | Return `嗯，我最近学习了他们的那个标准产品 Claude`. |
 | Config JSON `disfluency_mode: "off"` | Loads as `DisfluencyMode::Off`. |
+| Frontend receives legacy config without `tnl_config` | UI state falls back to conservative defaults without dropping other loaded config fields. |
+| Frontend patches `{ tnlConfig: { disfluencyMode: "aggressive" } }` | Backend persists only `config.tnl_config.disfluency_mode = Aggressive` and emits `config_updated`. |
+| Frontend patch uses invalid disfluency mode string | Tauri/serde rejects the command payload; caller rolls UI state back. |
 
 ### 5. Good/Base/Bad Cases
 
@@ -177,6 +218,8 @@ pub struct TnlConfig {
 - TNL engine integration test proving disfluency runs before phonetic dictionary replacement.
 - TNL/config test proving `Off` mode keeps leading fillers while preserving later dictionary correction.
 - Config serde/default tests for legacy and explicit `disfluency_mode`.
+- Frontend runtime regression test proving `AppConfig.tnl_config`, `normalizeTnlConfig`, settings UI, event sync, and `tnlConfig.disfluencyMode` patch wiring remain present.
+- Backend patch deserialization test proving camelCase payload `tnlConfig.disfluencyMode` reaches `ConfigFieldPatch`.
 - Run the full TNL test suite, normal pipeline tests, assistant pipeline tests, `cargo check`, and ASR eval after changing this pass.
 
 ### 7. Wrong vs Correct
