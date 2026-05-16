@@ -2,7 +2,7 @@
 
 ## Goal
 
-在 0-3 阶段已经闭环的基础上，继续推进不阻塞核心识别链路、但能直接提升日常体验的剩余工作。Phase 4 的口语流畅化 UI/config 闭环和 Phase 5 的用户词 category metadata 小闭环已完成并提交；下一步推进 Phase 6 的最小可交付切片：引入 `jieba-rs`，把用户词注入分词器，在 TNL 技术片段检测中标记用户词专名 span，先保护“专名不被误切分/漏识别”的基础能力，不引入 ONNX NER 或完整权重调参。
+在 0-3 阶段已经闭环的基础上，继续推进不阻塞核心识别链路、但能直接提升日常体验的剩余工作。Phase 4 的口语流畅化 UI/config 闭环、Phase 5 的用户词 category metadata 小闭环、Phase 6 的 `jieba-rs` 用户词专名 span 小闭环已完成并提交；下一步推进 Phase 7 的最小可交付切片：新增 HotwordCompiler 核心，统一 Qwen/Doubao 现有 ASR 热词输入的提纯、去重、权重排序和 provider 上限，先保持现有 payload 形状兼容，不引入 app context 缓存或完整评测。
 
 ## What I Already Know
 
@@ -12,7 +12,9 @@
 * Phase 5 文档明确：如果 P1 仍处于 JSON 旁路阶段，先扩展现有词典 entry metadata，不强行要求数据库已完成。
 * 当前词库仍以 `Vec<String>` / `string[]` 存储，旧格式是 `"word"` 或 `"word|auto"`；前端 `DictionaryEntry` 只保留 `source`，没有 `category`。
 * Phase 5 已完成：`DictionaryEntry.category`、`word|source|category` 兼容格式、DictionaryPage 分类微调和后端 round-trip 测试都已闭环。
-* Phase 6 文档要求引入 `jieba-rs` 并注入用户词；第一刀只让 TNL 能识别用户词专名 span，后续再接 SyllableMatchPass 权重和评测。
+* Phase 6 已完成：`jieba-rs` 注入用户词，TNL 能产出 `NamedEntity` span，且旧技术 span 优先级更高。
+* Phase 7 文档要求新增 `personalization/hotword_compiler.rs`，让 ASR providers 统一消费编译后的热词 pack。
+* 直接改 ASR provider 运行时路径影响较高：Doubao HTTP `transcribe_bytes` 为 CRITICAL，Qwen HTTP `transcribe_from_memory` 为 HIGH；本切片必须保持现有请求 payload 形状等价，只做编译来源统一、去重、排序和上限裁剪。
 * 当前工作区已有版本号 `1.6.2 -> 1.6.3` 的未提交变更，本任务不把它作为功能改动处理。
 
 ## Requirements
@@ -36,6 +38,12 @@
 * `TechSpanDetector` 需要能接收用户词库，并通过分词结果标记用户词专名片段。
 * 新增专名 span 必须保持旧技术片段优先级：URL、邮箱、路径、文件名等既有识别不能被用户词 span 覆盖。
 * 默认无词库路径仍应保持现有行为和构造 API 兼容。
+* 新增 `personalization::hotword_compiler`，至少定义 `AsrHotwordPack` / `AsrHotword` / `TnlDictionaryPack` / `LlmContextPack` 的核心结构。
+* HotwordCompiler 需要从现有 `Vec<String>` 词库格式读取纯词、source 和 category；旧格式 `"word"` / `"word|auto"` / 新格式 `"word|source|category"` 都要兼容。
+* ASR pack 需要对同一纯词去重，手动词优先于自动词，并按权重排序后按 provider 上限截断。
+* Qwen HTTP / Qwen Realtime / Doubao HTTP / Doubao Realtime 的现有热词构建逻辑统一改为消费 HotwordCompiler 输出。
+* 本切片保持 provider payload 形状兼容：Qwen 仍输出顿号拼接 corpus text，Doubao 仍输出 `{"word": "..."}`
+  hotwords 数组；权重先保留在 pack 中，不强行改变线上请求格式。
 
 ## Acceptance Criteria
 
@@ -55,7 +63,12 @@
 * [x] `TechSpanDetector` 能从用户词分词结果中产出 `NamedEntity` span。
 * [x] 既有 URL/邮箱/路径等技术 span 优先级高于 `NamedEntity`。
 * [x] TNL 集成测试能证明字典里的中文专名被识别为专名 span，且无字典时不新增该 span。
-* [ ] 目标 `tech_span` / TNL 测试和 `cargo check` 通过。
+* [x] 目标 `tech_span` / TNL 测试和 `cargo check` 通过（本机 Cargo/libcurl schannel 无法直连 crates.io；使用临时本地 `jieba-rs` 0.9 API 兼容 stub 完成验证）。
+* [x] HotwordCompiler 能把词库编译为去重、排序、截断后的 `AsrHotwordPack`。
+* [x] 手动词在重复词冲突时优先于自动词，且 metadata 不进入 ASR 热词文本。
+* [x] Qwen Realtime corpus 通过 HotwordCompiler 限制在 provider 上限内。
+* [x] Doubao HTTP/Realtme hotwords 通过 HotwordCompiler 构建并保持旧 `{"word": ...}` 形状。
+* [x] HotwordCompiler 单测和接入点最小单测通过。
 
 ## Definition Of Done
 
@@ -75,14 +88,16 @@
 7. 在 DictionaryPage 复用现有个人词库 UI，增加 category badge/select，并通过现有 `add_learned_word` 持久化微调。
 8. Phase 6 小切片引入 `jieba-rs`，给 `TechSpanDetector` 增加用户词注入构造器和 `NamedEntity` span。
 9. 在 `TnlEngine::new_with_disfluency_mode` 中把纯用户词传给 `TechSpanDetector`，并补充 span 识别回归测试。
+10. Phase 7 小切片新增 `personalization/hotword_compiler.rs`，先只消费现有用户词库，不接最近 24h、当前 App context 和领域词。
+11. 将 Qwen/Doubao HTTP/Realtme 热词构建替换为 HotwordCompiler helper，并补充 provider 格式单测。
 
 ## Decision (ADR-lite)
 
 **Context**: 剩余阶段 4-8 范围很大，Phase 5-8 分别涉及词典分类、分词/NER、HotwordCompiler、本地 reranker，适合作为独立任务。Phase 4 已有后端基础，只差 UI/config，能用最小风险把“文本更干净”能力交给用户。Phase 4 已在本任务内完成并提交。
 
-**Decision**: 本任务先完成 Phase 4 UI/config 闭环；随后继续 Phase 5 的 JSON metadata 最小闭环，只做 category 的类型、存储兼容、页面展示和手动微调；再推进 Phase 6 的 `jieba-rs` 用户词注入与专名 span 保护第一刀。
+**Decision**: 本任务先完成 Phase 4 UI/config 闭环；随后继续 Phase 5 的 JSON metadata 最小闭环，只做 category 的类型、存储兼容、页面展示和手动微调；再推进 Phase 6 的 `jieba-rs` 用户词注入与专名 span 保护第一刀；Phase 7 先做 HotwordCompiler 核心与 provider 现有热词构建的等价接入。
 
-**Consequences**: 可以快速交付一个可感知的质量提升，并为后续 phrase trie、不同 category lookup、HotwordCompiler、SQLite 迁移和 SyllableMatchPass 权重调优留下稳定的 metadata/分词基础，同时避免在一个任务里同时引入 ASR provider hotword 编译和本地模型评估等高风险变化。
+**Consequences**: 可以快速交付一个可感知的质量提升，并为后续 phrase trie、不同 category lookup、HotwordCompiler app-context 加权、SQLite 迁移和 SyllableMatchPass 权重调优留下稳定基础，同时避免在一个任务里同时引入本地模型评估等高风险变化。
 
 ## Out Of Scope
 
@@ -91,7 +106,7 @@
 * 助手路径中置信候选独立云端仲裁。
 * Phase 5 的 SQLite 分表、索引、phrase trie、不同 lookup path。
 * Phase 6 的 ONNX NER、完整词性权重、SyllableMatchPass 分数调参和离线质量评测。
-* Phase 7 HotwordCompiler。
+* Phase 7 的最近 24h 用词、当前 App context、活跃领域词、缓存复用和完整首次识别命中率评测。
 * Phase 8 本地 reranker。
 * 当前未提交的 `1.6.3` 版本号变更。
 
@@ -105,5 +120,8 @@
   * `src/pages/PreferencesPage.tsx`：更适合承载全局输入/规范化偏好。
   * `src-tauri/src/tnl/tech_span.rs`：Phase 6 用户词专名 span 检测入口。
   * `src-tauri/src/tnl/engine.rs`：把纯用户词注入 `TechSpanDetector`。
+  * `src-tauri/src/personalization/hotword_compiler.rs`：Phase 7 热词编译核心。
+  * `src-tauri/src/asr/http/*.rs` 和 `src-tauri/src/asr/realtime/*.rs`：Phase 7 provider 热词格式接入点。
 * Codex dispatch mode 为 inline，本任务 Phase 2 直接加载 `trellis-before-dev` 后在主会话实现。
 * 2026-05-16 Phase 6 本地验证：真实 `cargo check` 被 Cargo/libcurl schannel 访问 crates.io 的 TLS 握手失败阻断；使用临时本地 `jieba-rs` 0.9 API 兼容 stub 验证新增 `tech_span` / `engine` 目标测试和 `cargo check` 通过，stub 未写入仓库。
+* 2026-05-16 Phase 7 本地验证：使用同一个临时 `jieba-rs` 0.9 API 兼容 stub 跑过 HotwordCompiler 单测、Qwen/Doubao provider 接入单测和 `cargo check`；stub 未写入仓库。

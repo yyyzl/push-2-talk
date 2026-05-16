@@ -1,6 +1,8 @@
 use crate::asr::utils;
 use crate::config::AsrLanguageMode;
-use crate::dictionary_utils::entries_to_words;
+use crate::personalization::hotword_compiler::{
+    compile_user_dictionary_asr_pack, render_doubao_hotwords, DOUBAO_HTTP_MAX_HOTWORDS,
+};
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 
@@ -20,6 +22,30 @@ fn build_context_data(language_mode: AsrLanguageMode) -> serde_json::Value {
             {"text": "当前聊天的场景是日常聊天，因此保留语气词，去除尾部句号"},
         ]),
     }
+}
+
+fn build_corpus_context(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+) -> serde_json::Value {
+    let context_data = build_context_data(language_mode);
+    let mut context_obj = serde_json::json!({
+        "context_type": "dialog_ctx",
+        "context_data": context_data,
+    });
+
+    let hotword_pack = compile_user_dictionary_asr_pack(dictionary, DOUBAO_HTTP_MAX_HOTWORDS);
+    if !hotword_pack.words.is_empty() {
+        context_obj["hotwords"] = serde_json::json!(render_doubao_hotwords(&hotword_pack));
+        tracing::info!(
+            "豆包 HTTP ASR 词库: {} 个词（已编译）",
+            hotword_pack.words.len()
+        );
+    } else {
+        tracing::info!("豆包 HTTP ASR 词库: 未配置");
+    }
+
+    serde_json::json!({"context": context_obj.to_string()})
 }
 
 #[derive(Clone)]
@@ -56,41 +82,10 @@ impl DoubaoASRClient {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("豆包 ASR: 音频数据大小 {} bytes", audio_data.len());
 
-        // 构建词库 hotwords JSON（提纯后）
-        let corpus = if !self.dictionary.is_empty() {
-            let purified_words = entries_to_words(&self.dictionary);
-            let hotwords: Vec<serde_json::Value> = purified_words
-                .iter()
-                .map(|w| serde_json::json!({"word": w}))
-                .collect();
-            let context_data = build_context_data(self.language_mode);
-            let context = serde_json::json!({
-                "context_type": "dialog_ctx",
-                "context_data": context_data,
-                "hotwords": hotwords,
-            })
-            .to_string();
-            tracing::info!(
-                "豆包 HTTP ASR 词库: {} 个词（已提纯）, context={}",
-                purified_words.len(),
-                context
-            );
-            Some(serde_json::json!({"context": context}))
-        } else {
-            let context_data = build_context_data(self.language_mode);
-            let context = serde_json::json!({
-                "context_type": "dialog_ctx",
-                "context_data": context_data,
-            })
-            .to_string();
-            tracing::info!("豆包 HTTP ASR 词库: 未配置");
-            Some(serde_json::json!({"context": context}))
-        };
+        let corpus = build_corpus_context(self.language_mode, &self.dictionary);
 
         let mut request_obj = serde_json::json!({"model_name": "bigmodel"});
-        if let Some(c) = corpus {
-            request_obj["corpus"] = c;
-        }
+        request_obj["corpus"] = corpus;
         //NOTE: 实验性功能，能提升性能
         request_obj["model_version"] = "400".into();
         request_obj["enable_ddc"] = true.into();
@@ -161,8 +156,34 @@ impl DoubaoASRClient {
 
 #[cfg(test)]
 mod tests {
-    use super::build_context_data;
+    use super::{build_context_data, build_corpus_context};
     use crate::config::AsrLanguageMode;
+    use crate::personalization::hotword_compiler::DOUBAO_HTTP_MAX_HOTWORDS;
+
+    #[test]
+    fn builds_doubao_http_hotwords_with_compiler_limit_and_legacy_shape() {
+        let dictionary = (0..(DOUBAO_HTTP_MAX_HOTWORDS + 5))
+            .map(|idx| format!("词{}|manual|product", idx))
+            .collect::<Vec<_>>();
+
+        let corpus = build_corpus_context(AsrLanguageMode::Auto, &dictionary);
+        let context: serde_json::Value =
+            serde_json::from_str(corpus["context"].as_str().unwrap()).unwrap();
+        let hotwords = context["hotwords"].as_array().unwrap();
+
+        assert_eq!(hotwords.len(), DOUBAO_HTTP_MAX_HOTWORDS);
+        assert_eq!(hotwords[0], serde_json::json!({"word": "词0"}));
+        assert!(hotwords.iter().all(|item| item.get("weight").is_none()));
+    }
+
+    #[test]
+    fn omits_doubao_http_hotwords_when_dictionary_empty() {
+        let corpus = build_corpus_context(AsrLanguageMode::Zh, &[]);
+        let context: serde_json::Value =
+            serde_json::from_str(corpus["context"].as_str().unwrap()).unwrap();
+
+        assert!(context.get("hotwords").is_none());
+    }
 
     #[test]
     fn build_context_data_uses_mixed_prompt_for_auto() {

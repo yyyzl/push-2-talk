@@ -12,6 +12,7 @@ use crate::tnl::{
 
 mod correction_pair_store;
 mod engine;
+pub mod hotword_compiler;
 pub(crate) mod phonetic_keys;
 mod runtime_diagnostics;
 

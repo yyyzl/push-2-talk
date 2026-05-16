@@ -1,6 +1,8 @@
 use crate::asr::utils;
 use crate::config::AsrLanguageMode;
-use crate::dictionary_utils::entries_to_words;
+use crate::personalization::hotword_compiler::{
+    compile_user_dictionary_asr_pack, render_qwen_corpus_text, QWEN_HTTP_MAX_HOTWORDS,
+};
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use std::time::Duration;
@@ -47,6 +49,14 @@ fn build_request_body(
             }
         }
     })
+}
+
+fn build_qwen_http_corpus_text(dictionary: &[String]) -> (usize, String) {
+    let hotword_pack = compile_user_dictionary_asr_pack(dictionary, QWEN_HTTP_MAX_HOTWORDS);
+    (
+        hotword_pack.words.len(),
+        render_qwen_corpus_text(&hotword_pack),
+    )
 }
 
 #[derive(Clone)]
@@ -107,13 +117,12 @@ impl QwenASRClient {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("音频数据大小: {} bytes", audio_data.len());
 
-        // 词库提纯（去除 |auto 后缀）后用顿号分隔
-        let purified_words = entries_to_words(&self.dictionary);
-        let corpus_text = purified_words.join("、");
+        // 词库编译（提纯、去重、排序、截断）后用顿号分隔
+        let (hotword_count, corpus_text) = build_qwen_http_corpus_text(&self.dictionary);
         if !corpus_text.is_empty() {
             tracing::info!(
-                "Qwen HTTP ASR 词库: {} 个词（已提纯）, corpus={}",
-                purified_words.len(),
+                "Qwen HTTP ASR 词库: {} 个词（已编译）, corpus={}",
+                hotword_count,
                 corpus_text
             );
         } else {
@@ -169,13 +178,26 @@ impl QwenASRClient {
 
 #[cfg(test)]
 mod tests {
-    use super::build_request_body;
+    use super::{build_qwen_http_corpus_text, build_request_body};
     use crate::config::AsrLanguageMode;
+    use crate::personalization::hotword_compiler::QWEN_HTTP_MAX_HOTWORDS;
 
     #[test]
     fn build_request_body_sets_auto_language() {
         let request = build_request_body(AsrLanguageMode::Auto, "", "abc");
         assert_eq!(request["parameters"]["language"], "auto");
+    }
+
+    #[test]
+    fn limits_qwen_http_corpus_with_hotword_compiler() {
+        let dictionary = (0..(QWEN_HTTP_MAX_HOTWORDS + 5))
+            .map(|idx| format!("词{}|manual|product", idx))
+            .collect::<Vec<_>>();
+
+        let (_, corpus) = build_qwen_http_corpus_text(&dictionary);
+
+        assert_eq!(corpus.split('、').count(), QWEN_HTTP_MAX_HOTWORDS);
+        assert!(!corpus.contains('|'));
     }
 
     #[test]

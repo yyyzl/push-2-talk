@@ -2,7 +2,9 @@
 // 实时流式语音识别，边录音边发送
 
 use crate::config::AsrLanguageMode;
-use crate::dictionary_utils::entries_to_words;
+use crate::personalization::hotword_compiler::{
+    compile_user_dictionary_asr_pack, render_qwen_corpus_text, QWEN_REALTIME_MAX_HOTWORDS,
+};
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
@@ -38,13 +40,13 @@ fn build_input_audio_transcription(
         "language": asr_language_code(language_mode)
     });
 
-    let purified_words = entries_to_words(dictionary);
-    let corpus_text = purified_words.join("、");
+    let hotword_pack = compile_user_dictionary_asr_pack(dictionary, QWEN_REALTIME_MAX_HOTWORDS);
+    let corpus_text = render_qwen_corpus_text(&hotword_pack);
 
     if !corpus_text.is_empty() {
         tracing::info!(
-            "Qwen 流式 ASR 词库: {} 个词（已提纯）, corpus={}",
-            purified_words.len(),
+            "Qwen 流式 ASR 词库: {} 个词（已编译）, corpus={}",
+            hotword_pack.words.len(),
             corpus_text
         );
         input_audio_transcription["corpus"] = serde_json::json!({"text": corpus_text});
@@ -191,7 +193,10 @@ impl ConnectionPool {
         // 发送 session.update 配置会话
         let input_audio_transcription =
             build_input_audio_transcription(self.language_mode, &self.dictionary);
-        let corpus_for_check = entries_to_words(&self.dictionary).join("、");
+        let corpus_for_check = render_qwen_corpus_text(&compile_user_dictionary_asr_pack(
+            &self.dictionary,
+            QWEN_REALTIME_MAX_HOTWORDS,
+        ));
 
         let session_update = serde_json::json!({
             "event_id": format!("event_{}", std::time::SystemTime::now()
@@ -406,6 +411,7 @@ impl QwenRealtimeClient {
 mod tests {
     use super::build_input_audio_transcription;
     use crate::config::AsrLanguageMode;
+    use crate::personalization::hotword_compiler::QWEN_REALTIME_MAX_HOTWORDS;
 
     #[test]
     fn builds_auto_language_for_qwen_session_update() {
@@ -419,5 +425,18 @@ mod tests {
         let dictionary: Vec<String> = vec![];
         let transcription = build_input_audio_transcription(AsrLanguageMode::Zh, &dictionary);
         assert_eq!(transcription["language"], "zh");
+    }
+
+    #[test]
+    fn limits_qwen_realtime_corpus_with_hotword_compiler() {
+        let dictionary = (0..(QWEN_REALTIME_MAX_HOTWORDS + 5))
+            .map(|idx| format!("词{}", idx))
+            .collect::<Vec<_>>();
+
+        let transcription = build_input_audio_transcription(AsrLanguageMode::Auto, &dictionary);
+        let corpus = transcription["corpus"]["text"].as_str().unwrap();
+
+        assert_eq!(corpus.split('、').count(), QWEN_REALTIME_MAX_HOTWORDS);
+        assert!(!corpus.contains('|'));
     }
 }
