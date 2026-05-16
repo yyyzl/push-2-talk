@@ -1635,3 +1635,120 @@ fn singularize_ascii_word(word: &str) -> String;
 - Phonetic key unit test: `type script`, `types script`, and `types scripts` share at least one English phonetic key.
 - ASR eval cases for `types script` and `types scripts`.
 - False-positive guard for common `type` usage.
+
+---
+
+## Scenario: User Dictionary Category Metadata Uses Backward-Compatible Storage
+
+### 1. Scope / Trigger
+
+- Trigger: any change to user dictionary storage strings, `DictionaryEntry`, `dictionary_utils`, `add_learned_word`, dictionary UI category editing, or future HotwordCompiler/category lookup wiring.
+- The user dictionary is still stored as `Vec<String>` / `string[]` in config. Phase 5 may add metadata, but runtime ASR, TNL, and LLM hotword consumers must continue to receive pure words.
+
+### 2. Signatures
+
+Backend storage helpers:
+
+```rust
+pub fn format_entry(word: &str, source: &str) -> String;
+pub fn format_entry_with_category(word: &str, source: &str, category: Option<&str>) -> String;
+pub fn extract_word(entry: &str) -> &str;
+pub fn entries_to_words(entries: &[String]) -> Vec<String>;
+pub fn upsert_entry_with_category(
+    entries: &mut Vec<String>,
+    word: &str,
+    source: &str,
+    category: Option<&str>,
+);
+```
+
+Frontend mirror:
+
+```typescript
+export type DictionaryCategory =
+  | "person" | "product" | "tool" | "phrase"
+  | "email" | "url" | "code_symbol"
+  | "domain_term" | "generic";
+
+export interface DictionaryEntry {
+  word: string;
+  source: "manual" | "auto";
+  category: DictionaryCategory;
+}
+```
+
+Config string formats:
+
+```text
+word
+word|auto
+word|manual|product
+word|auto|domain_term
+```
+
+### 3. Contracts
+
+- Legacy `word` means `source=manual`; legacy `word|auto` means `source=auto`.
+- Non-generic categories are persisted as `word|source|category`. The source segment must be explicit when category is present, including manual entries.
+- `generic` category must keep the old compact format (`word` or `word|auto`) unless a later migration deliberately changes the storage schema.
+- `entries_to_words` and frontend `entriesToWords` must strip metadata and return pure user words for ASR/TNL/LLM consumers.
+- `add_learned_word` may receive `category`; when present, it should persist dictionary metadata while preserving the existing personalization correction-pair category payload.
+- Learning-era categories map only at the dictionary metadata boundary: `proper_noun -> product`, `term -> domain_term`, `frequent -> generic`.
+- Manual source keeps priority over auto source when upserting an existing word. Updating category must not demote a manual entry to auto.
+- Frontend must normalize old object entries and old strings so `DictionaryEntry.category` is always present before rendering.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Stored `Claude Code` | Parse as manual, infer/default category, runtime word `Claude Code`. |
+| Stored `Claude Code|auto` | Parse as auto, infer/default category, runtime word `Claude Code`. |
+| Stored `Claude Code|auto|product` | Parse as auto/product, runtime word `Claude Code`. |
+| Stored `团队约定|manual|phrase` | Parse as manual/phrase, runtime word `团队约定`. |
+| Manual update over existing auto product | Stored source becomes manual; category is the requested category if valid. |
+| Auto update over existing manual product | Source remains manual; category may update, but source priority is preserved. |
+| Unknown category arrives from old/future code | Existing valid category is preserved on update; new entries fall back to compact generic storage. |
+| `entries_to_words` receives category strings | All metadata after the first `|` is stripped before ASR provider prompts. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: user sets `Claude Code` to `product`; config stores `Claude Code|manual|product`; ASR hotword injection still sees only `Claude Code`.
+- Base: old config with `rust|auto` still renders and saves correctly.
+- Bad: storing `Claude Code|product` makes the frontend treat `product` as a source and loses category.
+- Bad: ASR prompt receives `Claude Code|manual|product` instead of the pure word.
+- Bad: changing category through UI deletes and recreates a word without preserving source priority.
+
+### 6. Tests Required
+
+- Frontend unit/runtime test for parsing legacy strings and category strings.
+- Frontend unit/runtime test for `entriesToStorageFormat` preserving non-generic category and compacting generic category.
+- Frontend/source regression test proving `DictionaryPage` exposes category editing and `useDictionary` persists through `add_learned_word`.
+- Backend unit test for `format_entry_with_category` and `entries_to_words` round-trip.
+- Backend unit test for `upsert_entry_with_category` preserving manual-over-auto priority while updating category.
+- Run `npm run test:ts`, `npm run build`, targeted `cargo test dictionary_utils::tests`, and `cargo check`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Wrong: sends metadata through ASR hotword consumers.
+let hotwords = config.dictionary.clone();
+```
+
+```typescript
+// Wrong: manual category stored without an explicit source segment.
+return `${entry.word}|${entry.category}`;
+```
+
+#### Correct
+
+```rust
+let hotwords = entries_to_words(&config.dictionary);
+```
+
+```typescript
+return entry.category === "generic"
+  ? entry.source === "auto" ? `${entry.word}|auto` : entry.word
+  : `${entry.word}|${entry.source}|${entry.category}`;
+```

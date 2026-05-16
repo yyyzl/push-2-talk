@@ -173,16 +173,28 @@ export interface AppConfig {
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;
   enable_mute_other_apps: boolean;
-  dictionary: string[];  // 简化格式："word" 或 "word|auto"
+  dictionary: string[];  // 简化格式："word"、"word|auto" 或 "word|source|category"
   builtin_dictionary_domains: string[];  // 内置词库领域列表
   theme: string;
 }
+
+export type DictionaryCategory =
+  | "person"
+  | "product"
+  | "tool"
+  | "phrase"
+  | "email"
+  | "url"
+  | "code_symbol"
+  | "domain_term"
+  | "generic";
 
 // 词库条目
 export interface DictionaryEntry {
   id: string;
   word: string;
   source: "manual" | "auto";
+  category: DictionaryCategory;
   added_at: number;  // Unix timestamp (seconds)
   frequency: number;
   last_used_at: number | null;  // Unix timestamp (seconds)

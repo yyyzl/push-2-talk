@@ -120,6 +120,7 @@ function App() {
     handleSaveEdit,
     handleCancelEdit,
     handleBatchDelete,
+    handleUpdateCategory,
   } = useDictionary();
   const [builtinDictionaryDomains, setBuiltinDictionaryDomains] = useState<string[]>([]);
   const [builtinDictionaryVersion, setBuiltinDictionaryVersion] = useState(0);
@@ -857,6 +858,7 @@ function App() {
             handleSaveEdit={handleSaveEdit}
             handleCancelEdit={handleCancelEdit}
             handleBatchDelete={handleBatchDelete}
+            handleUpdateCategory={handleUpdateCategory}
             builtinDictionaryDomains={builtinDictionaryDomains}
             setBuiltinDictionaryDomains={setBuiltinDictionaryDomains}
             builtinDictionaryVersion={builtinDictionaryVersion}

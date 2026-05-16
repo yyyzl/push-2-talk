@@ -4785,7 +4785,7 @@ async fn add_learned_word(
     category: Option<String>,
     context: Option<String>,
 ) -> Result<(), String> {
-    use crate::dictionary_utils::{entries_to_words, upsert_entry};
+    use crate::dictionary_utils::{entries_to_words, upsert_entry_with_category};
 
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
     let stored_correction_pair = crate::personalization::record_accepted_correction_pair(
@@ -4798,7 +4798,7 @@ async fn add_learned_word(
 
     let (updated_config, words) = mutate_persisted_config_with_result(|config| {
         // 添加词条（source: "manual" 或 "auto"）
-        upsert_entry(&mut config.dictionary, &word, &source);
+        upsert_entry_with_category(&mut config.dictionary, &word, &source, category.as_deref());
         Ok(entries_to_words(&config.dictionary))
     })?;
 

@@ -7,5 +7,6 @@
 
 #[allow(unused_imports)]
 pub use crate::dictionary_utils::{
-    entries_to_words, extract_word, format_entry, normalize_word, remove_entries, upsert_entry,
+    entries_to_words, extract_word, format_entry, format_entry_with_category, normalize_word,
+    remove_entries, upsert_entry, upsert_entry_with_category,
 };

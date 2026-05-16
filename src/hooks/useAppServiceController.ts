@@ -27,7 +27,12 @@ import {
   normalizeTnlConfig,
 } from "../constants";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
-import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
+import {
+  entriesToWords,
+  parseEntry,
+  entriesToStorageFormat,
+  normalizeDictionaryEntry,
+} from "../utils/dictionaryUtils";
 import {
   fetchBuiltinDomains,
   getBuiltinWordsForDomains,
@@ -585,13 +590,14 @@ export function useAppServiceController({
       const configDictionary =
         config.dictionary && Array.isArray(config.dictionary) ? config.dictionary : [];
 
-      // 处理词典：支持新格式 DictionaryEntry[] 和旧格式 string[]
+      // 处理词典：支持对象条目和 string[] 存储格式
       let loadedDictionary: DictionaryEntry[];
       if (configDictionary.length > 0 && typeof configDictionary[0] === "object") {
-        // 新格式：DictionaryEntry[]
-        loadedDictionary = configDictionary as unknown as DictionaryEntry[];
+        loadedDictionary = (configDictionary as unknown as Array<Partial<DictionaryEntry>>)
+          .map(normalizeDictionaryEntry)
+          .filter((entry) => entry.word);
       } else {
-        // 旧格式：string[]，需要转换（支持 "word" 和 "word|auto" 格式）
+        // string[] 需要转换（支持 "word"、"word|auto" 和 "word|source|category" 格式）
         const words = (configDictionary as unknown as string[]).filter(
           (w) => typeof w === "string" && w.trim()
         );
