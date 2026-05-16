@@ -54,6 +54,7 @@ strsim = "0.11"           # 编辑距离（模糊匹配）
 pinyin = "0.10"           # 拼音转换（中文模糊匹配）
 unicode-normalization = "0.1"  # Unicode 归一化
 rphonetic = "3.0.6"       # 英文音标匹配（Double Metaphone）
+jieba-rs = { version = "0.9", features = ["default-dict"] }  # 中文分词（用户词专名保护）
 
 # WebSocket 实时 ASR 支持
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }

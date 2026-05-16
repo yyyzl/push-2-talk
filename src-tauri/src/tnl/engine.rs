@@ -179,7 +179,8 @@ impl TnlEngine {
     ) -> Self {
         let spoken_symbol_map = SpokenSymbolMap::new();
         let ext_whitelist = ExtensionWhitelist::new();
-        let tech_span_detector = TechSpanDetector::new(ext_whitelist);
+        let tech_span_detector =
+            TechSpanDetector::new_with_user_dictionary(ext_whitelist, &dictionary);
         let hyphen_rules = Self::build_hyphen_rules(&dictionary);
         let fuzzy_matcher = if dictionary.is_empty() {
             None
@@ -1031,6 +1032,7 @@ impl Default for TnlEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tnl::types::SpanType;
 
     #[test]
     fn test_normalize_filename() {
@@ -1068,6 +1070,29 @@ mod tests {
         // "一点都不好" 中的"点"不在技术片段内，不应转换
         assert!(!result.changed);
         assert_eq!(result.text, "一点都不好");
+    }
+
+    #[test]
+    fn test_user_dictionary_word_becomes_named_entity_span() {
+        let engine = TnlEngine::new(vec!["深度求索".to_string()]);
+
+        let result = engine.normalize("我在用深度求索写代码");
+
+        assert!(result.technical_spans.iter().any(|span| {
+            span.span_type == SpanType::NamedEntity && span.text == "深度求索"
+        }));
+    }
+
+    #[test]
+    fn test_empty_dictionary_does_not_add_named_entity_span() {
+        let engine = TnlEngine::default();
+
+        let result = engine.normalize("我在用深度求索写代码");
+
+        assert!(!result
+            .technical_spans
+            .iter()
+            .any(|span| span.span_type == SpanType::NamedEntity));
     }
 
     #[test]

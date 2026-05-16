@@ -6,6 +6,10 @@ use crate::tnl::is_ascii_digits;
 use crate::tnl::rules::ExtensionWhitelist;
 use crate::tnl::tokenizer::{Token, TokenType};
 use crate::tnl::types::{Span, SpanType};
+use jieba_rs::Jieba;
+use std::collections::HashSet;
+
+const USER_TERM_FREQUENCY: usize = 10_000_000;
 
 /// 搜索方向
 #[derive(Copy, Clone, Debug)]
@@ -17,11 +21,30 @@ enum Direction {
 /// 技术片段识别器
 pub struct TechSpanDetector {
     ext_whitelist: ExtensionWhitelist,
+    jieba: Jieba,
+    user_terms: HashSet<String>,
 }
 
 impl TechSpanDetector {
     pub fn new(ext_whitelist: ExtensionWhitelist) -> Self {
-        Self { ext_whitelist }
+        Self::new_with_user_dictionary(ext_whitelist, &[])
+    }
+
+    pub fn new_with_user_dictionary(
+        ext_whitelist: ExtensionWhitelist,
+        dictionary: &[String],
+    ) -> Self {
+        let mut jieba = Jieba::new();
+        let user_terms = Self::normalize_user_terms(dictionary);
+        for term in &user_terms {
+            jieba.add_word(term, Some(USER_TERM_FREQUENCY), Some("nz"));
+        }
+
+        Self {
+            ext_whitelist,
+            jieba,
+            user_terms,
+        }
     }
 
     /// 检测技术片段
@@ -57,8 +80,63 @@ impl TechSpanDetector {
         // 策略 9: 检测包名/模块名 (@vue/cli, @types/node)
         spans.extend(self.detect_packages(text, tokens));
 
+        // 策略 10: 使用注入用户词的分词器标记专名
+        spans.extend(self.detect_user_named_entities(text));
+
         // 去重并合并重叠片段
         self.merge_overlapping(text, spans)
+    }
+
+    fn normalize_user_terms(dictionary: &[String]) -> HashSet<String> {
+        dictionary
+            .iter()
+            .filter_map(|entry| {
+                let word = entry.split('|').next().unwrap_or(entry.as_str()).trim();
+                if Self::is_user_term_candidate(word) {
+                    Some(word.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn is_user_term_candidate(word: &str) -> bool {
+        word.chars().count() >= 2
+            && word
+                .chars()
+                .any(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation())
+    }
+
+    fn detect_user_named_entities(&self, text: &str) -> Vec<Span> {
+        if self.user_terms.is_empty() {
+            return Vec::new();
+        }
+
+        let mut spans = Vec::new();
+        let mut cursor = 0;
+        for word in self.jieba.cut(text, false) {
+            if word.is_empty() {
+                continue;
+            }
+
+            let Some(relative_start) = text[cursor..].find(word) else {
+                continue;
+            };
+            let start = cursor + relative_start;
+            let end = start + word.len();
+            if self.user_terms.contains(word) {
+                spans.push(Span {
+                    text: word.to_string(),
+                    start,
+                    end,
+                    span_type: SpanType::NamedEntity,
+                });
+            }
+            cursor = end;
+        }
+
+        spans
     }
 
     /// 检测文件名模式
@@ -870,6 +948,7 @@ impl TechSpanDetector {
             SpanType::CliFlag => 4,
             SpanType::Identifier => 3,
             SpanType::Version => 2,
+            SpanType::NamedEntity => 2,
             SpanType::Technical => 1,
         }
     }
@@ -1143,6 +1222,59 @@ mod tests {
                 .any(|s| s.span_type == SpanType::Technical && s.text.contains("@example")),
             "邮箱不应被误识别为包名"
         );
+    }
+
+    #[test]
+    fn test_detect_user_dictionary_named_entity_with_jieba() {
+        let detector = TechSpanDetector::new_with_user_dictionary(
+            ExtensionWhitelist::new(),
+            &["深度求索".to_string()],
+        );
+        let text = "我在用深度求索写代码";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(spans
+            .iter()
+            .any(|s| s.span_type == SpanType::NamedEntity && s.text == "深度求索"));
+    }
+
+    #[test]
+    fn test_default_detector_does_not_mark_named_entity() {
+        let detector = TechSpanDetector::default();
+        let text = "我在用深度求索写代码";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(!spans.iter().any(|s| s.span_type == SpanType::NamedEntity));
+    }
+
+    #[test]
+    fn test_named_entity_loses_to_existing_technical_span_priority() {
+        let detector = TechSpanDetector::default();
+        let text = "请发到 test@example.com";
+        let start = text.find("test@example.com").unwrap();
+        let end = start + "test@example.com".len();
+        let spans = detector.merge_overlapping(
+            text,
+            vec![
+                Span {
+                    text: "test@example.com".to_string(),
+                    start,
+                    end,
+                    span_type: SpanType::Email,
+                },
+                Span {
+                    text: "test@example.com".to_string(),
+                    start,
+                    end,
+                    span_type: SpanType::NamedEntity,
+                },
+            ],
+        );
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].span_type, SpanType::Email);
     }
 
     // ===== P1-2: 十六进制检测测试 =====

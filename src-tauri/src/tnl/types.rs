@@ -9,9 +9,9 @@ pub struct Replacement {
     pub original: String,
     /// 替换后文本
     pub replaced: String,
-    /// 起始位置（字符索引）
+    /// 起始位置（字节偏移）
     pub start: usize,
-    /// 结束位置（字符索引）
+    /// 结束位置（字节偏移）
     pub end: usize,
     /// 置信度 (0.0 - 1.0)
     pub confidence: f32,
@@ -256,9 +256,9 @@ pub struct TnlCandidateArbitrationResult {
 pub struct Span {
     /// 片段文本
     pub text: String,
-    /// 起始位置（字符索引）
+    /// 起始位置（字节偏移）
     pub start: usize,
-    /// 结束位置（字符索引）
+    /// 结束位置（字节偏移）
     pub end: usize,
     /// 片段类型
     pub span_type: SpanType,
@@ -281,6 +281,8 @@ pub enum SpanType {
     Version,
     /// 邮箱地址（如 test@example.com）
     Email,
+    /// 用户词典专名（如产品、人名、术语）
+    NamedEntity,
     /// 通用技术串
     Technical,
 }

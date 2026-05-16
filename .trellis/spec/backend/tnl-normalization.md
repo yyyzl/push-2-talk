@@ -4,6 +4,99 @@
 
 ---
 
+## Scenario: User Dictionary Terms Produce Named Entity Spans
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `TechSpanDetector`, `SpanType`, `TnlEngine` construction, or dictionary-to-TNL wiring.
+- User dictionary terms are the first local personalization signal before later hotword compilation, NER, and reranking work.
+- This path must be conservative: it marks protected spans for diagnostics and downstream normalization, while preserving existing URL/email/path/file detection behavior.
+
+### 2. Signatures
+
+```rust
+impl TechSpanDetector {
+    pub fn new(ext_whitelist: ExtensionWhitelist) -> Self;
+    pub fn new_with_user_dictionary(
+        ext_whitelist: ExtensionWhitelist,
+        dictionary: &[String],
+    ) -> Self;
+    pub fn detect(&self, text: &str, tokens: &[Token]) -> Vec<Span>;
+}
+
+pub enum SpanType {
+    FileName,
+    Path,
+    Url,
+    CliFlag,
+    Identifier,
+    Version,
+    Email,
+    NamedEntity,
+    Technical,
+}
+
+impl TnlEngine {
+    pub fn new_with_disfluency_mode(
+        dictionary: Vec<String>,
+        disfluency_mode: DisfluencyMode,
+    ) -> Self;
+}
+```
+
+### 3. Contracts
+
+- `TnlEngine::new_with_disfluency_mode` must pass the current pure user dictionary into `TechSpanDetector::new_with_user_dictionary`.
+- `TechSpanDetector::new(ext_whitelist)` remains the no-dictionary compatibility constructor.
+- The detector uses `jieba-rs` with the embedded default dictionary and injects sanitized user terms via `Jieba::add_word`.
+- If metadata strings such as `word|source|category` leak into this boundary, the detector must use only the first `word` segment.
+- User terms shorter than two Unicode scalar values or containing only whitespace/punctuation must not be injected.
+- `Span.start` and `Span.end` are byte offsets, matching Rust string slicing in TNL internals.
+- `NamedEntity` priority must stay below existing URL, email, path, file name, CLI flag, identifier, and version spans so user terms cannot overwrite stronger technical detections.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Dictionary contains `深度求索`, input `我在用深度求索写代码` | `detect` returns a `SpanType::NamedEntity` span with text `深度求索`. |
+| Dictionary is empty, same input | No `NamedEntity` span is emitted. |
+| Dictionary accidentally contains `深度求索|manual|product` | The injected term is `深度求索`; metadata does not enter jieba. |
+| Dictionary term overlaps `test@example.com` | The merged span remains `SpanType::Email`. |
+| Term is a single character such as `马` | Do not inject it as a named entity; avoid noisy one-character spans. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: user product names and domain terms become `NamedEntity` spans without changing the normalized text.
+- Base: old `TechSpanDetector::default()` and `new(ext_whitelist)` callers keep previous no-dictionary behavior.
+- Bad: adding a dictionary entry for an email/URL causes that technical span to be downgraded to `NamedEntity`.
+- Bad: jieba token offsets are treated as character indexes and then used for Rust string slicing.
+
+### 6. Tests Required
+
+- Unit test: `TechSpanDetector::new_with_user_dictionary(..., &["深度求索"])` emits a `NamedEntity` span.
+- Unit test: `TechSpanDetector::default()` emits no `NamedEntity` for the same text.
+- Unit test: overlapping `NamedEntity` and `Email` spans merge to `Email`.
+- Integration test: `TnlEngine::new(vec!["深度求索"])` exposes the `NamedEntity` span in `NormalizationResult.technical_spans`.
+- Integration test: `TnlEngine::default()` does not emit the span.
+- Run the `tech_span` tests, the TNL engine tests, and `cargo check` after changing this path.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let tech_span_detector = TechSpanDetector::new(ext_whitelist);
+```
+
+#### Correct
+
+```rust
+let tech_span_detector =
+    TechSpanDetector::new_with_user_dictionary(ext_whitelist, &dictionary);
+```
+
+---
+
 ## Scenario: Exact Dictionary Words Beat Phonetic Correction
 
 ### 1. Scope / Trigger
