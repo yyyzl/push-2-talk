@@ -413,3 +413,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: ASR hotword source metadata
+
+**Date**: 2026-05-16
+**Task**: ASR hotword source metadata
+**Branch**: `main`
+
+### Summary
+
+Preserved runtime dictionary source metadata so selected builtin domain words rank as ASR domain hotwords instead of manual user words; added TNL metadata purification and updated tests/specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f50558d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
