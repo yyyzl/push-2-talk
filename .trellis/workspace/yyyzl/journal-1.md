@@ -677,3 +677,36 @@ Implemented runtime-only recent ASR hotwords from successful 24h history, wired 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: Phase 5 backend category inference
+
+**Date**: 2026-05-16
+**Task**: Phase 5 backend category inference
+**Branch**: `main`
+
+### Summary
+
+Added backend dictionary category inference helpers aligned with frontend rules, routed add_learned_word through inferred-category upsert, covered missing/invalid/existing metadata cases with Rust tests, and synced the TNL spec plus ASR roadmap.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5f3cad7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
