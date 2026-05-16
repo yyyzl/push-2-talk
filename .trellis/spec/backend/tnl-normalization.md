@@ -1779,7 +1779,15 @@ pub fn format_entry_with_category(word: &str, source: &str, category: Option<&st
 pub fn extract_word(entry: &str) -> &str;
 pub fn extract_category(entry: &str) -> Option<&'static str>;
 pub fn entries_to_words(entries: &[String]) -> Vec<String>;
+pub fn infer_dictionary_category(word: &str) -> &'static str;
+pub fn normalize_or_infer_category(word: &str, category: Option<&str>) -> &'static str;
 pub fn upsert_entry_with_category(
+    entries: &mut Vec<String>,
+    word: &str,
+    source: &str,
+    category: Option<&str>,
+);
+pub fn upsert_entry_with_inferred_category(
     entries: &mut Vec<String>,
     word: &str,
     source: &str,
@@ -1818,8 +1826,11 @@ word|auto|domain_term
 - `generic` category must keep the old compact format (`word` or `word|auto`) unless a later migration deliberately changes the storage schema.
 - `entries_to_words` and frontend `entriesToWords` must strip metadata and return pure user words for ASR/LLM consumers; TNL may read `extract_category` first to route matching paths, but each selected route still receives pure words only.
 - `add_learned_word` may receive `category`; when present, it should persist dictionary metadata while preserving the existing personalization correction-pair category payload.
+- `add_learned_word` must route dictionary writes through `upsert_entry_with_inferred_category` so missing or invalid categories are inferred on the backend for old frontends, scripts, or automation callers.
+- Backend inference mirrors the frontend: email-like strings become `email`, `http://` / `https://` / `www.` prefixes become `url`, ASCII camelCase / `_` / `/` / `\` / alnum-hyphen-alnum terms become `code_symbol`, two-or-more CJK chars without whitespace become `phrase`, and the fallback is `generic`.
 - Learning suggestions should emit canonical dictionary categories. Legacy learning-era categories remain accepted and map at the dictionary metadata boundary: `proper_noun -> product`, `term -> domain_term`, `frequent -> generic`.
 - Manual source keeps priority over auto source when upserting an existing word. Updating category must not demote a manual entry to auto.
+- Backend inferred upsert should preserve an existing valid category when an update arrives without a valid requested category, so old callers do not accidentally demote curated metadata.
 - Frontend must normalize old object entries and old strings so `DictionaryEntry.category` is always present before rendering.
 
 ### 4. Validation & Error Matrix
@@ -1830,12 +1841,15 @@ word|auto|domain_term
 | Stored `Claude Code|auto` | Parse as auto, infer/default category, runtime word `Claude Code`. |
 | Stored `Claude Code|auto|product` | Parse as auto/product, runtime word `Claude Code`. |
 | Stored `团队约定|manual|phrase` | Parse as manual/phrase, runtime word `团队约定`. |
+| `add_learned_word("useState", "auto", category=None)` | Persist `useState|auto|code_symbol`; runtime ASR/TNL words still see only `useState`. |
+| `add_learned_word("团队约定", "manual", category=Some("unknown"))` | Persist `团队约定|manual|phrase`; invalid category falls back to backend inference. |
+| Existing `Claude Code|manual|product`, then old caller updates `Claude Code` without category | Preserve `Claude Code|manual|product`. |
 | Stored `Claude Code|manual|code_symbol` reaches TNL | It may be protected/exact-matched, but must not enter fuzzy/phonetic matching. |
 | Stored `docs-example.com|manual|url` reaches TNL | It must be excluded from named-entity, hyphen, and fuzzy/phonetic dictionary routes. |
 | Stored `Claude Code|manual|phrase` reaches TNL | It may enter phrase prepass and existing pure-word fuzzy routes. |
 | Manual update over existing auto product | Stored source becomes manual; category is the requested category if valid. |
 | Auto update over existing manual product | Source remains manual; category may update, but source priority is preserved. |
-| Unknown category arrives from old/future code | Existing valid category is preserved on update; new entries fall back to compact generic storage. |
+| Unknown category arrives from old/future code | Existing valid category is preserved on update; new entries infer category from the word surface and compact only when the inferred category is `generic`. |
 | `entries_to_words` receives category strings | All metadata after the first `|` is stripped before ASR provider prompts. |
 
 ### 5. Good/Base/Bad Cases
@@ -1854,6 +1868,8 @@ word|auto|domain_term
 - Backend unit test for `format_entry_with_category` and `entries_to_words` round-trip.
 - Backend unit test for `extract_category` normalizing current and learning-era category aliases.
 - Backend unit test for `upsert_entry_with_category` preserving manual-over-auto priority while updating category.
+- Backend unit test for `infer_dictionary_category` covering email, URL, code symbol, CJK phrase, and generic fallback.
+- Backend unit test for `upsert_entry_with_inferred_category` covering missing category, invalid category, compact generic storage, and preserving existing valid metadata.
 - Backend TNL tests for category routing: `code_symbol` skips phonetic/fuzzy, `email/url` skip dictionary rewrite routes, and product-like categories still use phonetic/fuzzy.
 - Backend TNL tests for phrase prepass: ASCII phrase casing, CJK inserted whitespace collapse, punctuation boundary, and non-phrase skip.
 - Run `npm run test:ts`, `npm run build`, targeted `cargo test dictionary_utils::tests`, and `cargo check`.

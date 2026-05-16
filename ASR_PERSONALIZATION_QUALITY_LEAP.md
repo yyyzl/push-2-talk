@@ -603,6 +603,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成：TNL 构造阶段按 category 路由词库，`email/url` 不再进入 named-entity、hyphen、phonetic/fuzzy；`code_symbol` 不再进入 phonetic/fuzzy，但保留精确连字符重写。
 - 已完成：`phrase` category 的 TNL 轻量 prepass，先于 pinyin / hyphen / phonetic 执行，覆盖 `claude code -> Claude Code` 与 `团队 约定 -> 团队约定`，且不跨标点。
 - 已完成：学习阶段 LLM 判断已输出完整词库 category taxonomy，并兼容旧 `proper_noun/term/frequent` 分类别名。
+- 已完成：后端 `add_learned_word` 对旧前端、脚本或自动化调用缺省/无效 category 做本地推断兜底，推断规则与前端 `inferDictionaryCategory` 对齐，并保留已有有效 metadata。
 - 未完成：SQLite `user_terms` 表、`en_phonetic_key` / `zh_pinyin_fuzzy_key` 索引列、持久化 phrase trie/索引结构、已有词典批量 category 重算。
 
 ### 工程量

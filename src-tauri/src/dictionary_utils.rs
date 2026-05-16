@@ -64,6 +64,98 @@ pub fn normalize_category(category: Option<&str>) -> Option<&'static str> {
     normalize_dictionary_category(category)
 }
 
+fn has_whitespace(value: &str) -> bool {
+    value.chars().any(char::is_whitespace)
+}
+
+fn is_email_like(value: &str) -> bool {
+    if has_whitespace(value) {
+        return false;
+    }
+
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() || domain.contains('@') {
+        return false;
+    }
+
+    domain
+        .split_once('.')
+        .is_some_and(|(prefix, suffix)| !prefix.is_empty() && !suffix.is_empty())
+}
+
+fn is_url_like(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    ["http://", "https://", "www."].iter().any(|prefix| {
+        lower.starts_with(prefix)
+            && value[prefix.len()..]
+                .chars()
+                .next()
+                .is_some_and(|ch| !ch.is_whitespace())
+    })
+}
+
+fn has_camel_case(value: &str) -> bool {
+    let mut previous_lowercase = false;
+    for ch in value.chars() {
+        if previous_lowercase && ch.is_ascii_uppercase() {
+            return true;
+        }
+        previous_lowercase = ch.is_ascii_lowercase();
+    }
+    false
+}
+
+fn has_alnum_hyphen_alnum(value: &str) -> bool {
+    let chars: Vec<char> = value.chars().collect();
+    chars.windows(3).any(|window| {
+        window[0].is_ascii_alphanumeric() && window[1] == '-' && window[2].is_ascii_alphanumeric()
+    })
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(ch, '\u{4e00}'..='\u{9fff}')
+}
+
+/// 按前端同款规则推断词库分类。
+pub fn infer_dictionary_category(word: &str) -> &'static str {
+    let trimmed = word.trim();
+    if trimmed.is_empty() {
+        return "generic";
+    }
+
+    if is_email_like(trimmed) {
+        return "email";
+    }
+
+    if is_url_like(trimmed) {
+        return "url";
+    }
+
+    if trimmed.is_ascii()
+        && (has_camel_case(trimmed)
+            || trimmed.contains('_')
+            || trimmed.contains('/')
+            || trimmed.contains('\\')
+            || has_alnum_hyphen_alnum(trimmed))
+    {
+        return "code_symbol";
+    }
+
+    let cjk_count = trimmed.chars().filter(|ch| is_cjk_char(*ch)).count();
+    if cjk_count >= 2 && !has_whitespace(trimmed) {
+        return "phrase";
+    }
+
+    "generic"
+}
+
+/// 标准化有效分类；缺省或无效时按词面推断分类。
+pub fn normalize_or_infer_category(word: &str, category: Option<&str>) -> &'static str {
+    normalize_dictionary_category(category).unwrap_or_else(|| infer_dictionary_category(word))
+}
+
 /// 格式化词条（添加来源标记）
 ///
 /// - source = "manual" -> "word"
@@ -156,6 +248,31 @@ pub fn upsert_entry_with_category(
     entries.push(format_entry_with_category(&normalized, source, category));
 }
 
+/// 插入或更新词条；当调用方没有提供有效分类时，按词面推断分类。
+pub fn upsert_entry_with_inferred_category(
+    entries: &mut Vec<String>,
+    word: &str,
+    source: &str,
+    category: Option<&str>,
+) {
+    let normalized = normalize_word(word);
+    if normalized.is_empty() {
+        return;
+    }
+
+    let existing_category = entries
+        .iter()
+        .find(|entry| extract_word(entry) == normalized)
+        .and_then(|entry| extract_category(entry));
+    let next_category = if let Some(category) = normalize_dictionary_category(category) {
+        category
+    } else {
+        existing_category.unwrap_or_else(|| normalize_or_infer_category(&normalized, category))
+    };
+
+    upsert_entry_with_category(entries, &normalized, source, Some(next_category));
+}
+
 /// 删除指定词汇（按 word 匹配，不区分来源）
 pub fn remove_entries(entries: &mut Vec<String>, words: &[String]) {
     let words_set: HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
@@ -210,6 +327,37 @@ mod tests {
         );
         assert_eq!(extract_category("Claude Code|manual|unknown"), None);
         assert_eq!(extract_category("Claude Code|manual"), None);
+    }
+
+    #[test]
+    fn test_infer_dictionary_category() {
+        assert_eq!(infer_dictionary_category("user@example.com"), "email");
+        assert_eq!(infer_dictionary_category("https://example.com/docs"), "url");
+        assert_eq!(infer_dictionary_category("www.example.com"), "url");
+        assert_eq!(infer_dictionary_category("useState"), "code_symbol");
+        assert_eq!(infer_dictionary_category("async_await"), "code_symbol");
+        assert_eq!(infer_dictionary_category("src/main.rs"), "code_symbol");
+        assert_eq!(infer_dictionary_category("GPT-5.3-Codex"), "code_symbol");
+        assert_eq!(infer_dictionary_category("团队约定"), "phrase");
+        assert_eq!(infer_dictionary_category("rust"), "generic");
+        assert_eq!(infer_dictionary_category(""), "generic");
+    }
+
+    #[test]
+    fn test_normalize_or_infer_category_prefers_valid_or_legacy_category() {
+        assert_eq!(
+            normalize_or_infer_category("useState", Some("tool")),
+            "tool"
+        );
+        assert_eq!(
+            normalize_or_infer_category("useState", Some("term")),
+            "domain_term"
+        );
+        assert_eq!(
+            normalize_or_infer_category("useState", Some("unknown")),
+            "code_symbol"
+        );
+        assert_eq!(normalize_or_infer_category("团队约定", None), "phrase");
     }
 
     #[test]
@@ -295,5 +443,38 @@ mod tests {
 
         upsert_entry_with_category(&mut entries, "Claude Code", "auto", Some("domain_term"));
         assert_eq!(entries, vec!["Claude Code|manual|domain_term"]);
+    }
+
+    #[test]
+    fn test_upsert_entry_with_inferred_category_infers_missing_and_invalid_category() {
+        let mut entries = vec![];
+
+        upsert_entry_with_inferred_category(&mut entries, "useState", "auto", None);
+        assert_eq!(entries, vec!["useState|auto|code_symbol"]);
+
+        upsert_entry_with_inferred_category(&mut entries, "团队约定", "manual", Some("unknown"));
+        assert_eq!(
+            entries,
+            vec!["useState|auto|code_symbol", "团队约定|manual|phrase"]
+        );
+
+        upsert_entry_with_inferred_category(&mut entries, "rust", "auto", None);
+        assert_eq!(
+            entries,
+            vec![
+                "useState|auto|code_symbol",
+                "团队约定|manual|phrase",
+                "rust|auto"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_upsert_entry_with_inferred_category_preserves_existing_category() {
+        let mut entries = vec!["Claude Code|manual|product".to_string()];
+
+        upsert_entry_with_inferred_category(&mut entries, "Claude Code", "auto", None);
+
+        assert_eq!(entries, vec!["Claude Code|manual|product"]);
     }
 }
