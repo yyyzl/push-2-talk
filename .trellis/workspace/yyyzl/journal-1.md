@@ -479,3 +479,36 @@ Implemented runtime-only recent ASR hotwords from successful 24h history, wired 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: ASR 当前应用上下文热词
+
+**Date**: 2026-05-16
+**Task**: ASR 当前应用上下文热词
+**Branch**: `main`
+
+### Summary
+
+完成录音开始前的当前 App UIA 上下文热词提取与 runtime-only dictionary 追加，覆盖保守提取、URL/email 过滤、上限和 hotword 编译链路验证。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c969d34` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
