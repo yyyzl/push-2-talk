@@ -102,7 +102,8 @@ fn extract_source(entry: &str) -> &'static str {
     normalize_source(entry.split('|').nth(1).unwrap_or("manual"))
 }
 
-fn extract_category(entry: &str) -> Option<&'static str> {
+/// 解析词条，提取标准化后的分类 metadata。
+pub fn extract_category(entry: &str) -> Option<&'static str> {
     normalize_dictionary_category(entry.split('|').nth(2))
 }
 
@@ -187,6 +188,20 @@ mod tests {
         assert_eq!(extract_word("CLAUDE.md|auto"), "CLAUDE.md");
         assert_eq!(extract_word("word|auto|extra"), "word"); // 只取第一段
         assert_eq!(extract_word(""), "");
+    }
+
+    #[test]
+    fn test_extract_category() {
+        assert_eq!(
+            extract_category("Claude Code|manual|product"),
+            Some("product")
+        );
+        assert_eq!(
+            extract_category("Claude Code|manual|term"),
+            Some("domain_term")
+        );
+        assert_eq!(extract_category("Claude Code|manual|unknown"), None);
+        assert_eq!(extract_category("Claude Code|manual"), None);
     }
 
     #[test]

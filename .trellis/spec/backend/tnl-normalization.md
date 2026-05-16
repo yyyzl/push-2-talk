@@ -50,8 +50,10 @@ impl TnlEngine {
 - `TnlEngine::new_with_disfluency_mode` must defensively purify runtime dictionary entries before building `TechSpanDetector`, hyphen rewrite rules, or `FuzzyMatcher`.
 - `TechSpanDetector::new(ext_whitelist)` remains the no-dictionary compatibility constructor.
 - The detector uses `jieba-rs` with the embedded default dictionary and injects sanitized user terms via `Jieba::add_word`.
-- If metadata strings such as `word|source|category` leak into this boundary, the detector must use only the first `word` segment.
-- If runtime ASR dictionary metadata such as `word|domain|domain_term` reaches TNL, all TNL matching paths must behave as if the dictionary contained only `word`.
+- If metadata strings such as `word|source|category` leak into this boundary, TNL matching paths must use only the first `word` segment after category routing.
+- If runtime ASR dictionary metadata such as `word|domain|domain_term` reaches TNL, `person/product/tool/phrase/domain_term/generic` and legacy entries continue to match as pure words.
+- Category-aware TNL routing must keep `email` and `url` entries out of user named-entity injection, hyphen rewrite, and fuzzy/phonetic matching. Built-in URL/email detectors remain responsible for protecting those spans.
+- Category-aware TNL routing must keep `code_symbol` entries out of fuzzy/phonetic matching, while allowing exact technical protection and hyphen-separator canonicalization.
 - User terms shorter than two Unicode scalar values or containing only whitespace/punctuation must not be injected.
 - `Span.start` and `Span.end` are byte offsets, matching Rust string slicing in TNL internals.
 - `NamedEntity` priority must stay below existing URL, email, path, file name, CLI flag, identifier, and version spans so user terms cannot overwrite stronger technical detections.
@@ -64,6 +66,9 @@ impl TnlEngine {
 | Dictionary is empty, same input | No `NamedEntity` span is emitted. |
 | Dictionary accidentally contains `深度求索|manual|product` | The injected term is `深度求索`; metadata does not enter jieba. |
 | TNL engine is constructed with `深度求索|domain|domain_term` | Named-entity, fuzzy, and hyphen dictionary paths consume only `深度求索`. |
+| TNL engine is constructed with `Claude Code|manual|code_symbol` and input `Cloud Code` | Do not phonetic-rewrite to `Claude Code`, and do not emit a phonetic diagnostic candidate for that target. |
+| TNL engine is constructed with `GPT-5.3-Codex|manual|code_symbol` and input `GPT 5.3 Codex` | Exact hyphen canonicalization may rewrite to `GPT-5.3-Codex`. |
+| TNL engine is constructed with `docs-example.com|manual|url` and input `docs example.com` | Do not use the dictionary hyphen rule to create `docs-example.com`. |
 | Dictionary term overlaps `test@example.com` | The merged span remains `SpanType::Email`. |
 | Term is a single character such as `马` | Do not inject it as a named entity; avoid noisy one-character spans. |
 
@@ -1767,6 +1772,7 @@ Backend storage helpers:
 pub fn format_entry(word: &str, source: &str) -> String;
 pub fn format_entry_with_category(word: &str, source: &str, category: Option<&str>) -> String;
 pub fn extract_word(entry: &str) -> &str;
+pub fn extract_category(entry: &str) -> Option<&'static str>;
 pub fn entries_to_words(entries: &[String]) -> Vec<String>;
 pub fn upsert_entry_with_category(
     entries: &mut Vec<String>,
@@ -1805,7 +1811,7 @@ word|auto|domain_term
 - Legacy `word` means `source=manual`; legacy `word|auto` means `source=auto`.
 - Non-generic categories are persisted as `word|source|category`. The source segment must be explicit when category is present, including manual entries.
 - `generic` category must keep the old compact format (`word` or `word|auto`) unless a later migration deliberately changes the storage schema.
-- `entries_to_words` and frontend `entriesToWords` must strip metadata and return pure user words for ASR/TNL/LLM consumers.
+- `entries_to_words` and frontend `entriesToWords` must strip metadata and return pure user words for ASR/LLM consumers; TNL may read `extract_category` first to route matching paths, but each selected route still receives pure words only.
 - `add_learned_word` may receive `category`; when present, it should persist dictionary metadata while preserving the existing personalization correction-pair category payload.
 - Learning-era categories map only at the dictionary metadata boundary: `proper_noun -> product`, `term -> domain_term`, `frequent -> generic`.
 - Manual source keeps priority over auto source when upserting an existing word. Updating category must not demote a manual entry to auto.
@@ -1819,6 +1825,8 @@ word|auto|domain_term
 | Stored `Claude Code|auto` | Parse as auto, infer/default category, runtime word `Claude Code`. |
 | Stored `Claude Code|auto|product` | Parse as auto/product, runtime word `Claude Code`. |
 | Stored `团队约定|manual|phrase` | Parse as manual/phrase, runtime word `团队约定`. |
+| Stored `Claude Code|manual|code_symbol` reaches TNL | It may be protected/exact-matched, but must not enter fuzzy/phonetic matching. |
+| Stored `docs-example.com|manual|url` reaches TNL | It must be excluded from named-entity, hyphen, and fuzzy/phonetic dictionary routes. |
 | Manual update over existing auto product | Stored source becomes manual; category is the requested category if valid. |
 | Auto update over existing manual product | Source remains manual; category may update, but source priority is preserved. |
 | Unknown category arrives from old/future code | Existing valid category is preserved on update; new entries fall back to compact generic storage. |
@@ -1838,7 +1846,9 @@ word|auto|domain_term
 - Frontend unit/runtime test for `entriesToStorageFormat` preserving non-generic category and compacting generic category.
 - Frontend/source regression test proving `DictionaryPage` exposes category editing and `useDictionary` persists through `add_learned_word`.
 - Backend unit test for `format_entry_with_category` and `entries_to_words` round-trip.
+- Backend unit test for `extract_category` normalizing current and learning-era category aliases.
 - Backend unit test for `upsert_entry_with_category` preserving manual-over-auto priority while updating category.
+- Backend TNL tests for category routing: `code_symbol` skips phonetic/fuzzy, `email/url` skip dictionary rewrite routes, and product-like categories still use phonetic/fuzzy.
 - Run `npm run test:ts`, `npm run build`, targeted `cargo test dictionary_utils::tests`, and `cargo check`.
 
 ### 7. Wrong vs Correct

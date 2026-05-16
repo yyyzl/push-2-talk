@@ -582,9 +582,9 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
    ```
 2. **不同 category 走不同路径**：
    - `phrase`（≥2 token 短语）：建独立 phrase trie，在 SyllableMatchPass 之前优先匹配
-   - `email / url`：用正则识别和保护，不进入音化流程
-   - `code_symbol`（如 `useState / async/await / k8s`）：保留原大小写、不音化、精确匹配
-   - `person / product / tool / domain_term`：进入音节格候选
+   - `email / url`：用正则识别和保护，不进入音化流程（TNL 后端已排除 named-entity / fuzzy / hyphen 路径）
+   - `code_symbol`（如 `useState / async/await / k8s`）：保留原大小写、不音化、精确匹配（TNL 后端已排除 phonetic/fuzzy，保留精确连字符重写）
+   - `person / product / tool / domain_term`：进入音节格候选（当前 TNL fuzzy/phonetic 路径继续启用）
    - `generic`：兜底
 3. **category 推断策略**：
    - 含 `@` 且有点号 → `email`
@@ -596,6 +596,12 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
    - DictionaryPage 增加 category 列展示
    - 允许手动改 category
    - 默认推断 + 人工微调
+
+### 当前落地状态（2026-05-16）
+
+- 已完成：JSON 词库 entry metadata、DictionaryPage category 编辑、`add_learned_word` category 持久化、ASR hotword payload 纯词输出。
+- 已完成：TNL 构造阶段按 category 路由词库，`email/url` 不再进入 named-entity、hyphen、phonetic/fuzzy；`code_symbol` 不再进入 phonetic/fuzzy，但保留精确连字符重写。
+- 未完成：SQLite `user_terms` 表、`en_phonetic_key` / `zh_pinyin_fuzzy_key` 索引列、独立 phrase trie、学习阶段 LLM 批量 category 判断。
 
 ### 工程量
 
@@ -749,7 +755,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 | 2 | Syllable/window candidate | 1.5 周 | 一族错形要单独修 | 必做 | - |
 | 3 | ConvertPipeline 分级查找（包装优先） | 5 天 | 决策黑盒、不可调 | 必做 | Phase 4 |
 | 4 | 言语流畅化 | 3 天 | 文本不够整洁 | 强烈建议 | Phase 3 |
-| 5 | 用户词分类分表 | 4 天 | 邮箱/代码被误伤 | 建议 | - |
+| 5 | 用户词分类分表 | 4 天 | 邮箱/代码被误伤 | 建议（TNL category 路由已部分完成） | - |
 | 6 | jieba + NER | 1 周 | 专名识别 | 视效果 | - |
 | 7 | HotwordCompiler 升级 | 1.5 周 | ASR 上游 bias 精细化 | 视效果 | - |
 | 8 | 本地 reranker | 3 周 | 长尾质量追平 | 可选 | - |

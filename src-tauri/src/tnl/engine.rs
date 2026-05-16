@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::dictionary_utils::extract_word;
+use crate::dictionary_utils::{extract_category, extract_word};
 use crate::tnl::disfluency::{clean_disfluency, DisfluencyMode};
 use crate::tnl::fuzzy::{is_tech_token, FuzzyMatcher};
 use crate::tnl::is_ascii_digits;
@@ -151,6 +151,13 @@ struct HyphenDictionaryRule {
     segments: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct RoutedDictionary {
+    named_entity_words: Vec<String>,
+    fuzzy_words: Vec<String>,
+    hyphen_words: Vec<String>,
+}
+
 /// TNL 引擎（可复用，预编译规则）
 pub struct TnlEngine {
     /// 口语流畅化清洗模式
@@ -169,7 +176,7 @@ impl TnlEngine {
     /// 创建 TNL 引擎
     ///
     /// # Arguments
-    /// * `dictionary` - 已提纯的词库（用于模糊匹配）
+    /// * `dictionary` - 可包含 source/category metadata 的词库
     pub fn new(dictionary: Vec<String>) -> Self {
         Self::new_with_disfluency_mode(dictionary, DisfluencyMode::Conservative)
     }
@@ -178,16 +185,18 @@ impl TnlEngine {
         dictionary: Vec<String>,
         disfluency_mode: DisfluencyMode,
     ) -> Self {
-        let dictionary = purify_dictionary_entries(dictionary);
+        let dictionary = route_dictionary_entries(dictionary);
         let spoken_symbol_map = SpokenSymbolMap::new();
         let ext_whitelist = ExtensionWhitelist::new();
-        let tech_span_detector =
-            TechSpanDetector::new_with_user_dictionary(ext_whitelist, &dictionary);
-        let hyphen_rules = Self::build_hyphen_rules(&dictionary);
-        let fuzzy_matcher = if dictionary.is_empty() {
+        let tech_span_detector = TechSpanDetector::new_with_user_dictionary(
+            ext_whitelist,
+            &dictionary.named_entity_words,
+        );
+        let hyphen_rules = Self::build_hyphen_rules(&dictionary.hyphen_words);
+        let fuzzy_matcher = if dictionary.fuzzy_words.is_empty() {
             None
         } else {
-            Some(FuzzyMatcher::new(dictionary))
+            Some(FuzzyMatcher::new(dictionary.fuzzy_words))
         };
 
         Self {
@@ -1025,12 +1034,40 @@ impl TnlEngine {
     }
 }
 
-fn purify_dictionary_entries(dictionary: Vec<String>) -> Vec<String> {
-    dictionary
-        .into_iter()
-        .map(|entry| extract_word(&entry).trim().to_string())
-        .filter(|word| !word.is_empty())
-        .collect()
+fn route_dictionary_entries(dictionary: Vec<String>) -> RoutedDictionary {
+    let mut routed = RoutedDictionary::default();
+
+    for entry in dictionary {
+        let word = extract_word(&entry).trim().to_string();
+        if word.is_empty() {
+            continue;
+        }
+
+        let category = extract_category(&entry);
+        if allows_named_entity_route(category) {
+            routed.named_entity_words.push(word.clone());
+        }
+        if allows_fuzzy_route(category) {
+            routed.fuzzy_words.push(word.clone());
+        }
+        if allows_hyphen_route(category) {
+            routed.hyphen_words.push(word);
+        }
+    }
+
+    routed
+}
+
+fn allows_named_entity_route(category: Option<&str>) -> bool {
+    !matches!(category, Some("email" | "url"))
+}
+
+fn allows_fuzzy_route(category: Option<&str>) -> bool {
+    !matches!(category, Some("email" | "url" | "code_symbol"))
+}
+
+fn allows_hyphen_route(category: Option<&str>) -> bool {
+    !matches!(category, Some("email" | "url"))
 }
 
 impl Default for TnlEngine {
@@ -1102,6 +1139,89 @@ mod tests {
         assert!(result.technical_spans.iter().any(|span| {
             span.span_type == SpanType::NamedEntity && span.text == "深度求索"
         }));
+    }
+
+    #[test]
+    fn test_dictionary_category_routes_entries() {
+        let routed = route_dictionary_entries(vec![
+            "contact@example.com|manual|email".to_string(),
+            "docs-example.com|manual|url".to_string(),
+            "Claude Code|manual|code_symbol".to_string(),
+            "深度求索|manual|product".to_string(),
+            "legacy term".to_string(),
+        ]);
+
+        assert_eq!(
+            routed.named_entity_words,
+            vec!["Claude Code", "深度求索", "legacy term"]
+        );
+        assert_eq!(routed.fuzzy_words, vec!["深度求索", "legacy term"]);
+        assert_eq!(
+            routed.hyphen_words,
+            vec!["Claude Code", "深度求索", "legacy term"]
+        );
+    }
+
+    #[test]
+    fn test_code_symbol_category_skips_phonetic_rewrite() {
+        let engine = TnlEngine::new(vec!["Claude Code|manual|code_symbol".to_string()]);
+
+        let result = engine.normalize("打开 Cloud Code");
+
+        assert_eq!(result.text, "打开 Cloud Code");
+        assert!(!result.applied.iter().any(|replacement| matches!(
+            replacement.reason,
+            ReplacementReason::DictionaryPhonetic
+        )));
+        assert!(!result
+            .diagnostics
+            .as_ref()
+            .map(
+                |diagnostics| diagnostics.candidates.iter().any(|candidate| {
+                    candidate.target == "Claude Code"
+                        && candidate.source == TnlCandidateSource::DictionaryPhonetic
+                })
+            )
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn test_product_category_still_uses_phonetic_rewrite() {
+        let engine = TnlEngine::new(vec!["Claude Code|manual|product".to_string()]);
+
+        let result = engine.normalize("打开 Cloud Code");
+
+        assert_eq!(result.text, "打开 Claude Code");
+        assert!(result.applied.iter().any(|replacement| matches!(
+            replacement.reason,
+            ReplacementReason::DictionaryPhonetic
+        )));
+    }
+
+    #[test]
+    fn test_url_category_skips_hyphen_dictionary_rewrite() {
+        let engine = TnlEngine::new(vec!["docs-example.com|manual|url".to_string()]);
+
+        let result = engine.normalize("打开 docs example.com");
+
+        assert_eq!(result.text, "打开 docs example.com");
+        assert!(!result
+            .applied
+            .iter()
+            .any(|replacement| matches!(replacement.reason, ReplacementReason::DictionaryExact)));
+    }
+
+    #[test]
+    fn test_code_symbol_category_keeps_hyphen_exact_rewrite() {
+        let engine = TnlEngine::new(vec!["GPT-5.3-Codex|manual|code_symbol".to_string()]);
+
+        let result = engine.normalize("请切换到 GPT 5.3 Codex 模型");
+
+        assert_eq!(result.text, "请切换到 GPT-5.3-Codex 模型");
+        assert!(result
+            .applied
+            .iter()
+            .any(|replacement| matches!(replacement.reason, ReplacementReason::DictionaryExact)));
     }
 
     #[test]
