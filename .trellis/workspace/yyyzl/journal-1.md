@@ -611,3 +611,36 @@ Implemented runtime-only recent ASR hotwords from successful 24h history, wired 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Phase 5 phrase dictionary prepass
+
+**Date**: 2026-05-16
+**Task**: Phase 5 phrase dictionary prepass
+**Branch**: `main`
+
+### Summary
+
+为 phrase category 接入 TNL 轻量短语优先匹配：ASCII 短语大小写规范化、中文短语吞字间空白、不跨标点，并同步 Phase 5 路线图和 TNL spec。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a87384f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
