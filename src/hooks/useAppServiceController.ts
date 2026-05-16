@@ -45,25 +45,36 @@ const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
 const buildRuntimeDictionary = (
   dictionaryEntries: DictionaryEntry[],
   builtinDomains: string[],
+  recentHotwordEntries: string[] = [],
 ): string[] => {
   const userEntries = entriesToRuntimeFormat(dictionaryEntries);
   const builtinEntries = getBuiltinRuntimeEntriesForDomains(builtinDomains);
-  if (builtinEntries.length === 0) return userEntries;
+  if (recentHotwordEntries.length === 0 && builtinEntries.length === 0) return userEntries;
 
   const merged = new Set<string>();
   const result: string[] = [];
 
   for (const entry of userEntries) {
     const word = runtimeEntryWord(entry);
-    if (merged.has(word)) continue;
-    merged.add(word);
+    const key = word.toLocaleLowerCase();
+    if (!word || merged.has(key)) continue;
+    merged.add(key);
+    result.push(entry);
+  }
+
+  for (const entry of recentHotwordEntries) {
+    const word = runtimeEntryWord(entry);
+    const key = word.toLocaleLowerCase();
+    if (!word || merged.has(key)) continue;
+    merged.add(key);
     result.push(entry);
   }
 
   for (const entry of builtinEntries) {
     const word = runtimeEntryWord(entry);
-    if (merged.has(word)) continue;
-    merged.add(word);
+    const key = word.toLocaleLowerCase();
+    if (!word || merged.has(key)) continue;
+    merged.add(key);
     result.push(entry);
   }
 
@@ -164,6 +175,7 @@ export type UseAppServiceControllerParams = {
 
   dictionary: DictionaryEntry[];
   setDictionary: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
+  recentHotwordEntries: string[];
 
   builtinDictionaryDomains: string[];
   setBuiltinDictionaryDomains: React.Dispatch<React.SetStateAction<string[]>>;
@@ -222,6 +234,7 @@ export function useAppServiceController({
   setTnlConfig,
   dictionary,
   setDictionary,
+  recentHotwordEntries,
   builtinDictionaryDomains,
   setBuiltinDictionaryDomains,
   status,
@@ -292,7 +305,11 @@ export function useAppServiceController({
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
           dictionary: updates.dictionary
-            ? buildRuntimeDictionary(updates.dictionary, builtinDictionaryDomains)
+            ? buildRuntimeDictionary(
+              updates.dictionary,
+              builtinDictionaryDomains,
+              recentHotwordEntries,
+            )
             : undefined,
         });
         return true;
@@ -301,7 +318,7 @@ export function useAppServiceController({
         return false;
       }
     },
-    [builtinDictionaryDomains, status],
+    [builtinDictionaryDomains, recentHotwordEntries, status],
   );
 
   const resolveSaveConfig = useCallback(
@@ -346,6 +363,7 @@ export function useAppServiceController({
         runtimeDictionary: buildRuntimeDictionary(
           finalDictionaryEntries,
           finalBuiltinDictionaryDomains,
+          recentHotwordEntries,
         ),
         builtinDictionaryDomains: finalBuiltinDictionaryDomains,
         theme: finalTheme,
@@ -367,6 +385,7 @@ export function useAppServiceController({
       enableMuteOtherApps,
       dictionary,
       builtinDictionaryDomains,
+      recentHotwordEntries,
       theme,
     ],
   );
@@ -640,7 +659,8 @@ export function useAppServiceController({
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
           dictionary: buildRuntimeDictionary(
             loadedDictionary,
-            loadedBuiltinDictionaryDomains
+            loadedBuiltinDictionaryDomains,
+            recentHotwordEntries,
           ),
           theme: config.theme || "light",
         });
@@ -698,6 +718,7 @@ export function useAppServiceController({
     setUseRealtime,
     startApp,
     saveConfigThroughGateway,
+    recentHotwordEntries,
     showToast,
   ]);
 

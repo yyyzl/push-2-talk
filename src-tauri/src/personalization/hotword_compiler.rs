@@ -406,6 +406,8 @@ mod tests {
     fn ranks_runtime_domain_and_builtin_sources_below_user_sources() {
         let entries = vec![
             "领域术语|domain|domain_term".to_string(),
+            "最近工具|recent|product".to_string(),
+            "窗口上下文|app_context|domain_term".to_string(),
             "Rust|auto|tool".to_string(),
             "用户短语|manual|phrase".to_string(),
             "内置兜底|builtin|domain_term".to_string(),
@@ -422,6 +424,8 @@ mod tests {
             vec![
                 (&"用户短语".to_string(), &HotwordSource::ManualUser),
                 (&"Windsurf".to_string(), &HotwordSource::CorrectionPair),
+                (&"最近工具".to_string(), &HotwordSource::Recent),
+                (&"窗口上下文".to_string(), &HotwordSource::AppContext),
                 (&"Rust".to_string(), &HotwordSource::AutoUser),
                 (&"领域术语".to_string(), &HotwordSource::Domain),
                 (&"内置兜底".to_string(), &HotwordSource::Builtin),
@@ -429,10 +433,10 @@ mod tests {
         );
         assert_eq!(
             render_qwen_corpus_text(&pack),
-            "用户短语、Windsurf、Rust、领域术语、内置兜底"
+            "用户短语、Windsurf、最近工具、窗口上下文、Rust、领域术语、内置兜底"
         );
         assert_eq!(
-            render_doubao_hotwords(&pack)[3],
+            render_doubao_hotwords(&pack)[5],
             serde_json::json!({ "word": "领域术语" })
         );
     }

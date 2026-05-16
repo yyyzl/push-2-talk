@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   CheckCircle2,
@@ -58,6 +58,7 @@ import {
   scheduleSyncWindowRelease,
   type ConfigSyncWindowSnapshot,
 } from "./utils/configSyncWindow";
+import { buildRecentHotwordEntries } from "./utils/recentHotwords";
 
 /** 哨兵值：外部配置更新时设置，applyRuntimeConfig effect 据此跳过并重置基准 */
 const EXTERNAL_UPDATE_SENTINEL = "__EXTERNAL_CONFIG_UPDATE__";
@@ -132,6 +133,10 @@ function App() {
     handleCopyText,
     handleClearHistory,
   } = useHistoryController();
+  const recentHotwordEntries = useMemo(
+    () => buildRecentHotwordEntries(history),
+    [history],
+  );
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   // R8.2 (v4): cross-page focus state — set by ModelsPage callback, consumed by LlmPage useEffect
   // v4 simplification: no "action" field — model selector is inline so just scrolling+activating is enough
@@ -386,6 +391,7 @@ function App() {
     setTnlConfig,
     dictionary,
     setDictionary,
+    recentHotwordEntries,
     builtinDictionaryDomains,
     setBuiltinDictionaryDomains,
     status,
@@ -627,6 +633,7 @@ function App() {
       searchConfig,
       enableMuteOtherApps,
       dictionary,
+      recentHotwordEntries,
       builtinDictionaryDomains,
     });
 
@@ -662,7 +669,7 @@ function App() {
       }
       // 失败时不更新基准，下次相同配置会重试
     });
-  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, searchConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
+  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, searchConfig, enableMuteOtherApps, dictionary, recentHotwordEntries, builtinDictionaryDomains, applyRuntimeConfig]);
 
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
