@@ -3,8 +3,9 @@
 
 use crate::config::AsrLanguageMode;
 use crate::personalization::hotword_compiler::{
-    compile_user_dictionary_asr_pack, render_qwen_corpus_text, QWEN_REALTIME_MAX_HOTWORDS,
+    compile_asr_pack_with_correction_pairs, render_qwen_corpus_text, QWEN_REALTIME_MAX_HOTWORDS,
 };
+use crate::personalization::CorrectionPair;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
@@ -32,15 +33,28 @@ fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn build_input_audio_transcription(
     language_mode: AsrLanguageMode,
     dictionary: &[String],
+) -> serde_json::Value {
+    build_input_audio_transcription_with_pairs(language_mode, dictionary, &[])
+}
+
+fn build_input_audio_transcription_with_pairs(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+    correction_pairs: &[CorrectionPair],
 ) -> serde_json::Value {
     let mut input_audio_transcription = serde_json::json!({
         "language": asr_language_code(language_mode)
     });
 
-    let hotword_pack = compile_user_dictionary_asr_pack(dictionary, QWEN_REALTIME_MAX_HOTWORDS);
+    let hotword_pack = compile_asr_pack_with_correction_pairs(
+        dictionary,
+        correction_pairs,
+        QWEN_REALTIME_MAX_HOTWORDS,
+    );
     let corpus_text = render_qwen_corpus_text(&hotword_pack);
 
     if !corpus_text.is_empty() {
@@ -121,6 +135,7 @@ pub struct ConnectionPool {
     api_key: String,
     connection: Arc<Mutex<Option<PooledConnection>>>,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: AsrLanguageMode,
 }
 
@@ -130,10 +145,20 @@ struct PooledConnection {
 
 impl ConnectionPool {
     pub fn new(api_key: String, dictionary: Vec<String>, language_mode: AsrLanguageMode) -> Self {
+        Self::new_with_correction_pairs(api_key, dictionary, Vec::new(), language_mode)
+    }
+
+    pub fn new_with_correction_pairs(
+        api_key: String,
+        dictionary: Vec<String>,
+        correction_pairs: Vec<CorrectionPair>,
+        language_mode: AsrLanguageMode,
+    ) -> Self {
         Self {
             api_key,
             connection: Arc::new(Mutex::new(None)),
             dictionary,
+            correction_pairs,
             language_mode,
         }
     }
@@ -191,10 +216,14 @@ impl ConnectionPool {
         let (result_tx, result_rx) = mpsc::channel::<Result<String>>(1);
 
         // 发送 session.update 配置会话
-        let input_audio_transcription =
-            build_input_audio_transcription(self.language_mode, &self.dictionary);
-        let corpus_for_check = render_qwen_corpus_text(&compile_user_dictionary_asr_pack(
+        let input_audio_transcription = build_input_audio_transcription_with_pairs(
+            self.language_mode,
             &self.dictionary,
+            &self.correction_pairs,
+        );
+        let corpus_for_check = render_qwen_corpus_text(&compile_asr_pack_with_correction_pairs(
+            &self.dictionary,
+            &self.correction_pairs,
             QWEN_REALTIME_MAX_HOTWORDS,
         ));
 
@@ -401,6 +430,22 @@ impl QwenRealtimeClient {
         }
     }
 
+    pub fn new_with_correction_pairs(
+        api_key: String,
+        dictionary: Vec<String>,
+        correction_pairs: Vec<CorrectionPair>,
+        language_mode: AsrLanguageMode,
+    ) -> Self {
+        Self {
+            pool: ConnectionPool::new_with_correction_pairs(
+                api_key,
+                dictionary,
+                correction_pairs,
+                language_mode,
+            ),
+        }
+    }
+
     /// 创建新的转录会话
     pub async fn start_session(&self) -> Result<RealtimeSession> {
         self.pool.get_session().await
@@ -409,9 +454,10 @@ impl QwenRealtimeClient {
 
 #[cfg(test)]
 mod tests {
-    use super::build_input_audio_transcription;
+    use super::{build_input_audio_transcription, build_input_audio_transcription_with_pairs};
     use crate::config::AsrLanguageMode;
     use crate::personalization::hotword_compiler::QWEN_REALTIME_MAX_HOTWORDS;
+    use crate::personalization::CorrectionPair;
 
     #[test]
     fn builds_auto_language_for_qwen_session_update() {
@@ -437,6 +483,20 @@ mod tests {
         let corpus = transcription["corpus"]["text"].as_str().unwrap();
 
         assert_eq!(corpus.split('、').count(), QWEN_REALTIME_MAX_HOTWORDS);
+        assert!(!corpus.contains('|'));
+    }
+
+    #[test]
+    fn qwen_realtime_corpus_includes_runtime_correction_pairs() {
+        let dictionary = vec!["Rust|auto|tool".to_string()];
+        let pairs = vec![CorrectionPair::new("windsurf", "winds surf", "Windsurf")];
+
+        let transcription =
+            build_input_audio_transcription_with_pairs(AsrLanguageMode::Auto, &dictionary, &pairs);
+        let corpus = transcription["corpus"]["text"].as_str().unwrap();
+
+        assert_eq!(corpus, "Windsurf、Rust");
+        assert!(!corpus.contains("winds surf"));
         assert!(!corpus.contains('|'));
     }
 }

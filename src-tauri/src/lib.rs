@@ -40,6 +40,7 @@ use futures_util::FutureExt;
 use hotkey_service::HotkeyService;
 use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
+use personalization::CorrectionPair;
 use pipeline::{NormalPipeline, TranscriptionContext};
 use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
@@ -141,6 +142,8 @@ struct AppState {
     target_window: Arc<Mutex<Option<isize>>>,
     /// 词库（用于 Realtime 模式热更新）
     dictionary: Arc<Mutex<Vec<String>>>,
+    /// 个性化纠错对（用于 ASR 热词编译，录音开始前读取快照）
+    asr_correction_pairs: Arc<Mutex<Vec<CorrectionPair>>>,
     /// 豆包输入法凭据（自动注册获取，跨会话复用）
     doubao_ime_credentials: Arc<Mutex<Option<DoubaoImeCredentials>>>,
     /// 使用统计数据
@@ -1037,6 +1040,76 @@ fn sync_asr_provider_checks(
     }
 }
 
+fn load_asr_correction_pairs_or_empty() -> Vec<CorrectionPair> {
+    match crate::personalization::default_correction_pairs_path() {
+        Ok(path) => load_asr_correction_pairs_from_path_or_empty(&path),
+        Err(e) => {
+            tracing::warn!("ASR 热词纠错对路径解析失败，跳过 correction pairs: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+fn load_asr_correction_pairs_from_path_or_empty(path: &std::path::Path) -> Vec<CorrectionPair> {
+    match crate::personalization::CorrectionPairStore::load_json_or_default(path) {
+        Ok(store) => store.pairs().to_vec(),
+        Err(e) => {
+            tracing::warn!("ASR 热词纠错对加载失败，降级为仅用户词热词: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair> {
+    let correction_pairs = load_asr_correction_pairs_or_empty();
+    *state.asr_correction_pairs.lock().unwrap() = correction_pairs.clone();
+    update_asr_http_clients_correction_pairs(state, &correction_pairs);
+    tracing::info!("ASR 热词纠错对缓存已刷新: {} 条", correction_pairs.len());
+    correction_pairs
+}
+
+fn update_asr_http_clients_correction_pairs(state: &AppState, correction_pairs: &[CorrectionPair]) {
+    if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
+        client.update_correction_pairs(correction_pairs.to_vec());
+    }
+    if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
+        client.update_correction_pairs(correction_pairs.to_vec());
+    }
+}
+
+#[cfg(test)]
+mod asr_hotword_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn missing_correction_pairs_file_loads_empty_for_asr_hotwords() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("missing.json");
+
+        let pairs = load_asr_correction_pairs_from_path_or_empty(&path);
+
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn loads_correction_pairs_for_asr_hotwords() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp
+            .path()
+            .join("personalization")
+            .join("correction_pairs.json");
+        let pair = CorrectionPair::new("cloud-code", "cloud code", "Claude Code");
+        crate::personalization::CorrectionPairStore::new(vec![pair])
+            .save_json(&path)
+            .expect("save correction pairs");
+
+        let pairs = load_asr_correction_pairs_from_path_or_empty(&path);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].corrected_text, "Claude Code");
+    }
+}
+
 async fn restart_service_with_config(
     app_handle: AppHandle,
     config: AppConfig,
@@ -1619,6 +1692,7 @@ async fn handle_recording_start(
     doubao_access_token: Option<String>,
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
 ) {
     tracing::info!("检测到快捷键按下");
@@ -1666,6 +1740,7 @@ async fn handle_recording_start(
                     doubao_app_id,
                     doubao_access_token,
                     dictionary,
+                    correction_pairs,
                     language_mode,
                 )
                 .await;
@@ -1689,6 +1764,7 @@ async fn handle_recording_start(
                     audio_sender_handle,
                     api_key,
                     dictionary,
+                    correction_pairs,
                     language_mode,
                 )
                 .await;
@@ -1720,6 +1796,7 @@ async fn handle_doubao_realtime_start(
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
 ) {
     tracing::info!("启动豆包实时流式转录...");
@@ -1749,10 +1826,11 @@ async fn handle_doubao_realtime_start(
         if let (Some(app_id), Some(access_token)) =
             (doubao_app_id.as_ref(), doubao_access_token.as_ref())
         {
-            let realtime_client = DoubaoRealtimeClient::new(
+            let realtime_client = DoubaoRealtimeClient::new_with_correction_pairs(
                 app_id.clone(),
                 access_token.clone(),
                 dictionary,
+                correction_pairs,
                 language_mode,
             );
             // 清理旧的会话和任务（防止资源泄漏）
@@ -2022,6 +2100,7 @@ async fn handle_qwen_realtime_start(
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     api_key: String,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
 ) {
     tracing::info!("启动千问实时流式转录...");
@@ -2041,7 +2120,12 @@ async fn handle_qwen_realtime_start(
         }
     }
 
-    let realtime_client = QwenRealtimeClient::new(api_key, dictionary, language_mode);
+    let realtime_client = QwenRealtimeClient::new_with_correction_pairs(
+        api_key,
+        dictionary,
+        correction_pairs,
+        language_mode,
+    );
     match realtime_client.start_session().await {
         Ok(session) => {
             tracing::info!("千问 WebSocket 连接已建立");
@@ -2217,6 +2301,7 @@ async fn start_app(
 
     // 保存词库到 state（用于 Realtime 模式热更新）
     *state.dictionary.lock().unwrap() = dict.clone();
+    let correction_pairs = refresh_asr_correction_pairs_runtime(&state);
 
     // 根据 asr_config 初始化 ASR 客户端
     {
@@ -2227,11 +2312,13 @@ async fn start_app(
         if let Some(ref cfg) = asr_config {
             // 初始化所有有凭证的客户端
             if !cfg.credentials.qwen_api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(
-                    cfg.credentials.qwen_api_key.clone(),
-                    dict.clone(),
-                    cfg.language_mode,
-                ));
+                *state.qwen_client.lock().unwrap() =
+                    Some(QwenASRClient::new_with_correction_pairs(
+                        cfg.credentials.qwen_api_key.clone(),
+                        dict.clone(),
+                        correction_pairs.clone(),
+                        cfg.language_mode,
+                    ));
             }
             if !cfg.credentials.sensevoice_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() = Some(SenseVoiceClient::new(
@@ -2241,12 +2328,14 @@ async fn start_app(
             if !cfg.credentials.doubao_app_id.is_empty()
                 && !cfg.credentials.doubao_access_token.is_empty()
             {
-                *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(
-                    cfg.credentials.doubao_app_id.clone(),
-                    cfg.credentials.doubao_access_token.clone(),
-                    dict.clone(),
-                    cfg.language_mode,
-                ));
+                *state.doubao_client.lock().unwrap() =
+                    Some(DoubaoASRClient::new_with_correction_pairs(
+                        cfg.credentials.doubao_app_id.clone(),
+                        cfg.credentials.doubao_access_token.clone(),
+                        dict.clone(),
+                        correction_pairs.clone(),
+                        cfg.language_mode,
+                    ));
             }
 
             // 设置实时转录提供商
@@ -2255,11 +2344,13 @@ async fn start_app(
         } else {
             // 旧逻辑回退（基本不会走到这里）
             if !api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(
-                    api_key.clone(),
-                    dict.clone(),
-                    config::AsrLanguageMode::Auto,
-                ));
+                *state.qwen_client.lock().unwrap() =
+                    Some(QwenASRClient::new_with_correction_pairs(
+                        api_key.clone(),
+                        dict.clone(),
+                        correction_pairs.clone(),
+                        config::AsrLanguageMode::Auto,
+                    ));
             }
             if !fallback_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() =
@@ -2393,6 +2484,7 @@ async fn start_app(
     let audio_sender_handle_start = Arc::clone(&state.audio_sender_handle);
     let use_realtime_start = use_realtime_mode;
     let dictionary_state_start = Arc::clone(&state.dictionary);
+    let asr_correction_pairs_start = Arc::clone(&state.asr_correction_pairs);
     let is_running_start = Arc::clone(&state.is_running);
     // AI 助手模式专用
     let current_trigger_mode_start = Arc::clone(&state.current_trigger_mode);
@@ -2549,6 +2641,7 @@ async fn start_app(
         let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
         let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
         let dictionary_state = Arc::clone(&dictionary_state_start);
+        let asr_correction_pairs = Arc::clone(&asr_correction_pairs_start);
         let recording_start_instant_spawn = Arc::clone(&recording_start_instant_start);
 
         tauri::async_runtime::spawn(async move {
@@ -2558,6 +2651,7 @@ async fn start_app(
 
             // 从 state 获取最新词库（支持热更新）
             let dictionary = dictionary_state.lock().unwrap().clone();
+            let correction_pairs = asr_correction_pairs.lock().unwrap().clone();
             // 1. 先执行开始录音逻辑 (内部会发送 recording_started 事件)
             handle_recording_start(
                 app.clone(),
@@ -2575,6 +2669,7 @@ async fn start_app(
                 doubao_access_token,
                 audio_mute_manager,
                 dictionary,
+                correction_pairs,
                 language_mode,
             )
             .await;
@@ -4814,6 +4909,10 @@ async fn add_learned_word(
         client.update_dictionary(words.clone());
     }
 
+    if stored_correction_pair.is_some() {
+        refresh_asr_correction_pairs_runtime(&state);
+    }
+
     // 发送事件通知前端刷新配置和词典
     emit_config_updated(&app_handle, &updated_config);
     app_handle.emit("dictionary_updated", ()).ok();
@@ -4882,6 +4981,7 @@ async fn delete_dictionary_entries(
 /// 忽略学习建议
 #[tauri::command]
 async fn dismiss_learning_suggestion(
+    app_handle: AppHandle,
     id: String,
     original: Option<String>,
     corrected: Option<String>,
@@ -4892,6 +4992,10 @@ async fn dismiss_learning_suggestion(
         corrected.as_deref(),
     )
     .map_err(|e| format!("记录学习负反馈失败: {}", e))?;
+    if rejected_pair.is_some() {
+        let state = app_handle.state::<AppState>();
+        refresh_asr_correction_pairs_runtime(&state);
+    }
     if let Some(pair) = rejected_pair {
         tracing::info!(
             "个性化纠错对负反馈: {} → {} (id: {}, confidence: {:.2}, rejected: {})",
@@ -5457,6 +5561,7 @@ pub fn run() {
                 audio_mute_manager: Arc::new(Mutex::new(None)),
                 target_window: Arc::new(Mutex::new(None)),
                 dictionary: Arc::new(Mutex::new(Vec::new())),
+                asr_correction_pairs: Arc::new(Mutex::new(Vec::new())),
                 doubao_ime_credentials: Arc::new(Mutex::new(None)),
                 usage_stats: Arc::new(Mutex::new(usage_stats)),
                 recording_start_instant: Arc::new(Mutex::new(None)),

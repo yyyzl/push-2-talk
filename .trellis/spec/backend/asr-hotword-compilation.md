@@ -62,18 +62,45 @@ Provider helpers:
 
 ```rust
 fn build_qwen_http_corpus_text(dictionary: &[String]) -> (usize, String);
+fn build_qwen_http_corpus_text_with_pairs(
+    dictionary: &[String],
+    correction_pairs: &[CorrectionPair],
+) -> (usize, String);
 fn build_input_audio_transcription(
     language_mode: AsrLanguageMode,
     dictionary: &[String],
+) -> serde_json::Value;
+fn build_input_audio_transcription_with_pairs(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+    correction_pairs: &[CorrectionPair],
 ) -> serde_json::Value;
 fn build_corpus_context(
     language_mode: AsrLanguageMode,
     dictionary: &[String],
 ) -> serde_json::Value;
+fn build_corpus_context_with_pairs(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+    correction_pairs: &[CorrectionPair],
+) -> serde_json::Value;
 fn build_realtime_context_object(
     language_mode: AsrLanguageMode,
     dictionary: &[String],
 ) -> serde_json::Value;
+fn build_realtime_context_object_with_pairs(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+    correction_pairs: &[CorrectionPair],
+) -> serde_json::Value;
+```
+
+Runtime cache helpers:
+
+```rust
+fn load_asr_correction_pairs_or_empty() -> Vec<CorrectionPair>;
+fn load_asr_correction_pairs_from_path_or_empty(path: &Path) -> Vec<CorrectionPair>;
+fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>;
 ```
 
 ### 3. Contracts
@@ -95,6 +122,11 @@ fn build_realtime_context_object(
 - Qwen HTTP and Qwen Realtime render `input_audio_transcription.corpus.text` / system corpus text as a `、`-joined string.
 - Doubao HTTP and Doubao Realtime render hotwords as the existing legacy-compatible array shape: `{"word": "<pure word>"}`.
 - `AsrHotword.weight` is retained for future provider formats, but this slice must not add `weight` to Doubao outbound JSON until provider compatibility is verified separately.
+- Runtime provider paths must consume an already-loaded correction-pair snapshot; they must not synchronously read `correction_pairs.json` while building request payloads or sending realtime audio chunks.
+- `start_app` must refresh the ASR correction-pair cache before initializing HTTP ASR clients.
+- `add_learned_word` must refresh the ASR correction-pair cache after a correction pair is accepted and persisted.
+- Realtime ASR session creation must receive a cloned correction-pair snapshot from `AppState`, alongside the dictionary snapshot.
+- Missing or invalid correction-pair storage must degrade to an empty pair list, log a warning for invalid loads, and never block recording.
 
 ### 4. Validation & Error Matrix
 
@@ -105,6 +137,9 @@ fn build_realtime_context_object(
 | Correction pair `cloud code -> Claude Code`, no manual duplicate | `Claude Code` enters the combined ASR pack as `CorrectionPair`, with `cloud code` retained as an alias/hint. |
 | Manual dictionary contains `Claude Code`, correction pair also corrects to `Claude Code` | The combined pack keeps the manual source. |
 | Correction pair is disabled or corrected text is blank | It is skipped in ASR, TNL, and LLM packs. |
+| `correction_pairs.json` is missing at service start | Runtime ASR correction-pair cache is empty and recording remains available. |
+| `correction_pairs.json` is invalid at service start | Runtime ASR correction-pair cache is empty, a warning is logged, and recording remains available. |
+| User accepts `winds surf -> Windsurf` through `add_learned_word` | The runtime ASR correction-pair cache refreshes so the next recording can send `Windsurf` upstream. |
 | Qwen Realtime receives more than 50 compiled words | Corpus contains exactly 50 words. |
 | Doubao HTTP/Realtme receives more than 100 compiled words | Hotwords array contains exactly 100 objects. |
 | Dictionary is empty | Qwen omits corpus text; Doubao omits the `hotwords` field while preserving dialog context. |
@@ -113,7 +148,7 @@ fn build_realtime_context_object(
 ### 5. Good/Base/Bad Cases
 
 - Good: all ASR providers consume the same compiled pure-word pack and differ only in rendering format.
-- Good: future call sites can opt into `compile_asr_pack_with_correction_pairs` once a safe correction-pair store loading/caching strategy exists.
+- Good: runtime ASR clients consume `compile_asr_pack_with_correction_pairs` through an `AppState` correction-pair snapshot that is refreshed on service start and accepted learning updates.
 - Base: with a small clean dictionary, outbound payloads are equivalent to the old direct `entries_to_words` behavior.
 - Bad: Qwen sends metadata strings such as `Claude Code|manual|product`.
 - Bad: provider runtime paths synchronously load `correction_pairs.json` on every audio chunk or request build without a cache strategy.
@@ -129,6 +164,9 @@ fn build_realtime_context_object(
 - HotwordCompiler unit test proving correction pairs rank below manual words and above auto words.
 - HotwordCompiler unit test proving disabled/blank correction pairs are skipped.
 - TNL/LLM pack test proving correction pairs and correction hints are preserved for future consumers.
+- Runtime cache tests proving missing correction-pair files load as an empty ASR hotword source and valid stores hydrate correction pairs.
+- Provider tests proving Qwen HTTP/Realtme corpus includes correction-pair corrected text without original text or metadata.
+- Provider tests proving Doubao HTTP/Realtme hotwords include correction-pair corrected text while preserving the legacy `{"word": ...}` shape.
 - Qwen HTTP/Realtme tests proving corpus size is limited by provider constants.
 - Doubao HTTP/Realtme tests proving hotwords size is limited and contains no `weight`.
 - Run `cargo check` after provider wiring changes because ASR modules are production runtime paths.
@@ -150,4 +188,24 @@ let hotwords: Vec<_> = purified_words
 ```rust
 let pack = compile_user_dictionary_asr_pack(&self.dictionary, DOUBAO_REALTIME_MAX_HOTWORDS);
 let hotwords = render_doubao_hotwords(&pack);
+```
+
+#### Wrong
+
+```rust
+fn build_realtime_context_object(...) -> serde_json::Value {
+    let pairs = CorrectionPairStore::load_json(default_correction_pairs_path()?)?;
+    compile_asr_pack_with_correction_pairs(dictionary, pairs.pairs(), limit)
+}
+```
+
+#### Correct
+
+```rust
+let correction_pairs = state.asr_correction_pairs.lock().unwrap().clone();
+let context = build_realtime_context_object_with_pairs(
+    language_mode,
+    &dictionary,
+    &correction_pairs,
+);
 ```

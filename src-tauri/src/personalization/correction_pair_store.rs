@@ -230,6 +230,10 @@ impl CorrectionPairStore {
         self.pairs.push(pair);
     }
 
+    pub fn pairs(&self) -> &[CorrectionPair] {
+        &self.pairs
+    }
+
     pub fn upsert_accepted_correction_json(
         path: impl AsRef<Path>,
         original_text: &str,

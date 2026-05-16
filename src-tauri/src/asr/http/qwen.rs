@@ -1,8 +1,9 @@
 use crate::asr::utils;
 use crate::config::AsrLanguageMode;
 use crate::personalization::hotword_compiler::{
-    compile_user_dictionary_asr_pack, render_qwen_corpus_text, QWEN_HTTP_MAX_HOTWORDS,
+    compile_asr_pack_with_correction_pairs, render_qwen_corpus_text, QWEN_HTTP_MAX_HOTWORDS,
 };
+use crate::personalization::CorrectionPair;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use std::time::Duration;
@@ -51,8 +52,20 @@ fn build_request_body(
     })
 }
 
+#[cfg(test)]
 fn build_qwen_http_corpus_text(dictionary: &[String]) -> (usize, String) {
-    let hotword_pack = compile_user_dictionary_asr_pack(dictionary, QWEN_HTTP_MAX_HOTWORDS);
+    build_qwen_http_corpus_text_with_pairs(dictionary, &[])
+}
+
+fn build_qwen_http_corpus_text_with_pairs(
+    dictionary: &[String],
+    correction_pairs: &[CorrectionPair],
+) -> (usize, String) {
+    let hotword_pack = compile_asr_pack_with_correction_pairs(
+        dictionary,
+        correction_pairs,
+        QWEN_HTTP_MAX_HOTWORDS,
+    );
     (
         hotword_pack.words.len(),
         render_qwen_corpus_text(&hotword_pack),
@@ -65,16 +78,27 @@ pub struct QwenASRClient {
     client: reqwest::Client,
     max_retries: u32,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: AsrLanguageMode,
 }
 
 impl QwenASRClient {
     pub fn new(api_key: String, dictionary: Vec<String>, language_mode: AsrLanguageMode) -> Self {
+        Self::new_with_correction_pairs(api_key, dictionary, Vec::new(), language_mode)
+    }
+
+    pub fn new_with_correction_pairs(
+        api_key: String,
+        dictionary: Vec<String>,
+        correction_pairs: Vec<CorrectionPair>,
+        language_mode: AsrLanguageMode,
+    ) -> Self {
         Self {
             api_key,
             client: utils::create_http_client(),
             max_retries: MAX_RETRIES,
             dictionary,
+            correction_pairs,
             language_mode,
         }
     }
@@ -82,6 +106,10 @@ impl QwenASRClient {
     /// 热更新词库
     pub fn update_dictionary(&mut self, dictionary: Vec<String>) {
         self.dictionary = dictionary;
+    }
+
+    pub fn update_correction_pairs(&mut self, correction_pairs: Vec<CorrectionPair>) {
+        self.correction_pairs = correction_pairs;
     }
 
     pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {
@@ -118,7 +146,8 @@ impl QwenASRClient {
         tracing::info!("音频数据大小: {} bytes", audio_data.len());
 
         // 词库编译（提纯、去重、排序、截断）后用顿号分隔
-        let (hotword_count, corpus_text) = build_qwen_http_corpus_text(&self.dictionary);
+        let (hotword_count, corpus_text) =
+            build_qwen_http_corpus_text_with_pairs(&self.dictionary, &self.correction_pairs);
         if !corpus_text.is_empty() {
             tracing::info!(
                 "Qwen HTTP ASR 词库: {} 个词（已编译）, corpus={}",
@@ -178,9 +207,12 @@ impl QwenASRClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_qwen_http_corpus_text, build_request_body};
+    use super::{
+        build_qwen_http_corpus_text, build_qwen_http_corpus_text_with_pairs, build_request_body,
+    };
     use crate::config::AsrLanguageMode;
     use crate::personalization::hotword_compiler::QWEN_HTTP_MAX_HOTWORDS;
+    use crate::personalization::CorrectionPair;
 
     #[test]
     fn build_request_body_sets_auto_language() {
@@ -197,6 +229,18 @@ mod tests {
         let (_, corpus) = build_qwen_http_corpus_text(&dictionary);
 
         assert_eq!(corpus.split('、').count(), QWEN_HTTP_MAX_HOTWORDS);
+        assert!(!corpus.contains('|'));
+    }
+
+    #[test]
+    fn qwen_http_corpus_includes_runtime_correction_pairs() {
+        let dictionary = vec!["Rust|auto|tool".to_string()];
+        let pairs = vec![CorrectionPair::new("windsurf", "winds surf", "Windsurf")];
+
+        let (_, corpus) = build_qwen_http_corpus_text_with_pairs(&dictionary, &pairs);
+
+        assert_eq!(corpus, "Windsurf、Rust");
+        assert!(!corpus.contains("winds surf"));
         assert!(!corpus.contains('|'));
     }
 
