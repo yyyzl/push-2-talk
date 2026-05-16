@@ -512,3 +512,36 @@ Implemented runtime-only recent ASR hotwords from successful 24h history, wired 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 确认口语流畅化 UI 状态
+
+**Date**: 2026-05-16
+**Task**: 确认口语流畅化 UI 状态
+**Branch**: `main`
+
+### Summary
+
+验证 Phase 4 口语流畅化三档 UI 与 tnlConfig.disfluencyMode 字段级 patch 已完成，并同步 ASR 个性化路线图状态。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `43ffbba` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

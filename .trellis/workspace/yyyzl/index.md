@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
+- **Total Sessions**: 13
 - **Last Active**: 2026-05-16
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~514 | Active |
+| `journal-1.md` | ~547 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-05-16 | 确认口语流畅化 UI 状态 | `43ffbba` | `main` |
 | 12 | 2026-05-16 | ASR 当前应用上下文热词 | `c969d34` | `main` |
 | 11 | 2026-05-16 | ASR recent hotword runtime source | `c896d72` | `main` |
 | 10 | 2026-05-16 | ASR hotword source metadata | `f50558d` | `main` |
