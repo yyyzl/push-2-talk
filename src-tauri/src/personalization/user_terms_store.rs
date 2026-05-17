@@ -171,6 +171,50 @@ impl UserTermStore {
             .map_err(Into::into)
     }
 
+    pub fn find_by_en_phonetic_key(&self, key: &str) -> Result<Vec<UserTerm>> {
+        self.find_enabled_by_key(
+            r#"
+            SELECT id, term, category, source, en_phonetic_key, zh_pinyin_fuzzy_key,
+                   created_at, updated_at, enabled
+            FROM user_terms
+            WHERE en_phonetic_key = ?1 AND enabled = 1
+            ORDER BY
+                CASE source WHEN 'manual' THEN 0 ELSE 1 END,
+                category,
+                lower(term)
+            "#,
+            key,
+        )
+    }
+
+    pub fn find_by_zh_pinyin_fuzzy_key(&self, key: &str) -> Result<Vec<UserTerm>> {
+        self.find_enabled_by_key(
+            r#"
+            SELECT id, term, category, source, en_phonetic_key, zh_pinyin_fuzzy_key,
+                   created_at, updated_at, enabled
+            FROM user_terms
+            WHERE zh_pinyin_fuzzy_key = ?1 AND enabled = 1
+            ORDER BY
+                CASE source WHEN 'manual' THEN 0 ELSE 1 END,
+                category,
+                lower(term)
+            "#,
+            key,
+        )
+    }
+
+    fn find_enabled_by_key(&self, sql: &str, key: &str) -> Result<Vec<UserTerm>> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![key], row_to_user_term)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     #[cfg(test)]
     fn table_exists(&self, name: &str) -> Result<bool> {
         self.schema_object_exists("table", name)
@@ -189,6 +233,15 @@ impl UserTermStore {
             |row| row.get(0),
         )?;
         Ok(count > 0)
+    }
+
+    #[cfg(test)]
+    fn disable_term_for_test(&self, term: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE user_terms SET enabled = 0 WHERE term = ?1 COLLATE NOCASE",
+            params![term],
+        )?;
+        Ok(())
     }
 }
 
@@ -373,6 +426,85 @@ mod tests {
             .unwrap();
         assert_eq!(term.category, "code_symbol");
         assert_eq!(term.source, "auto");
+    }
+
+    #[test]
+    fn finds_enabled_terms_by_en_phonetic_key_with_manual_priority() {
+        let mut store = UserTermStore::open_in_memory().expect("open store");
+        store
+            .hydrate_dictionary_entries(&[
+                "cloud code|auto|product".to_string(),
+                "claud code|manual|product".to_string(),
+                "深度求索|manual|domain_term".to_string(),
+            ])
+            .expect("hydrate dictionary");
+
+        let key = user_term_index_keys("cloud code").0.expect("en key");
+        let matches = store.find_by_en_phonetic_key(&key).expect("query en key");
+
+        assert_eq!(
+            matches
+                .iter()
+                .map(|term| term.term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claud code", "cloud code"]
+        );
+
+        store
+            .disable_term_for_test("claud code")
+            .expect("disable manual term");
+        let matches = store
+            .find_by_en_phonetic_key(&key)
+            .expect("query en key after disable");
+        assert_eq!(
+            matches
+                .iter()
+                .map(|term| term.term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cloud code"]
+        );
+    }
+
+    #[test]
+    fn finds_enabled_terms_by_zh_pinyin_fuzzy_key() {
+        let mut store = UserTermStore::open_in_memory().expect("open store");
+        store
+            .hydrate_dictionary_entries(&[
+                "深度求索|manual|domain_term".to_string(),
+                "Claude Code|manual|product".to_string(),
+            ])
+            .expect("hydrate dictionary");
+
+        let key = user_term_index_keys("深度求索").1.expect("zh fuzzy key");
+        let matches = store
+            .find_by_zh_pinyin_fuzzy_key(&key)
+            .expect("query zh key");
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].term, "深度求索");
+        assert_eq!(matches[0].category, "domain_term");
+
+        store
+            .disable_term_for_test("深度求索")
+            .expect("disable zh term");
+        let matches = store
+            .find_by_zh_pinyin_fuzzy_key(&key)
+            .expect("query zh key after disable");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn key_queries_ignore_empty_input() {
+        let store = UserTermStore::open_in_memory().expect("open store");
+
+        assert!(store
+            .find_by_en_phonetic_key("  ")
+            .expect("empty en query")
+            .is_empty());
+        assert!(store
+            .find_by_zh_pinyin_fuzzy_key("")
+            .expect("empty zh query")
+            .is_empty());
     }
 
     #[test]
