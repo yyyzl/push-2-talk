@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "Runtime dictionary entries feed ASR hotword payloads"}
+{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "Dictionary metadata controls TNL routing"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "SQLite user_terms runtime export and fallback rules"}
