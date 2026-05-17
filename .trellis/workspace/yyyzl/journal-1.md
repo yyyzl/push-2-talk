@@ -1209,3 +1209,36 @@ Ran the Phase 7 mini eval gate, diagnostics export, threshold/window sweep, and 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 34: Phase 0B ASR eval sample intake
+
+**Date**: 2026-05-17
+**Task**: Phase 0B ASR eval sample intake
+**Branch**: `main`
+
+### Summary
+
+Added a draft ASR eval sample intake CLI for exported history and runtime personalization diagnostics, with tests, documentation, and spec guidance that drafts require manual review before formal cases.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0850e00` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
