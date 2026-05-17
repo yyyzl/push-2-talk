@@ -879,3 +879,36 @@ Added enabled-row lookup APIs for user_terms by English phonetic and Chinese fuz
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: Phase 5 user terms sidecar sync
+
+**Date**: 2026-05-17
+**Task**: Phase 5 user terms sidecar sync
+**Branch**: `main`
+
+### Summary
+
+Synced AppConfig.dictionary into the user_terms SQLite sidecar during persisted config load/save, warning-only on sidecar failures; hydration now treats the current config as a snapshot and disables missing enabled rows while leaving ASR/TNL runtime consumers on AppConfig.dictionary.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `48e89fc` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
