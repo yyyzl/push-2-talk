@@ -845,3 +845,37 @@ Hydrated user_terms SQLite rows with existing phonetic key generation, added reg
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: Phase 5 user term key queries
+
+**Date**: 2026-05-17
+**Task**: Phase 5 user term key queries
+**Branch**: `main`
+
+### Summary
+
+Added enabled-row lookup APIs for user_terms by English phonetic and Chinese fuzzy pinyin keys, with deterministic manual-first ordering, empty-key handling, disabled-row filtering, tests, and docs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7f0c5bc` | (see git log) |
+| `0b53a4d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

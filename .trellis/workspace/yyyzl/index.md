@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
+- **Total Sessions**: 23
 - **Last Active**: 2026-05-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~847 | Active |
+| `journal-1.md` | ~881 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-05-17 | Phase 5 user term key queries | `7f0c5bc`, `0b53a4d` | `main` |
 | 22 | 2026-05-17 | Phase 5 user term phonetic keys | `a23d9f3`, `c3122cb` | `main` |
 | 21 | 2026-05-17 | Phase 5 user_terms SQLite store | `021b2da`, `23f3b5b` | `main` |
 | 20 | 2026-05-17 | Phase 5 phrase dictionary runtime index | `61b8ab2`, `c6a5ff5` | `main` |
