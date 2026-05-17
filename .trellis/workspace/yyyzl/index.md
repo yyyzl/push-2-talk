@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
+- **Total Sessions**: 28
 - **Last Active**: 2026-05-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1013 | Active |
+| `journal-1.md` | ~1046 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-05-17 | Phase 5 dictionary command sidecar persistence | `9353696` | `main` |
 | 27 | 2026-05-17 | Phase 5 runtime dictionary sidecar merge | `cb73915` | `main` |
 | 26 | 2026-05-17 | Phase 5 runtime user terms read path | `0a92137` | `main` |
 | 25 | 2026-05-17 | Fix dictionary category metadata test | `56f4a3c` | `main` |

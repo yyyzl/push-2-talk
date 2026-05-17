@@ -1011,3 +1011,36 @@ Merged enabled user_terms.db entries into start_app runtime dictionaries while p
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: Phase 5 dictionary command sidecar persistence
+
+**Date**: 2026-05-17
+**Task**: Phase 5 dictionary command sidecar persistence
+**Branch**: `main`
+
+### Summary
+
+Moved dictionary management commands to user_terms.db sidecar-first persistence. get_dictionary_entries now reads enabled sidecar terms with config bootstrap fallback; add_learned_word and delete_dictionary_entries upsert/disable sidecar entries, mirror enabled entries back to AppConfig.dictionary as a compatibility snapshot, and keep runtime dictionary metadata for ASR/TNL consumers.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9353696` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
