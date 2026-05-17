@@ -739,6 +739,14 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 暂不执行：Doubao `weight` 字段仍未上行；当前 spec 明确保留 `AsrHotword.weight` 给未来 provider 格式，但在兼容性验证前不改变 Doubao payload。
 - 待验证：需要跑正式 raw-ASR 评测来量化"首次识别命中率"提升；HotwordCompiler 缓存复用仅在 profiling 证明编译成本有意义时再做。
 
+### Phase 7 → Phase 8 评测门槛（2026-05-17）
+
+- 已完成 mini gate：当前 `tests/asr_eval` 26 条固定文本样本默认运行 26/26 通过，`final_accuracy = 100.00%`，`false_replacement_rate = 0.00%`，`pending_candidates = 0`，`p95_latency_ms = 1.110`。
+- 已完成 diagnostics 验证：`--diagnostics-out target/asr_eval_phase7_gate` 成功生成 schema v4 诊断，包含 `eval_config`、`metrics`、`quality_gate` 和 26 条 bounded case 明细。
+- 已完成 sweep：`threshold = 0.88` 且 `window = 5` 通过；`window = 3` 退化到 24/26，说明当前窗口上限仍然必要；`threshold = 0.99` 退化到 16/26，说明过度保守阈值会吞掉音化候选收益。
+- 已完成 ablation：禁用 `syllable_match` 后退化到 16/26，说明当前 mini suite 中 10 条通过来自本地 syllable/window second-decoding，而不是上游 ASR 或 reranker。
+- 当前决策：不基于这组 mini gate 启动 Phase 8；下一次 Phase 8 决策应先补 Phase 0B 的 80-120 条真实 ASR 样本，再看残留失败是否集中在低频长尾或上下文歧义。
+
 ---
 
 ## 十二、Phase 8（可选）｜本地小型 reranker
@@ -746,6 +754,10 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 ### 为什么是最末
 
 前面做完已经达到 80% 豆包水平，这是追最后 20%。只在 Phase 0-7 全部做完且评测集仍有明显残留问题时才上。
+
+### 当前决策（2026-05-17）
+
+暂不启动。Phase 7 mini gate 已经在 26 条固定文本样本上达到 100% 通过，且无误替换、无 pending candidate；现有残留风险是样本规模不足，而不是 mini suite 已暴露出 reranker 能解决的问题。下一步应优先扩展 Phase 0B 真实样本集，再决定是否评估 ONNX reranker / 本地小 LLM / KenLM。
 
 ### 候选方案
 
