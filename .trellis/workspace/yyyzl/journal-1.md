@@ -1110,3 +1110,36 @@ Implemented lightweight jieba POS named-entity spans for TNL, updated TNL tests/
 ### Next Steps
 
 - None - task complete
+
+
+## Session 31: Phase 6 named entity syllable weighting
+
+**Date**: 2026-05-17
+**Task**: Phase 6 named entity syllable weighting
+**Branch**: `main`
+
+### Summary
+
+Completed Phase 6 by passing TNL NamedEntity spans into personalization, applying bounded syllable candidate score boosts, updating specs/docs, and verifying personalization, assistant, TNL, fmt, diff, and cargo check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `064fcf8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

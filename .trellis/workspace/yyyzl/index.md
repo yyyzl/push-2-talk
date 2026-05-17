@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 30
+- **Total Sessions**: 31
 - **Last Active**: 2026-05-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1112 | Active |
+| `journal-1.md` | ~1145 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 31 | 2026-05-17 | Phase 6 named entity syllable weighting | `064fcf8` | `main` |
 | 30 | 2026-05-17 | Phase 6 NER-aware tech spans | `0ca9bfc` | `main` |
 | 29 | 2026-05-17 | Decouple config saves from sidecar dictionary | `8474a0c` | `main` |
 | 28 | 2026-05-17 | Phase 5 dictionary command sidecar persistence | `9353696` | `main` |
