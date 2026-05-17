@@ -1077,3 +1077,36 @@ Completed Phase 5 decoupling so ordinary config saves no longer send dictionary 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 30: Phase 6 NER-aware tech spans
+
+**Date**: 2026-05-17
+**Task**: Phase 6 NER-aware tech spans
+**Branch**: `main`
+
+### Summary
+
+Implemented lightweight jieba POS named-entity spans for TNL, updated TNL tests/spec/docs, verified targeted Rust tests and cargo check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0ca9bfc` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
