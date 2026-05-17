@@ -273,6 +273,26 @@ pub fn upsert_entry_with_inferred_category(
     upsert_entry_with_category(entries, &normalized, source, Some(next_category));
 }
 
+/// 批量补齐/规范化词库分类 metadata。
+pub fn backfill_inferred_categories(entries: &mut Vec<String>) -> bool {
+    let mut changed = false;
+
+    for entry in entries.iter_mut() {
+        let normalized = normalize_word(extract_word(entry));
+        let source = extract_source(entry);
+        let category =
+            extract_category(entry).unwrap_or_else(|| infer_dictionary_category(&normalized));
+        let next_entry = format_entry_with_category(&normalized, source, Some(category));
+
+        if *entry != next_entry {
+            *entry = next_entry;
+            changed = true;
+        }
+    }
+
+    changed
+}
+
 /// 删除指定词汇（按 word 匹配，不区分来源）
 pub fn remove_entries(entries: &mut Vec<String>, words: &[String]) {
     let words_set: HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
@@ -476,5 +496,49 @@ mod tests {
         upsert_entry_with_inferred_category(&mut entries, "Claude Code", "auto", None);
 
         assert_eq!(entries, vec!["Claude Code|manual|product"]);
+    }
+
+    #[test]
+    fn test_backfill_inferred_categories_updates_legacy_entries() {
+        let mut entries = vec![
+            "useState|auto".to_string(),
+            "团队约定".to_string(),
+            "rust|auto".to_string(),
+            "Claude Code|manual|product".to_string(),
+            "深度求索|auto|term".to_string(),
+            "legacy@example.com|manual|unknown".to_string(),
+        ];
+
+        assert!(backfill_inferred_categories(&mut entries));
+        assert_eq!(
+            entries,
+            vec![
+                "useState|auto|code_symbol",
+                "团队约定|manual|phrase",
+                "rust|auto",
+                "Claude Code|manual|product",
+                "深度求索|auto|domain_term",
+                "legacy@example.com|manual|email",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_backfill_inferred_categories_reports_no_change_when_canonical() {
+        let mut entries = vec![
+            "useState|auto|code_symbol".to_string(),
+            "团队约定|manual|phrase".to_string(),
+            "rust|auto".to_string(),
+        ];
+
+        assert!(!backfill_inferred_categories(&mut entries));
+        assert_eq!(
+            entries,
+            vec![
+                "useState|auto|code_symbol",
+                "团队约定|manual|phrase",
+                "rust|auto",
+            ]
+        );
     }
 }

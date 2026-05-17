@@ -1585,6 +1585,11 @@ fn merge_asr_config_for_save(
     }
 }
 
+fn normalize_dictionary_for_config_storage(mut dictionary: Vec<String>) -> Vec<String> {
+    crate::dictionary_utils::backfill_inferred_categories(&mut dictionary);
+    dictionary
+}
+
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct TnlConfigFieldPatch {
@@ -1688,9 +1693,9 @@ async fn save_config(
             Some(dict) => {
                 // 前端传入的格式：纯词汇 "word" 或带来源 "word|auto"
                 // 直接使用传入的数组，不再合并（前端已经是完整的词典状态）
-                dict
+                normalize_dictionary_for_config_storage(dict)
             }
-            None => existing.dictionary.clone(),
+            None => normalize_dictionary_for_config_storage(existing.dictionary.clone()),
         };
 
         // 智能合并 dual_hotkey_config：如果传入空 keys，保留旧值
@@ -1816,6 +1821,13 @@ mod save_config_merge_tests {
             merged.selection.active_provider,
             config::AsrProvider::Doubao
         );
+    }
+
+    #[test]
+    fn should_backfill_dictionary_before_config_save() {
+        let normalized = normalize_dictionary_for_config_storage(vec!["useState|auto".to_string()]);
+
+        assert_eq!(normalized, vec!["useState|auto|code_symbol"]);
     }
 }
 

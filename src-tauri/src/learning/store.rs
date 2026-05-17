@@ -7,7 +7,8 @@
 
 #[allow(unused_imports)]
 pub use crate::dictionary_utils::{
-    entries_to_words, extract_word, format_entry, format_entry_with_category,
-    infer_dictionary_category, normalize_or_infer_category, normalize_word, remove_entries,
-    upsert_entry, upsert_entry_with_category, upsert_entry_with_inferred_category,
+    backfill_inferred_categories, entries_to_words, extract_word, format_entry,
+    format_entry_with_category, infer_dictionary_category, normalize_or_infer_category,
+    normalize_word, remove_entries, upsert_entry, upsert_entry_with_category,
+    upsert_entry_with_inferred_category,
 };

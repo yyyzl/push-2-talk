@@ -1781,6 +1781,7 @@ pub fn extract_category(entry: &str) -> Option<&'static str>;
 pub fn entries_to_words(entries: &[String]) -> Vec<String>;
 pub fn infer_dictionary_category(word: &str) -> &'static str;
 pub fn normalize_or_infer_category(word: &str, category: Option<&str>) -> &'static str;
+pub fn backfill_inferred_categories(entries: &mut Vec<String>) -> bool;
 pub fn upsert_entry_with_category(
     entries: &mut Vec<String>,
     word: &str,
@@ -1828,9 +1829,11 @@ word|auto|domain_term
 - `add_learned_word` may receive `category`; when present, it should persist dictionary metadata while preserving the existing personalization correction-pair category payload.
 - `add_learned_word` must route dictionary writes through `upsert_entry_with_inferred_category` so missing or invalid categories are inferred on the backend for old frontends, scripts, or automation callers.
 - Backend inference mirrors the frontend: email-like strings become `email`, `http://` / `https://` / `www.` prefixes become `url`, ASCII camelCase / `_` / `/` / `\` / alnum-hyphen-alnum terms become `code_symbol`, two-or-more CJK chars without whitespace become `phrase`, and the fallback is `generic`.
+- Backend config load and save paths must run `backfill_inferred_categories` over dictionary storage so existing compact entries and old script/client writes gain deterministic non-generic metadata without UI edits.
 - Learning suggestions should emit canonical dictionary categories. Legacy learning-era categories remain accepted and map at the dictionary metadata boundary: `proper_noun -> product`, `term -> domain_term`, `frequent -> generic`.
 - Manual source keeps priority over auto source when upserting an existing word. Updating category must not demote a manual entry to auto.
 - Backend inferred upsert should preserve an existing valid category when an update arrives without a valid requested category, so old callers do not accidentally demote curated metadata.
+- Backend dictionary backfill should preserve existing valid metadata, canonicalize legacy category aliases, and keep `generic` entries in compact storage.
 - Frontend must normalize old object entries and old strings so `DictionaryEntry.category` is always present before rendering.
 
 ### 4. Validation & Error Matrix
@@ -1839,6 +1842,9 @@ word|auto|domain_term
 |---|---|
 | Stored `Claude Code` | Parse as manual, infer/default category, runtime word `Claude Code`. |
 | Stored `Claude Code|auto` | Parse as auto, infer/default category, runtime word `Claude Code`. |
+| Config load sees `useState|auto` | Persist as `useState|auto|code_symbol` and mark config migrated. |
+| Config load sees `rust|auto` | Keep compact `rust|auto`; no metadata bloat for generic entries. |
+| Config load sees `深度求索|auto|term` | Canonicalize to `深度求索|auto|domain_term`. |
 | Stored `Claude Code|auto|product` | Parse as auto/product, runtime word `Claude Code`. |
 | Stored `团队约定|manual|phrase` | Parse as manual/phrase, runtime word `团队约定`. |
 | `add_learned_word("useState", "auto", category=None)` | Persist `useState|auto|code_symbol`; runtime ASR/TNL words still see only `useState`. |
@@ -1870,6 +1876,8 @@ word|auto|domain_term
 - Backend unit test for `upsert_entry_with_category` preserving manual-over-auto priority while updating category.
 - Backend unit test for `infer_dictionary_category` covering email, URL, code symbol, CJK phrase, and generic fallback.
 - Backend unit test for `upsert_entry_with_inferred_category` covering missing category, invalid category, compact generic storage, and preserving existing valid metadata.
+- Backend unit test for `backfill_inferred_categories` covering legacy compact entries, canonical metadata, alias canonicalization, and no-change reporting.
+- Backend config test proving dictionary backfill marks config migrated when storage changes.
 - Backend TNL tests for category routing: `code_symbol` skips phonetic/fuzzy, `email/url` skip dictionary rewrite routes, and product-like categories still use phonetic/fuzzy.
 - Backend TNL tests for phrase prepass: ASCII phrase casing, CJK inserted whitespace collapse, punctuation boundary, and non-phrase skip.
 - Run `npm run test:ts`, `npm run build`, targeted `cargo test dictionary_utils::tests`, and `cargo check`.

@@ -1442,6 +1442,10 @@ impl AppConfig {
         Ok(app_dir.join("config.json"))
     }
 
+    pub fn backfill_dictionary_categories(&mut self) -> bool {
+        crate::dictionary_utils::backfill_inferred_categories(&mut self.dictionary)
+    }
+
     pub fn load() -> Result<(Self, bool)> {
         let path = Self::config_path()?;
         tracing::info!("尝试从以下路径加载配置: {:?}", path);
@@ -1913,6 +1917,11 @@ impl AppConfig {
                 migrated = true;
             }
 
+            if config.backfill_dictionary_categories() {
+                tracing::info!("迁移个人词典 category metadata");
+                migrated = true;
+            }
+
             if config.llm_config.presets.is_empty() {
                 tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
             }
@@ -2087,6 +2096,33 @@ mod tests {
         assert_eq!(
             cfg.tnl_config.disfluency_mode,
             crate::tnl::DisfluencyMode::Off
+        );
+    }
+
+    #[test]
+    fn app_config_dictionary_backfill_marks_migrated_when_storage_changes() {
+        let mut cfg = AppConfig::new();
+        cfg.dictionary = vec!["useState|auto".to_string(), "rust|auto".to_string()];
+
+        assert!(cfg.backfill_dictionary_categories());
+        assert_eq!(
+            cfg.dictionary,
+            vec!["useState|auto|code_symbol", "rust|auto"]
+        );
+    }
+
+    #[test]
+    fn app_config_dictionary_backfill_skips_canonical_storage() {
+        let mut cfg = AppConfig::new();
+        cfg.dictionary = vec![
+            "useState|auto|code_symbol".to_string(),
+            "rust|auto".to_string(),
+        ];
+
+        assert!(!cfg.backfill_dictionary_categories());
+        assert_eq!(
+            cfg.dictionary,
+            vec!["useState|auto|code_symbol", "rust|auto"]
         );
     }
 
