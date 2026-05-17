@@ -393,8 +393,9 @@ export function useAppServiceController({
   const saveConfigThroughGateway = useCallback(
     async (overrides: SaveConfigGatewayOverrides = {}) => {
       const resolved = resolveSaveConfig(overrides);
-
-      await invoke<string>("save_config", {
+      const shouldPersistDictionary =
+        overrides.dictionaryEntries !== undefined || overrides.storageDictionary !== undefined;
+      const saveConfigPayload: Record<string, unknown> = {
         apiKey: resolved.apiKey,
         fallbackApiKey: resolved.fallbackApiKey,
         useRealtime: resolved.useRealtime,
@@ -409,10 +410,15 @@ export function useAppServiceController({
         dualHotkeyConfig: resolved.dualHotkeyConfig,
         learningConfig: resolved.learningConfig,
         enableMuteOtherApps: resolved.enableMuteOtherApps,
-        dictionary: resolved.storageDictionary,
         builtinDictionaryDomains: resolved.builtinDictionaryDomains,
         theme: resolved.theme,
-      });
+      };
+
+      if (shouldPersistDictionary) {
+        saveConfigPayload.dictionary = resolved.storageDictionary;
+      }
+
+      await invoke<string>("save_config", saveConfigPayload);
 
       return resolved;
     },
@@ -614,16 +620,29 @@ export function useAppServiceController({
 
       const configDictionary =
         config.dictionary && Array.isArray(config.dictionary) ? config.dictionary : [];
+      let dictionarySource: unknown[] = configDictionary;
+      try {
+        const sidecarDictionary = await invoke<string[]>("get_dictionary_entries");
+        if (Array.isArray(sidecarDictionary)) {
+          dictionarySource = sidecarDictionary;
+        }
+      } catch (error) {
+        console.warn(
+          "读取 user_terms sidecar 词库失败，回退配置词典:",
+          error,
+          `配置词典条数: ${config.dictionary?.length ?? 0}`,
+        );
+      }
 
       // 处理词典：支持对象条目和 string[] 存储格式
       let loadedDictionary: DictionaryEntry[];
-      if (configDictionary.length > 0 && typeof configDictionary[0] === "object") {
-        loadedDictionary = (configDictionary as unknown as Array<Partial<DictionaryEntry>>)
+      if (dictionarySource.length > 0 && typeof dictionarySource[0] === "object") {
+        loadedDictionary = (dictionarySource as Array<Partial<DictionaryEntry>>)
           .map(normalizeDictionaryEntry)
           .filter((entry) => entry.word);
       } else {
         // string[] 需要转换（支持 "word"、"word|auto" 和 "word|source|category" 格式）
-        const words = (configDictionary as unknown as string[]).filter(
+        const words = (dictionarySource as string[]).filter(
           (w) => typeof w === "string" && w.trim()
         );
         loadedDictionary = words.map(parseEntry);
@@ -684,7 +703,6 @@ export function useAppServiceController({
               dualHotkeyConfig: loadedDualHotkeyConfig,
               learningConfig: loadedLearningConfig,
               enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-              dictionaryEntries: loadedDictionary,
               builtinDictionaryDomains: loadedBuiltinDictionaryDomains,
               theme: config.theme || "light",
             });

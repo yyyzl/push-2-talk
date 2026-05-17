@@ -1334,7 +1334,6 @@ fn load_persisted_config() -> Result<AppConfig, String> {
 
 fn save_persisted_config_without_emit(config: &AppConfig) -> Result<(), String> {
     config.save().map_err(|e| format!("保存配置失败: {}", e))?;
-    sync_user_terms_sidecar_from_dictionary_or_warn(&config.dictionary, "配置保存");
     Ok(())
 }
 
@@ -2160,6 +2159,7 @@ async fn save_config(
     builtin_dictionary_domains: Option<Vec<String>>,
     theme: Option<String>,
 ) -> Result<String, String> {
+    let should_sync_user_terms_sidecar = dictionary.is_some();
     let config = mutate_persisted_config_with_result(|existing| {
         tracing::info!("保存配置...");
 
@@ -2252,6 +2252,10 @@ async fn save_config(
         Ok(())
     })?
     .0;
+
+    if should_sync_user_terms_sidecar {
+        sync_user_terms_sidecar_from_dictionary_or_warn(&config.dictionary, "显式配置词典保存");
+    }
 
     emit_config_updated(&app, &config);
 

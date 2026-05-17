@@ -60,7 +60,7 @@ MVP 必须覆盖：
 ### 三个关键收紧
 
 1. **CorrectionPair key 不是只靠自动计算**：必须支持一条 pair 保存多个 `alias_keys`，用于 `克劳德 code` 这类跨语言音译入口。
-2. **存储先旁路验证，再引入 SQLite**：当前项目个人词典仍是 `AppConfig.dictionary: Vec<String>`；`pinyin`/`rphonetic` 已在依赖里，`rusqlite` 已作为 Phase 5 sidecar store 依赖引入。第一版先让生产路径继续消费配置词典，确认后再迁到 SQLite。
+2. **存储先旁路验证，再引入 SQLite**：当前项目个人词典真实读写已迁到 `user_terms.db` sidecar；`AppConfig.dictionary: Vec<String>` 仍保留为兼容快照和显式迁移入口。`pinyin`/`rphonetic` 已在依赖里，`rusqlite` 已作为 Phase 5 sidecar store 依赖引入。
 3. **ConvertPipeline 先包装现有 TNL，再逐步拆分**：当前 `TnlEngine` 已有拼音、Double Metaphone、候选诊断和 LLM 仲裁基础。P3 不做一次性推倒重写，先把现有能力包装成 Pass，再抽出新 Pass。
 
 ---
@@ -255,7 +255,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
    ```
 4. **Rust crate 选型**：
    - 旁路 JSON：复用现有 `serde` / `serde_json`
-   - SQLite：已新增 `rusqlite` sidecar store 依赖；生产读写路径仍保留 JSON/config 旁路，等待后续迁移切换
+   - SQLite：已新增 `rusqlite` sidecar store 依赖；用户词库生产读写已切为 `user_terms.db` sidecar-first，`AppConfig.dictionary` 仅作为兼容快照和显式迁移入口
    - 中文拼音：已引入 `pinyin` crate（无声调 key 使用 `plain()`）
    - 英文 Metaphone：已引入 `rphonetic` crate（含 Double Metaphone）
    - 模糊音规整：自实现 `to_fuzzy_pinyin()` 20 行
@@ -606,11 +606,12 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成：后端 `add_learned_word` 对旧前端、脚本或自动化调用缺省/无效 category 做本地推断兜底，推断规则与前端 `inferDictionaryCategory` 对齐，并保留已有有效 metadata。
 - 已完成：配置加载/保存阶段会对已有 compact 词典做确定性 category backfill，旧词条可自动获得 `email/url/code_symbol/phrase` metadata，`generic` 仍保持 compact。
 - 已完成：`phrase` prepass 已有运行时首段/首字索引，匹配时只召回可能命中的候选规则，并保持最长匹配、连字符分隔、中文共享前缀等既有行为。
-- 已完成：新增 SQLite `user_terms` sidecar store，可从现有 dictionary storage strings 水合纯词、source、category、`en_phonetic_key`、`zh_pinyin_fuzzy_key`，并创建 `category/en_phonetic_key/zh_pinyin_fuzzy_key/term` 索引；生产读写路径尚未切换。
+- 已完成：新增 SQLite `user_terms` sidecar store，可从现有 dictionary storage strings 水合纯词、source、category、`en_phonetic_key`、`zh_pinyin_fuzzy_key`，并创建 `category/en_phonetic_key/zh_pinyin_fuzzy_key/term` 索引；用户词库读写路径已切为 sidecar-first。
 - 已完成：新增按 `en_phonetic_key` / `zh_pinyin_fuzzy_key` 查询 enabled `user_terms` 的 store API，结果稳定排序并优先返回 manual source。
-- 已完成：配置加载/保存生命周期会 warning-only 水合默认 `user_terms.db` sidecar；运行时词库设置会优先合并 enabled `user_terms` 词条并保留 source/category metadata，同时保留前端传入的 `domain/recent/builtin/app_context` 动态热词，读取失败或为空时回退到规范化后的输入词典。
+- 已完成：配置加载和显式词典导入/迁移会 warning-only 水合默认 `user_terms.db` sidecar；普通配置保存、托盘切换和 ASR fallback 配置修复不再用 `AppConfig.dictionary` 快照反向覆盖 sidecar。运行时词库设置会优先合并 enabled `user_terms` 词条并保留 source/category metadata，同时保留前端传入的 `domain/recent/builtin/app_context` 动态热词，读取失败或为空时回退到规范化后的输入词典。
 - 已完成：词库管理命令已切到 sidecar-first：`get_dictionary_entries` 优先读 enabled `user_terms`，`add_learned_word` / `delete_dictionary_entries` 直接 upsert/disable sidecar，并把 enabled entries 镜像回 `AppConfig.dictionary` 作为兼容快照。
-- 未完成：完全移除前端配置初始化/保存对 `AppConfig.dictionary` 的依赖、持久化 phrase trie/索引结构。
+- 已完成：前端初始化词库 state 改为优先调用 `get_dictionary_entries`，失败时才回退 `AppConfig.dictionary`；保存网关默认不再发送 `dictionary`，只有显式 `dictionaryEntries` / `storageDictionary` override 才写入兼容快照并触发 sidecar 同步。
+- 未完成：删除 `AppConfig.dictionary` 字段、持久化 phrase trie/索引结构。
 
 ### 工程量
 

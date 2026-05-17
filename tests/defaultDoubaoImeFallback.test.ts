@@ -79,7 +79,7 @@ test("normalizeAsrConfigWithFallback: doubao 缺凭据时应回退到 fallback",
   assert.equal(normalized.config.selection.active_provider, FALLBACK_ASR_PROVIDER);
 });
 
-test("loadConfig 回退持久化应携带完整配置快照", async () => {
+test("loadConfig 回退持久化应携带完整配置快照但不重写词库 sidecar", async () => {
   const source = await readSource("src/hooks/useAppServiceController.ts");
   const marker = source.indexOf("// 回退后持久化修正后的配置，避免下次启动重复回退");
 
@@ -92,7 +92,8 @@ test("loadConfig 回退持久化应携带完整配置快照", async () => {
   assert.match(block, /assistantConfig:/);
   assert.match(block, /dualHotkeyConfig:/);
   assert.match(block, /learningConfig:/);
-  assert.match(block, /dictionaryEntries:/);
+  assert.doesNotMatch(block, /dictionaryEntries:/);
+  assert.doesNotMatch(block, /storageDictionary:/);
   assert.match(block, /builtinDictionaryDomains:/);
   assert.match(block, /theme:/);
 });

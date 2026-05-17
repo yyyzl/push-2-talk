@@ -24,6 +24,7 @@
 - Runtime dictionary exports from `user_terms` must query enabled rows only and format entries through `dictionary_utils::format_entry_with_category` so source/category metadata stays compatible with TNL routing.
 - When merging `user_terms` with runtime dictionary input, preserve runtime-only sources such as `domain`, `recent`, `builtin`, and `app_context`; do not run persisted-config normalization over those entries because it canonicalizes non-`auto` sources to `manual`.
 - Dictionary management commands (`get_dictionary_entries`, `add_learned_word`, `delete_dictionary_entries`) must be sidecar-first after Phase 5 migration: read/upsert/disable enabled `user_terms` rows, then mirror enabled entries back to `AppConfig.dictionary` only as a compatibility snapshot.
+- Ordinary config saves must not hydrate `user_terms` from `AppConfig.dictionary`; only explicit dictionary payloads or load/bootstrap migration paths may sync the compatibility snapshot into the sidecar.
 
 ---
 
@@ -35,6 +36,7 @@
 - Backend runtime dictionary setup may read enabled `user_terms` first, but the read path must be warning-only and fall back to normalized input entries if the sidecar cannot be read or has no enabled rows.
 - For `user_terms`, hydrate from current config strings as a repeatable snapshot operation: upsert present terms by case-insensitive term and disable enabled rows that are absent from the current config snapshot.
 - `get_dictionary_entries` may bootstrap an empty sidecar from `AppConfig.dictionary`, but `add_learned_word` and `delete_dictionary_entries` should return an error if the sidecar cannot be opened; otherwise the app would recreate two authoritative dictionary write sources.
+- `save_config` may sync `AppConfig.dictionary` into `user_terms` only when the frontend sends an explicit `dictionary` field, for import/migration compatibility. Field patches, tray switches, ASR fallback repair, and ordinary settings saves must leave the sidecar untouched.
 - `user_terms.en_phonetic_key` stores the first English phonetic key from `build_key_bundle`; `user_terms.zh_pinyin_fuzzy_key` stores the bundle's fuzzy pinyin key. Leave the column `NULL` when the key does not apply.
 - `user_terms` key lookup APIs must query enabled rows only, return empty results for empty keys, and order manual terms before automatic terms for deterministic candidate selection.
 
