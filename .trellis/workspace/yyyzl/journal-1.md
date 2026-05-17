@@ -777,3 +777,37 @@ Added a runtime first-segment/first-character index for TNL phrase dictionary ru
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Phase 5 user_terms SQLite store
+
+**Date**: 2026-05-17
+**Task**: Phase 5 user_terms SQLite store
+**Branch**: `main`
+
+### Summary
+
+Added a rusqlite-backed user_terms sidecar store with schema/index creation, dictionary metadata hydration, reopen/idempotency tests, and updated database/roadmap docs while leaving production runtime paths on AppConfig.dictionary.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `021b2da` | (see git log) |
+| `23f3b5b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
