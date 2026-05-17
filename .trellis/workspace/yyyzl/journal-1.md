@@ -1143,3 +1143,36 @@ Completed Phase 6 by passing TNL NamedEntity spans into personalization, applyin
 ### Next Steps
 
 - None - task complete
+
+
+## Session 32: Phase 7 HotwordCompiler audit
+
+**Date**: 2026-05-17
+**Task**: Phase 7 HotwordCompiler audit
+**Branch**: `main`
+
+### Summary
+
+Audited existing Phase 7 HotwordCompiler/provider/recent/app-context coverage, synced ASR personalization plan status, and verified hotword, recent-hotword, cargo check, fmt, and diff checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `90329ca` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
