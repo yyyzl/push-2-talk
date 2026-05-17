@@ -16,6 +16,7 @@ mod engine;
 pub mod hotword_compiler;
 pub(crate) mod phonetic_keys;
 mod runtime_diagnostics;
+mod user_terms_store;
 
 pub(crate) use app_context_hotwords::augment_dictionary_with_app_context_hotwords;
 pub use correction_pair_store::{
@@ -29,6 +30,7 @@ pub use engine::{
     PassDiagnostics, PersonalizationEngine, PersonalizationEngineConfig,
 };
 pub use runtime_diagnostics::write_runtime_diagnostic;
+pub use user_terms_store::{default_user_terms_db_path, UserTerm, UserTermStore};
 
 const PERSONALIZATION_PENDING_LLM_MIN_SCORE: f32 = 0.68;
 const PERSONALIZATION_DIAGNOSTIC_MIN_SCORE: f32 = 0.55;

@@ -60,7 +60,7 @@ MVP 必须覆盖：
 ### 三个关键收紧
 
 1. **CorrectionPair key 不是只靠自动计算**：必须支持一条 pair 保存多个 `alias_keys`，用于 `克劳德 code` 这类跨语言音译入口。
-2. **存储先旁路验证，再引入 SQLite**：当前项目个人词典仍是 `AppConfig.dictionary: Vec<String>`；`pinyin`/`rphonetic` 已在依赖里，但 `rusqlite` 尚未引入。第一版可以用配置旁路 JSON 验证收益，确认后再迁到 SQLite。
+2. **存储先旁路验证，再引入 SQLite**：当前项目个人词典仍是 `AppConfig.dictionary: Vec<String>`；`pinyin`/`rphonetic` 已在依赖里，`rusqlite` 已作为 Phase 5 sidecar store 依赖引入。第一版先让生产路径继续消费配置词典，确认后再迁到 SQLite。
 3. **ConvertPipeline 先包装现有 TNL，再逐步拆分**：当前 `TnlEngine` 已有拼音、Double Metaphone、候选诊断和 LLM 仲裁基础。P3 不做一次性推倒重写，先把现有能力包装成 Pass，再抽出新 Pass。
 
 ---
@@ -255,7 +255,7 @@ p95_latency_ms            p95 本地处理时延（不含 ASR / LLM）
    ```
 4. **Rust crate 选型**：
    - 旁路 JSON：复用现有 `serde` / `serde_json`
-   - SQLite：后续新增 `rusqlite`（当前尚未在 `Cargo.toml` 中引入）
+   - SQLite：已新增 `rusqlite` sidecar store 依赖；生产读写路径仍保留 JSON/config 旁路，等待后续迁移切换
    - 中文拼音：已引入 `pinyin` crate（无声调 key 使用 `plain()`）
    - 英文 Metaphone：已引入 `rphonetic` crate（含 Double Metaphone）
    - 模糊音规整：自实现 `to_fuzzy_pinyin()` 20 行
@@ -606,7 +606,8 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成：后端 `add_learned_word` 对旧前端、脚本或自动化调用缺省/无效 category 做本地推断兜底，推断规则与前端 `inferDictionaryCategory` 对齐，并保留已有有效 metadata。
 - 已完成：配置加载/保存阶段会对已有 compact 词典做确定性 category backfill，旧词条可自动获得 `email/url/code_symbol/phrase` metadata，`generic` 仍保持 compact。
 - 已完成：`phrase` prepass 已有运行时首段/首字索引，匹配时只召回可能命中的候选规则，并保持最长匹配、连字符分隔、中文共享前缀等既有行为。
-- 未完成：SQLite `user_terms` 表、`en_phonetic_key` / `zh_pinyin_fuzzy_key` 索引列、持久化 phrase trie/索引结构。
+- 已完成：新增 SQLite `user_terms` sidecar store，可从现有 dictionary storage strings 水合纯词、source、category，并创建 `category/en_phonetic_key/zh_pinyin_fuzzy_key/term` 索引；生产读写路径尚未切换。
+- 未完成：`en_phonetic_key` / `zh_pinyin_fuzzy_key` 实际写入、生产路径迁移到 `user_terms.db`、持久化 phrase trie/索引结构。
 
 ### 工程量
 
