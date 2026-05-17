@@ -645,6 +645,12 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
    - 专名片段在 SyllableMatchPass 中权重提高、误伤惩罚降低
 5. **不上 ONNX NER 模型**：jieba + 用户词 + 启发式覆盖 80% 场景即可
 
+### 当前落地状态（2026-05-17）
+
+- 已完成：`TechSpanDetector` 已基于 `jieba-rs` 注入用户词，并将用户词作为低优先级 `NamedEntity` span 暴露给 TNL 诊断和后续保护逻辑。
+- 已完成：`TechSpanDetector` 已消费 jieba POS 标签，把 `nr/ns/nt/nz` 作为内置轻量 NER 信号形成 `NamedEntity` span；该 span 不覆盖 URL/email/path/identifier 等强技术 span。
+- 未完成：专名片段在 `SyllableMatchPass` 中的权重提升/误伤惩罚调整。
+
 ### 工程量
 
 1 周

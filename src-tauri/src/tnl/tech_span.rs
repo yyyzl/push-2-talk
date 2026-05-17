@@ -109,13 +109,14 @@ impl TechSpanDetector {
     }
 
     fn detect_user_named_entities(&self, text: &str) -> Vec<Span> {
-        if self.user_terms.is_empty() {
+        if text.is_empty() {
             return Vec::new();
         }
 
         let mut spans = Vec::new();
         let mut cursor = 0;
-        for word in self.jieba.cut(text, false) {
+        for tagged_word in self.jieba.tag(text, false) {
+            let word = tagged_word.word;
             if word.is_empty() {
                 continue;
             }
@@ -125,7 +126,7 @@ impl TechSpanDetector {
             };
             let start = cursor + relative_start;
             let end = start + word.len();
-            if self.user_terms.contains(word) {
+            if self.should_emit_named_entity(word, tagged_word.tag) {
                 spans.push(Span {
                     text: word.to_string(),
                     start,
@@ -137,6 +138,15 @@ impl TechSpanDetector {
         }
 
         spans
+    }
+
+    fn should_emit_named_entity(&self, word: &str, tag: &str) -> bool {
+        Self::is_user_term_candidate(word)
+            && (self.user_terms.contains(word) || Self::is_named_entity_tag(tag))
+    }
+
+    fn is_named_entity_tag(tag: &str) -> bool {
+        matches!(tag, "nr" | "ns" | "nt" | "nz")
     }
 
     /// 检测文件名模式
@@ -1240,13 +1250,25 @@ mod tests {
     }
 
     #[test]
-    fn test_default_detector_does_not_mark_named_entity() {
+    fn test_default_detector_does_not_mark_common_nouns_as_named_entity() {
         let detector = TechSpanDetector::default();
-        let text = "我在用深度求索写代码";
+        let text = "今天天气很好";
         let tokens = Tokenizer::tokenize(text);
         let spans = detector.detect(text, &tokens);
 
         assert!(!spans.iter().any(|s| s.span_type == SpanType::NamedEntity));
+    }
+
+    #[test]
+    fn test_detect_jieba_pos_named_entity_without_user_dictionary() {
+        let detector = TechSpanDetector::default();
+        let text = "我去了北京开会";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(spans
+            .iter()
+            .any(|s| s.span_type == SpanType::NamedEntity && s.text == "北京"));
     }
 
     #[test]

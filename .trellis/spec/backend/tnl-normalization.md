@@ -50,6 +50,7 @@ impl TnlEngine {
 - `TnlEngine::new_with_disfluency_mode` must defensively purify runtime dictionary entries before building `TechSpanDetector`, hyphen rewrite rules, or `FuzzyMatcher`.
 - `TechSpanDetector::new(ext_whitelist)` remains the no-dictionary compatibility constructor.
 - The detector uses `jieba-rs` with the embedded default dictionary and injects sanitized user terms via `Jieba::add_word`.
+- The detector may consume `jieba-rs` POS tags as weak named-entity hints. Only `nr`, `ns`, `nt`, and `nz` may produce `NamedEntity` spans, and those spans keep lower priority than stronger technical spans.
 - If metadata strings such as `word|source|category` leak into this boundary, TNL matching paths must use only the first `word` segment after category routing.
 - If runtime ASR dictionary metadata such as `word|domain|domain_term` reaches TNL, `person/product/tool/phrase/domain_term/generic` and legacy entries continue to match as pure words.
 - Category-aware TNL routing must keep `email` and `url` entries out of user named-entity injection, hyphen rewrite, and fuzzy/phonetic matching. Built-in URL/email detectors remain responsible for protecting those spans.
@@ -67,6 +68,7 @@ impl TnlEngine {
 |---|---|
 | Dictionary contains `深度求索`, input `我在用深度求索写代码` | `detect` returns a `SpanType::NamedEntity` span with text `深度求索`. |
 | Dictionary is empty, same input | No `NamedEntity` span is emitted. |
+| Dictionary is empty, input `我去了北京开会` | `北京` may be emitted as `SpanType::NamedEntity` from jieba POS tag `ns`. |
 | Dictionary accidentally contains `深度求索|manual|product` | The injected term is `深度求索`; metadata does not enter jieba. |
 | TNL engine is constructed with `深度求索|domain|domain_term` | Named-entity, fuzzy, and hyphen dictionary paths consume only `深度求索`. |
 | TNL engine is constructed with `Claude Code|manual|code_symbol` and input `Cloud Code` | Do not phonetic-rewrite to `Claude Code`, and do not emit a phonetic diagnostic candidate for that target. |
@@ -91,6 +93,7 @@ impl TnlEngine {
 
 - Unit test: `TechSpanDetector::new_with_user_dictionary(..., &["深度求索"])` emits a `NamedEntity` span.
 - Unit test: `TechSpanDetector::default()` emits no `NamedEntity` for the same text.
+- Unit test: `TechSpanDetector::default()` can emit `NamedEntity` for conservative jieba POS tags such as `ns`.
 - Unit test: overlapping `NamedEntity` and `Email` spans merge to `Email`.
 - Integration test: `TnlEngine::new(vec!["深度求索"])` exposes the `NamedEntity` span in `NormalizationResult.technical_spans`.
 - Integration test: `TnlEngine::default()` does not emit the span.

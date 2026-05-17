@@ -1496,6 +1496,18 @@ mod tests {
     }
 
     #[test]
+    fn test_jieba_pos_named_entity_reaches_tnl_spans() {
+        let engine = TnlEngine::default();
+
+        let result = engine.normalize("我去了北京开会");
+
+        assert!(result
+            .technical_spans
+            .iter()
+            .any(|span| span.span_type == SpanType::NamedEntity && span.text == "北京"));
+    }
+
+    #[test]
     fn test_dictionary_category_routes_entries() {
         let routed = route_dictionary_entries(vec![
             "contact@example.com|manual|email".to_string(),
@@ -1712,10 +1724,10 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_dictionary_does_not_add_named_entity_span() {
+    fn test_empty_dictionary_does_not_add_named_entity_for_common_text() {
         let engine = TnlEngine::default();
 
-        let result = engine.normalize("我在用深度求索写代码");
+        let result = engine.normalize("今天天气很好");
 
         assert!(!result
             .technical_spans
