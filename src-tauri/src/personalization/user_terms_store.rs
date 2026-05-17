@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::dictionary_utils::{
-    extract_category, extract_word, normalize_or_infer_category, normalize_word,
+    extract_category, extract_word, format_entry_with_category, normalize_or_infer_category,
+    normalize_word,
 };
 
 use super::phonetic_keys::build_key_bundle;
@@ -171,6 +172,31 @@ impl UserTermStore {
         )?;
 
         let rows = stmt.query_map([], row_to_user_term)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_enabled_dictionary_entries(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT term, source, category
+            FROM user_terms
+            WHERE enabled = 1
+            ORDER BY lower(term)
+            "#,
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let term: String = row.get(0)?;
+            let source: String = row.get(1)?;
+            let category: String = row.get(2)?;
+
+            Ok(format_entry_with_category(
+                &term,
+                &source,
+                Some(category.as_str()),
+            ))
+        })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
@@ -453,6 +479,34 @@ mod tests {
         let key = user_term_index_keys("Claude Code").0.expect("en key");
         let matches = store.find_by_en_phonetic_key(&key).expect("query en key");
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn lists_enabled_dictionary_entries_with_metadata() {
+        let mut store = UserTermStore::open_in_memory().expect("open store");
+
+        store
+            .hydrate_dictionary_entries(&[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto".to_string(),
+                "团队约定|manual|phrase".to_string(),
+            ])
+            .expect("hydrate first snapshot");
+        store
+            .disable_term_for_test("团队约定")
+            .expect("disable term");
+
+        let entries = store
+            .list_enabled_dictionary_entries()
+            .expect("list enabled dictionary entries");
+
+        assert_eq!(
+            entries,
+            vec![
+                "Claude Code|manual|product".to_string(),
+                "useState|auto|code_symbol".to_string(),
+            ]
+        );
     }
 
     #[test]

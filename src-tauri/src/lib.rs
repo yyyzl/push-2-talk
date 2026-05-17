@@ -1091,6 +1091,53 @@ fn sync_user_terms_sidecar_from_dictionary_at_path(
     store.hydrate_dictionary_entries(&normalized_dictionary)
 }
 
+fn runtime_dictionary_entries_from_user_terms_or_config(
+    config_dictionary: &[String],
+) -> Vec<String> {
+    match default_user_terms_db_path() {
+        Ok(path) => {
+            runtime_dictionary_entries_from_user_terms_or_config_at_path(config_dictionary, &path)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "解析 user_terms sidecar 路径失败，使用配置词典启动运行时词库: {}",
+                e
+            );
+            normalized_runtime_dictionary_from_config(config_dictionary)
+        }
+    }
+}
+
+fn runtime_dictionary_entries_from_user_terms_or_config_at_path(
+    config_dictionary: &[String],
+    path: &std::path::Path,
+) -> Vec<String> {
+    match UserTermStore::open(path).and_then(|store| store.list_enabled_dictionary_entries()) {
+        Ok(entries) if !entries.is_empty() => {
+            tracing::debug!(
+                "从 user_terms sidecar 加载运行时词库：{} 个词条",
+                entries.len()
+            );
+            entries
+        }
+        Ok(_) => {
+            tracing::warn!("user_terms sidecar 没有启用词条，使用配置词典启动运行时词库");
+            normalized_runtime_dictionary_from_config(config_dictionary)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "读取 user_terms sidecar 失败，使用配置词典启动运行时词库: {}",
+                e
+            );
+            normalized_runtime_dictionary_from_config(config_dictionary)
+        }
+    }
+}
+
+fn normalized_runtime_dictionary_from_config(config_dictionary: &[String]) -> Vec<String> {
+    normalize_dictionary_for_config_storage(config_dictionary.to_vec())
+}
+
 fn load_persisted_config() -> Result<AppConfig, String> {
     match AppConfig::load() {
         Ok((config, migrated)) => {
@@ -1190,6 +1237,80 @@ mod user_terms_sidecar_sync_tests {
         );
 
         assert_eq!(synced, None);
+    }
+}
+
+#[cfg(test)]
+mod runtime_user_terms_dictionary_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_dictionary_uses_enabled_sidecar_entries_when_present() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+        let mut store = crate::personalization::UserTermStore::open(&path).expect("open store");
+        store
+            .hydrate_dictionary_entries(&[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto".to_string(),
+                "禁用短语|manual|phrase".to_string(),
+            ])
+            .expect("hydrate first snapshot");
+        store
+            .hydrate_dictionary_entries(&[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto".to_string(),
+            ])
+            .expect("hydrate second snapshot");
+
+        let entries = runtime_dictionary_entries_from_user_terms_or_config_at_path(
+            &["Fallback|manual|phrase".to_string()],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                "Claude Code|manual|product".to_string(),
+                "useState|auto|code_symbol".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_dictionary_falls_back_to_config_when_sidecar_read_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("db_directory");
+        std::fs::create_dir(&path).expect("create directory at db path");
+
+        let entries = runtime_dictionary_entries_from_user_terms_or_config_at_path(
+            &[
+                "useState|auto".to_string(),
+                "Claude Code|manual|product".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                "useState|auto|code_symbol".to_string(),
+                "Claude Code|manual|product".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_dictionary_falls_back_to_config_when_sidecar_is_empty() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+
+        let entries = runtime_dictionary_entries_from_user_terms_or_config_at_path(
+            &["Claude Code|manual|product".to_string()],
+            &path,
+        );
+
+        assert_eq!(entries, vec!["Claude Code|manual|product".to_string()]);
     }
 }
 
@@ -1444,7 +1565,8 @@ async fn restart_service_with_config(
         tracing::warn!("切换 ASR 引擎时停止服务失败: {}", e);
     }
 
-    let dictionary_words = learning::store::entries_to_words(&config.dictionary);
+    let runtime_dictionary =
+        runtime_dictionary_entries_from_user_terms_or_config(&config.dictionary);
 
     start_app(
         app_handle,
@@ -1460,7 +1582,7 @@ async fn restart_service_with_config(
         Some(config.dual_hotkey_config.clone()),
         Some(config.assistant_config.clone()),
         Some(config.enable_mute_other_apps),
-        Some(dictionary_words),
+        Some(runtime_dictionary),
     )
     .await
     .map(|_| ())
