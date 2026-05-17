@@ -56,6 +56,7 @@ impl TnlEngine {
 - Category-aware TNL routing must keep `code_symbol` entries out of fuzzy/phonetic matching, while allowing exact technical protection and hyphen-separator canonicalization.
 - Category-aware TNL routing must send only `phrase` entries into the phrase prepass. This prepass runs before pinyin, hyphen, and phonetic dictionary rewrites.
 - The phrase prepass may canonicalize whitespace-separated ASCII phrases case-insensitively and may collapse whitespace inserted between CJK characters in a phrase, but must not consume sentence or phrase punctuation.
+- The phrase prepass must use a prebuilt runtime phrase index for candidate recall, while delegating final boundary, separator, and replacement decisions to the exact phrase matcher.
 - User terms shorter than two Unicode scalar values or containing only whitespace/punctuation must not be injected.
 - `Span.start` and `Span.end` are byte offsets, matching Rust string slicing in TNL internals.
 - `NamedEntity` priority must stay below existing URL, email, path, file name, CLI flag, identifier, and version spans so user terms cannot overwrite stronger technical detections.
@@ -74,6 +75,8 @@ impl TnlEngine {
 | TNL engine is constructed with `Claude Code|manual|phrase` and input `claude code` | Phrase prepass rewrites to `Claude Code` with `DictionaryExact`. |
 | TNL engine is constructed with `团队约定|manual|phrase` and input `团队 约定` | Phrase prepass rewrites to `团队约定` with `DictionaryExact`. |
 | TNL engine is constructed with `Claude Code|manual|phrase` and input `claude, code` | No phrase rewrite crosses punctuation. |
+| TNL engine is constructed with `Claude Code|manual|phrase` and input `claude-code` | Runtime phrase index still recalls the rule and rewrites to `Claude Code`. |
+| TNL engine is constructed with `Claude Code|manual|phrase` and `Claude Code CLI|manual|phrase` | The longer phrase wins when both match at the same start. |
 | Dictionary term overlaps `test@example.com` | The merged span remains `SpanType::Email`. |
 | Term is a single character such as `马` | Do not inject it as a named entity; avoid noisy one-character spans. |
 
@@ -1879,7 +1882,7 @@ word|auto|domain_term
 - Backend unit test for `backfill_inferred_categories` covering legacy compact entries, canonical metadata, alias canonicalization, and no-change reporting.
 - Backend config test proving dictionary backfill marks config migrated when storage changes.
 - Backend TNL tests for category routing: `code_symbol` skips phonetic/fuzzy, `email/url` skip dictionary rewrite routes, and product-like categories still use phonetic/fuzzy.
-- Backend TNL tests for phrase prepass: ASCII phrase casing, CJK inserted whitespace collapse, punctuation boundary, and non-phrase skip.
+- Backend TNL tests for phrase prepass: ASCII phrase casing, CJK inserted whitespace collapse, punctuation boundary, non-phrase skip, runtime index candidate recall, hyphen separator recall, and longest-match selection.
 - Run `npm run test:ts`, `npm run build`, targeted `cargo test dictionary_utils::tests`, and `cargo check`.
 
 ### 7. Wrong vs Correct

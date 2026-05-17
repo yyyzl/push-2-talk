@@ -2,7 +2,7 @@
 //!
 //! 组合分词、技术片段识别、口语符号映射、模糊匹配
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
@@ -168,6 +168,104 @@ enum PhraseRuleKind {
     CjkCharacters,
 }
 
+#[derive(Debug, Clone, Default)]
+struct PhraseDictionaryIndex {
+    rules: Vec<PhraseDictionaryRule>,
+    segmented_by_first: HashMap<String, Vec<usize>>,
+    cjk_by_first: HashMap<char, Vec<usize>>,
+}
+
+impl PhraseDictionaryIndex {
+    fn from_rules(rules: Vec<PhraseDictionaryRule>) -> Self {
+        let mut segmented_by_first: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut cjk_by_first: HashMap<char, Vec<usize>> = HashMap::new();
+
+        for (rule_index, rule) in rules.iter().enumerate() {
+            let Some(first_segment) = rule.segments.first() else {
+                continue;
+            };
+
+            match rule.kind {
+                PhraseRuleKind::Segmented => {
+                    segmented_by_first
+                        .entry(first_segment.to_lowercase())
+                        .or_default()
+                        .push(rule_index);
+                }
+                PhraseRuleKind::CjkCharacters => {
+                    if let Some(first_char) = first_segment.chars().next() {
+                        cjk_by_first.entry(first_char).or_default().push(rule_index);
+                    }
+                }
+            }
+        }
+
+        Self {
+            rules,
+            segmented_by_first,
+            cjk_by_first,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    fn candidate_rule_indexes_for_start(&self, text: &str, start: usize) -> Vec<usize> {
+        let mut candidates = Vec::new();
+
+        if let Some(first_char) = text
+            .get(start..)
+            .and_then(|remaining| remaining.chars().next())
+        {
+            if let Some(rule_indexes) = self.cjk_by_first.get(&first_char) {
+                candidates.extend(rule_indexes.iter().copied());
+            }
+        }
+
+        for key in Self::segmented_candidate_keys(text, start) {
+            if let Some(rule_indexes) = self.segmented_by_first.get(&key) {
+                candidates.extend(rule_indexes.iter().copied());
+            }
+        }
+
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
+    }
+
+    fn segmented_candidate_keys(text: &str, start: usize) -> Vec<String> {
+        if !TnlEngine::has_ascii_boundary_before(text, start) {
+            return Vec::new();
+        }
+
+        let Some(remaining) = text.get(start..) else {
+            return Vec::new();
+        };
+
+        let mut end = start;
+        for (offset, ch) in remaining.char_indices() {
+            if ch.is_whitespace() {
+                break;
+            }
+            end = start + offset + ch.len_utf8();
+        }
+
+        if end == start {
+            return Vec::new();
+        }
+
+        let head = &text[start..end];
+        let mut keys = vec![head.to_lowercase()];
+        if let Some(hyphen_pos) = head.find('-') {
+            if hyphen_pos > 0 {
+                keys.push(head[..hyphen_pos].to_lowercase());
+            }
+        }
+        keys
+    }
+}
+
 #[derive(Debug, Default)]
 struct RoutedDictionary {
     named_entity_words: Vec<String>,
@@ -188,8 +286,8 @@ pub struct TnlEngine {
     fuzzy_matcher: Option<FuzzyMatcher>,
     /// 连字符词库重写规则（仅针对包含 `-` 的词条）
     hyphen_rules: Vec<HyphenDictionaryRule>,
-    /// 短语词库重写规则（仅针对 category=phrase）
-    phrase_rules: Vec<PhraseDictionaryRule>,
+    /// 短语词库运行时索引（仅针对 category=phrase）
+    phrase_index: PhraseDictionaryIndex,
 }
 
 impl TnlEngine {
@@ -213,7 +311,8 @@ impl TnlEngine {
             &dictionary.named_entity_words,
         );
         let hyphen_rules = Self::build_hyphen_rules(&dictionary.hyphen_words);
-        let phrase_rules = Self::build_phrase_rules(&dictionary.phrase_words);
+        let phrase_index =
+            PhraseDictionaryIndex::from_rules(Self::build_phrase_rules(&dictionary.phrase_words));
         let fuzzy_matcher = if dictionary.fuzzy_words.is_empty() {
             None
         } else {
@@ -226,7 +325,7 @@ impl TnlEngine {
             tech_span_detector,
             fuzzy_matcher,
             hyphen_rules,
-            phrase_rules,
+            phrase_index,
         }
     }
 
@@ -551,14 +650,18 @@ impl TnlEngine {
 
     /// 应用短语词库优先匹配。
     fn apply_phrase_dictionary_rewrite(&self, text: &str) -> (String, Vec<Replacement>) {
-        if text.is_empty() || self.phrase_rules.is_empty() {
+        if text.is_empty() || self.phrase_index.is_empty() {
             return (text.to_string(), Vec::new());
         }
 
         let mut candidates: Vec<(usize, usize, &PhraseDictionaryRule)> = Vec::new();
         for (start, _) in text.char_indices() {
             let mut best: Option<(usize, &PhraseDictionaryRule)> = None;
-            for rule in &self.phrase_rules {
+            for rule_index in self
+                .phrase_index
+                .candidate_rule_indexes_for_start(text, start)
+            {
+                let rule = &self.phrase_index.rules[rule_index];
                 if let Some(end) = Self::try_match_phrase_rule(text, start, rule) {
                     if best.map_or(true, |(best_end, _)| end > best_end) {
                         best = Some((end, rule));
@@ -1490,6 +1593,79 @@ mod tests {
         assert!(result.applied.iter().any(|replacement| {
             replacement.original == "claude code"
                 && replacement.replaced == "Claude Code"
+                && matches!(replacement.reason, ReplacementReason::DictionaryExact)
+        }));
+    }
+
+    #[test]
+    fn test_phrase_index_groups_rules_by_first_segment_and_cjk_char() {
+        let rules = TnlEngine::build_phrase_rules(&[
+            "Claude Code".to_string(),
+            "团队约定".to_string(),
+            "团队规范".to_string(),
+        ]);
+        let index = PhraseDictionaryIndex::from_rules(rules);
+
+        let ascii_matches = index.candidate_rule_indexes_for_start("claude code", 0);
+        assert_eq!(ascii_matches.len(), 1);
+        assert_eq!(index.rules[ascii_matches[0]].canonical, "Claude Code");
+
+        let cjk_matches = index.candidate_rule_indexes_for_start("团队 规范", 0);
+        let cjk_canonicals = cjk_matches
+            .iter()
+            .map(|rule_index| index.rules[*rule_index].canonical.as_str())
+            .collect::<Vec<_>>();
+        assert!(cjk_canonicals.contains(&"团队约定"));
+        assert!(cjk_canonicals.contains(&"团队规范"));
+
+        let unrelated_matches = index.candidate_rule_indexes_for_start("open ai", 0);
+        assert!(unrelated_matches.is_empty());
+    }
+
+    #[test]
+    fn test_phrase_index_longest_same_start_wins() {
+        let engine = TnlEngine::new(vec![
+            "Claude Code|manual|phrase".to_string(),
+            "Claude Code CLI|manual|phrase".to_string(),
+        ]);
+
+        let result = engine.normalize("打开 claude code cli");
+
+        assert_eq!(result.text, "打开 Claude Code CLI");
+        assert!(result.applied.iter().any(|replacement| {
+            replacement.original == "claude code cli"
+                && replacement.replaced == "Claude Code CLI"
+                && matches!(replacement.reason, ReplacementReason::DictionaryExact)
+        }));
+    }
+
+    #[test]
+    fn test_phrase_index_keeps_hyphen_separator_lookup() {
+        let engine = TnlEngine::new(vec!["Claude Code|manual|phrase".to_string()]);
+
+        let result = engine.normalize("打开 claude-code");
+
+        assert_eq!(result.text, "打开 Claude Code");
+        assert!(result.applied.iter().any(|replacement| {
+            replacement.original == "claude-code"
+                && replacement.replaced == "Claude Code"
+                && matches!(replacement.reason, ReplacementReason::DictionaryExact)
+        }));
+    }
+
+    #[test]
+    fn test_phrase_index_handles_cjk_shared_prefix() {
+        let engine = TnlEngine::new(vec![
+            "团队约定|manual|phrase".to_string(),
+            "团队规范|manual|phrase".to_string(),
+        ]);
+
+        let result = engine.normalize("这是团队 规范");
+
+        assert_eq!(result.text, "这是团队规范");
+        assert!(result.applied.iter().any(|replacement| {
+            replacement.original == "团队 规范"
+                && replacement.replaced == "团队规范"
                 && matches!(replacement.reason, ReplacementReason::DictionaryExact)
         }));
     }

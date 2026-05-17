@@ -581,7 +581,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
    CREATE INDEX idx_user_term_zh ON user_terms(zh_pinyin_fuzzy_key);
    ```
 2. **不同 category 走不同路径**：
-   - `phrase`（≥2 token 短语）：建独立 phrase trie，在 SyllableMatchPass 之前优先匹配（TNL 后端已接入轻量 phrase prepass：ASCII 短语大小写规范化，中文短语吞字间空白）
+   - `phrase`（≥2 token 短语）：建独立 phrase trie，在 SyllableMatchPass 之前优先匹配（TNL 后端已接入轻量 phrase prepass + 运行时首段索引：ASCII 短语大小写规范化，中文短语吞字间空白）
    - `email / url`：用正则识别和保护，不进入音化流程（TNL 后端已排除 named-entity / fuzzy / hyphen 路径）
    - `code_symbol`（如 `useState / async/await / k8s`）：保留原大小写、不音化、精确匹配（TNL 后端已排除 phonetic/fuzzy，保留精确连字符重写）
    - `person / product / tool / domain_term`：进入音节格候选（当前 TNL fuzzy/phonetic 路径继续启用）
@@ -597,7 +597,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
    - 允许手动改 category
    - 默认推断 + 人工微调
 
-### 当前落地状态（2026-05-16）
+### 当前落地状态（2026-05-17）
 
 - 已完成：JSON 词库 entry metadata、DictionaryPage category 编辑、`add_learned_word` category 持久化、ASR hotword payload 纯词输出。
 - 已完成：TNL 构造阶段按 category 路由词库，`email/url` 不再进入 named-entity、hyphen、phonetic/fuzzy；`code_symbol` 不再进入 phonetic/fuzzy，但保留精确连字符重写。
@@ -605,6 +605,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成：学习阶段 LLM 判断已输出完整词库 category taxonomy，并兼容旧 `proper_noun/term/frequent` 分类别名。
 - 已完成：后端 `add_learned_word` 对旧前端、脚本或自动化调用缺省/无效 category 做本地推断兜底，推断规则与前端 `inferDictionaryCategory` 对齐，并保留已有有效 metadata。
 - 已完成：配置加载/保存阶段会对已有 compact 词典做确定性 category backfill，旧词条可自动获得 `email/url/code_symbol/phrase` metadata，`generic` 仍保持 compact。
+- 已完成：`phrase` prepass 已有运行时首段/首字索引，匹配时只召回可能命中的候选规则，并保持最长匹配、连字符分隔、中文共享前缀等既有行为。
 - 未完成：SQLite `user_terms` 表、`en_phonetic_key` / `zh_pinyin_fuzzy_key` 索引列、持久化 phrase trie/索引结构。
 
 ### 工程量
