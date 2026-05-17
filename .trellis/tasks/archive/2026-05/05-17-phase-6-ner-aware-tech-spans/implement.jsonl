@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "Runtime dictionary metadata and user-term category constraints"}
+{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "TNL TechSpanDetector and NamedEntity span contract"}
+{"file": ".trellis/tasks/05-17-phase-6-ner-aware-tech-spans/research/jieba-rs-pos-tagging.md", "reason": "jieba-rs tag API details from local crate source"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "user_terms sidecar and dictionary metadata source-of-truth constraints"}
