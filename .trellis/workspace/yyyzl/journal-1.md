@@ -912,3 +912,36 @@ Synced AppConfig.dictionary into the user_terms SQLite sidecar during persisted 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: Fix dictionary category metadata test
+
+**Date**: 2026-05-17
+**Task**: Fix dictionary category metadata test
+**Branch**: `main`
+
+### Summary
+
+Updated the stale TypeScript regression assertion to match the current add_learned_word backend path through upsert_entry_with_inferred_category while still verifying category.as_deref() is passed; restored npm run test:ts to 120/120 passing.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `56f4a3c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
