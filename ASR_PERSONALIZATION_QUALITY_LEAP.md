@@ -147,13 +147,14 @@ flowchart LR
 
 1. **Phase 0A mini eval**：先收 15-30 条真实错误样本，跑通 case schema、runner、报告输出和诊断字段
 2. **Phase 0B 完整评测集**：从日常使用中扩展到 80-120 条真实错误样本
-3. **分桶**：
+3. **Phase 0B 样本入口（已完成第一刀）**：新增 `scripts/asr-eval-draft.ts`，可从导出的前端 history JSON 或 runtime personalization diagnostics JSON/目录生成 `tests/asr_eval/drafts/*.json` 形态的待人工复核草稿；草稿不会自动进入正式 `cases/`，避免未经确认的真实文本污染质量门槛
+4. **分桶**：
    - 技术词（30%，如 `Claude Code / Cursor / Windsurf / TypeScript`）
    - 中英混合（25%，如 `调用 LLM 接口 / 部署到 Kubernetes`）
    - 人名/产品名（20%）
    - 长句（15%，> 30 字）
    - 短句（10%，< 8 字）
-4. **每条记录的 schema**：
+5. **每条记录的 schema**：
    ```json
    {
      "audio_id": "20260514-001",
@@ -167,9 +168,9 @@ flowchart LR
      "diagnostics": { /* 各 Pass 输出，运行时填充 */ }
    }
    ```
-5. **诊断落盘**：每次实际识别都落盘到 `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\` JSON，每个 Pass 的输入/输出/命中/耗时；payload 必须脱敏并限制长度；个性化运行时文件使用 `personalization-<timestamp>-<uuid>.json`，并按天最多保留 200 个个性化诊断文件；eval diagnostics 使用 schema v4，包含顶层 eval_config、metrics、quality_gate 和 bounded per-case 明细
-6. **eval runner**：`cargo run --bin eval_asr -- --suite tests/asr_eval/` 一键跑全集
-7. **调参 sweep**：`cargo run --bin eval_asr -- --sweep-thresholds 0.70,0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure` 一次输出阈值/窗口对比表
+6. **诊断落盘**：每次实际识别都落盘到 `%APPDATA%\PushToTalk\diagnostics\YYYY-MM-DD\` JSON，每个 Pass 的输入/输出/命中/耗时；payload 必须脱敏并限制长度；个性化运行时文件使用 `personalization-<timestamp>-<uuid>.json`，并按天最多保留 200 个个性化诊断文件；eval diagnostics 使用 schema v4，包含顶层 eval_config、metrics、quality_gate 和 bounded per-case 明细
+7. **eval runner**：`cargo run --bin eval_asr -- --suite tests/asr_eval/` 一键跑全集
+8. **调参 sweep**：`cargo run --bin eval_asr -- --sweep-thresholds 0.70,0.88,0.99 --sweep-window-tokens 3,5 --allow-quality-gate-failure` 一次输出阈值/窗口对比表
 
 ### 指标
 
@@ -505,6 +506,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 剩余不阻塞闭环但属于增强项：
 
 - Phase 0B：扩展到 80-120 条真实错误样本
+- Phase 0B intake：已具备 history / runtime diagnostics 到 eval draft 的离线生成入口；下一步需要人工确认 draft 的 `expected_text` 后再提升为正式 case
 - 完整 ConvertPipeline trait 化：当前为了降低风险仍由 `PersonalizationEngine` + `TnlEngine` 渐进承载
 - 助手路径的中置信候选云端仲裁已接入：助手语音指令会在发出 `assistant_turn_pending` 和调用主助手 LLM 前，复用同一套 bounded candidate arbiter 处理 TNL/个性化中置信候选，并将真实 LLM apply/reject 弱反馈写回 correction pair
 

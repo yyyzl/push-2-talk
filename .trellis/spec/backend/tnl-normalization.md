@@ -895,6 +895,98 @@ fn write_diagnostics(
 
 ---
 
+## Scenario: ASR Eval Draft Intake Builds Reviewable Phase 0B Samples
+
+### 1. Scope / Trigger
+
+- Trigger: any change to ASR eval sample intake scripts, draft eval case shape, frontend history export mapping, or runtime personalization diagnostics import.
+- Draft intake is a staging path for Phase 0B sample growth. It must never silently promote unreviewed user/history/diagnostic text into the formal `tests/asr_eval/cases/` quality gate.
+
+### 2. Signatures
+
+CLI:
+
+```powershell
+npx tsx scripts/asr-eval-draft.ts --history <history.json> --out tests/asr_eval/drafts/history.json
+npx tsx scripts/asr-eval-draft.ts --diagnostics <file-or-dir> --out tests/asr_eval/drafts/diagnostics.json
+npx tsx scripts/asr-eval-draft.ts --history <history.json> --diagnostics <file-or-dir> --out <draft.json> --prefix phase0b --limit 80
+```
+
+Core helpers:
+
+```typescript
+buildDraftCasesFromHistory(input, options)
+buildDraftCasesFromRuntimeDiagnostics(input, options)
+runAsrEvalDraftCli(argv)
+```
+
+### 3. Contracts
+
+- Output records must use the eval case field names: `audio_id`, `audio_wav_path`, `provider`, `raw_asr_text`, `expected_text`, `user_final_text`, `category`, `notes`, `diagnostics`.
+- Draft files belong under `tests/asr_eval/drafts/` or another explicitly provided staging path, not under `tests/asr_eval/cases/`.
+- History input may be a JSON array or an object containing `records`, `history`, or `pushtotalk_history`.
+- History mapping:
+  - include only `success = true` and `mode = "normal"` records by default,
+  - `raw_asr_text = originalText`,
+  - `expected_text = polishedText || originalText`,
+  - `provider = "history-draft"`,
+  - `category = "real_history_draft"`.
+- Runtime diagnostic input may be one JSON file, a JSON array, or a directory of `personalization-*.json` files.
+- Runtime diagnostic mapping:
+  - include only changed records or records with `applied_count > 0`,
+  - `raw_asr_text = source_text`,
+  - `expected_text = output_text`,
+  - `provider = "runtime-diagnostic-draft"`,
+  - `category = "runtime_personalization_draft"`.
+- Every draft `notes` value must clearly state that `expected_text` requires manual confirmation before moving into formal cases.
+- Deduplicate by `raw_asr_text + expected_text`.
+- `--limit` limits final output count and must be a positive integer.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| `--history` and `--diagnostics` are both omitted | CLI returns an error and writes no output. |
+| `--out` is omitted | CLI returns an error and writes no output. |
+| `--limit` is zero, negative, non-integer, or NaN | CLI returns an error and writes no output. |
+| History record is assistant mode or unsuccessful | Skip it. |
+| History record has empty `originalText` | Skip it. |
+| Runtime diagnostic has `changed = false` and `applied_count = 0` | Skip it. |
+| Runtime diagnostics directory has unrelated JSON files | Ignore files that do not match `personalization-*.json`. |
+| Duplicate raw/expected pairs appear across inputs | Keep the first draft case only. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a successful normal history record `cloud code -> Claude Code` becomes one `history-draft` case with a manual-review note.
+- Good: a runtime diagnostic with `source_text = "open eye"` and `output_text = "OpenAI"` becomes one `runtime-diagnostic-draft` case.
+- Base: unchanged successful history can become a false-positive-guard draft, but still requires manual confirmation.
+- Bad: draft intake writes directly into `tests/asr_eval/cases/`.
+- Bad: assistant-mode or LLM-polishing output is treated as raw ASR correction evidence.
+- Bad: runtime diagnostics are assumed to represent the user's intended final text without review.
+
+### 6. Tests Required
+
+- Unit test for history filtering, mapping, and deduplication.
+- Unit test for runtime diagnostics filtering and mapping.
+- CLI test proving `--history` + `--out` writes a valid draft JSON file.
+- Add diagnostics-directory tests when directory ordering or recursive import behavior changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```powershell
+npx tsx scripts/asr-eval-draft.ts --history history.json --out tests/asr_eval/cases/real.json
+```
+
+#### Correct
+
+```powershell
+npx tsx scripts/asr-eval-draft.ts --history history.json --out tests/asr_eval/drafts/history-review.json
+```
+
+---
+
 ## Scenario: LLM Candidate Arbitration Applies Non-Overlapping Spans Only
 
 ### 1. Scope / Trigger
