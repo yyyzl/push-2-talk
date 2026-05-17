@@ -81,6 +81,8 @@ test("DictionaryPage 和 useDictionary 应暴露手动修改 category 的保存�
     /invoke\("add_learned_word",\s*\{[\s\S]*word:\s*entry\.word,[\s\S]*source:\s*entry\.source,[\s\S]*category/,
   );
 
-  assert.match(backendSource, /upsert_entry_with_category/);
-  assert.match(backendSource, /category\.as_deref\(\)/);
+  assert.match(
+    backendSource,
+    /upsert_entry_with_inferred_category\(\s*&mut config\.dictionary,\s*&word,\s*&source,\s*category\.as_deref\(\),\s*\)/,
+  );
 });
