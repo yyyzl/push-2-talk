@@ -811,3 +811,37 @@ Added a rusqlite-backed user_terms sidecar store with schema/index creation, dic
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: Phase 5 user term phonetic keys
+
+**Date**: 2026-05-17
+**Task**: Phase 5 user term phonetic keys
+**Branch**: `main`
+
+### Summary
+
+Hydrated user_terms SQLite rows with existing phonetic key generation, added regression assertions for English and CJK key columns, and updated database/roadmap docs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a23d9f3` | (see git log) |
+| `c3122cb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
