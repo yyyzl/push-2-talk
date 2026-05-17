@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/event-contracts.md", "reason": "save_config/load_config and dictionary command event compatibility"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Sidecar-first persistence and config snapshot fallback rules"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Dictionary state and config state synchronization rules"}
+{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "Runtime dictionary must still preserve recent/builtin runtime-only semantics"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "useAppServiceController hook data-fetch/save patterns"}
