@@ -945,3 +945,36 @@ Updated the stale TypeScript regression assertion to match the current add_learn
 ### Next Steps
 
 - None - task complete
+
+
+## Session 26: Phase 5 runtime user terms read path
+
+**Date**: 2026-05-17
+**Task**: Phase 5 runtime user terms read path
+**Branch**: `main`
+
+### Summary
+
+Added enabled user_terms export preserving source/category metadata and made backend-controlled service restarts prefer user_terms.db runtime entries with warning-only fallback to normalized AppConfig.dictionary; start_app frontend runtime merge remains unchanged.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0a92137` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
