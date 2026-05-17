@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::dictionary_utils::{
     extract_category, extract_word, format_entry_with_category, normalize_or_infer_category,
-    normalize_word,
+    normalize_word, upsert_entry_with_inferred_category,
 };
 
 use super::phonetic_keys::build_key_bundle;
@@ -159,6 +159,104 @@ impl UserTermStore {
 
         tx.commit()?;
         Ok(processed)
+    }
+
+    pub fn upsert_dictionary_entry(
+        &mut self,
+        word: &str,
+        source: &str,
+        category: Option<&str>,
+    ) -> Result<()> {
+        let term = normalize_word(word);
+        if term.is_empty() {
+            return Ok(());
+        }
+
+        let mut normalized_entry = self
+            .find_by_term(&term)?
+            .map(|existing| {
+                vec![format_entry_with_category(
+                    &existing.term,
+                    &existing.source,
+                    Some(existing.category.as_str()),
+                )]
+            })
+            .unwrap_or_default();
+        upsert_entry_with_inferred_category(&mut normalized_entry, &term, source, category);
+
+        let entry = normalized_entry
+            .first()
+            .map(String::as_str)
+            .unwrap_or(term.as_str());
+        let source = extract_dictionary_source(entry);
+        let category = extract_category(entry)
+            .unwrap_or_else(|| normalize_or_infer_category(&term, category))
+            .to_string();
+        let (en_phonetic_key, zh_pinyin_fuzzy_key) = user_term_index_keys(&term);
+        let now = current_unix_millis();
+
+        self.conn.execute(
+            r#"
+            INSERT INTO user_terms (
+                term,
+                category,
+                source,
+                en_phonetic_key,
+                zh_pinyin_fuzzy_key,
+                created_at,
+                updated_at,
+                enabled
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 1)
+            ON CONFLICT(term) DO UPDATE SET
+                category = excluded.category,
+                source = CASE
+                    WHEN user_terms.source = 'manual' OR excluded.source = 'manual'
+                        THEN 'manual'
+                    ELSE 'auto'
+                END,
+                en_phonetic_key = excluded.en_phonetic_key,
+                zh_pinyin_fuzzy_key = excluded.zh_pinyin_fuzzy_key,
+                updated_at = excluded.updated_at,
+                enabled = 1
+            "#,
+            params![
+                term,
+                category,
+                source,
+                en_phonetic_key,
+                zh_pinyin_fuzzy_key,
+                now
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn disable_dictionary_entries(&mut self, words: &[String]) -> Result<usize> {
+        let now = current_unix_millis();
+        let tx = self.conn.transaction()?;
+        let mut seen = HashSet::new();
+        let mut disabled = 0usize;
+
+        for word in words {
+            let term = normalize_word(word);
+            if term.is_empty() || !seen.insert(term.to_lowercase()) {
+                continue;
+            }
+
+            disabled += tx.execute(
+                r#"
+                UPDATE user_terms
+                SET enabled = 0, updated_at = ?1
+                WHERE term = ?2 COLLATE NOCASE AND enabled = 1
+                "#,
+                params![now, term],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(disabled)
     }
 
     pub fn list_terms(&self) -> Result<Vec<UserTerm>> {
@@ -315,7 +413,11 @@ fn row_to_user_term(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserTerm> {
 }
 
 fn extract_dictionary_source(entry: &str) -> &'static str {
-    if entry.split('|').nth(1) == Some("auto") {
+    normalize_user_term_source(entry.split('|').nth(1).unwrap_or_default())
+}
+
+fn normalize_user_term_source(source: &str) -> &'static str {
+    if source == "auto" {
         "auto"
     } else {
         "manual"
@@ -507,6 +609,64 @@ mod tests {
                 "useState|auto|code_symbol".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn upserts_single_dictionary_entry_with_metadata_and_indexes() {
+        let mut store = UserTermStore::open_in_memory().expect("open store");
+
+        store
+            .upsert_dictionary_entry("useState", "auto", None)
+            .expect("upsert auto code symbol");
+        store
+            .upsert_dictionary_entry("useState", "manual", Some("tool"))
+            .expect("upsert manual category");
+
+        let term = store
+            .find_by_term("USESTATE")
+            .expect("find term case-insensitively")
+            .unwrap();
+        assert_eq!(term.term, "useState");
+        assert_eq!(term.source, "manual");
+        assert_eq!(term.category, "tool");
+        assert!(term.en_phonetic_key.is_some());
+
+        assert_eq!(
+            store
+                .list_enabled_dictionary_entries()
+                .expect("list enabled dictionary entries"),
+            vec!["useState|manual|tool".to_string()]
+        );
+    }
+
+    #[test]
+    fn disables_dictionary_entries_case_insensitively() {
+        let mut store = UserTermStore::open_in_memory().expect("open store");
+
+        store
+            .upsert_dictionary_entry("Claude Code", "manual", Some("product"))
+            .expect("upsert first term");
+        store
+            .upsert_dictionary_entry("useState", "auto", None)
+            .expect("upsert second term");
+
+        let disabled = store
+            .disable_dictionary_entries(&["claude code".to_string(), "  ".to_string()])
+            .expect("disable terms");
+
+        assert_eq!(disabled, 1);
+        assert_eq!(
+            store
+                .list_enabled_dictionary_entries()
+                .expect("list enabled dictionary entries"),
+            vec!["useState|auto|code_symbol".to_string()]
+        );
+
+        let disabled_term = store
+            .find_by_term("Claude Code")
+            .expect("find disabled term")
+            .unwrap();
+        assert!(!disabled_term.enabled);
     }
 
     #[test]

@@ -3,8 +3,6 @@
 // 独立模块，提供词库条目的解析和转换功能
 // 被 ASR、LLM、Learning 等多个模块共享使用
 
-use std::collections::HashSet;
-
 const VALID_DICTIONARY_CATEGORIES: &[&str] = &[
     "person",
     "product",
@@ -293,15 +291,6 @@ pub fn backfill_inferred_categories(entries: &mut Vec<String>) -> bool {
     changed
 }
 
-/// 删除指定词汇（按 word 匹配，不区分来源）
-pub fn remove_entries(entries: &mut Vec<String>, words: &[String]) {
-    let words_set: HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
-    entries.retain(|e| {
-        let word = extract_word(e);
-        !words_set.contains(word)
-    });
-}
-
 /// 将词条列表转换为纯词汇列表（用于 ASR API）
 ///
 /// 去除所有 |auto 后缀，只保留纯词汇
@@ -399,18 +388,6 @@ mod tests {
         // 重复添加 manual（更新为 manual）
         upsert_entry(&mut entries, "rust", "manual");
         assert_eq!(entries, vec!["claude", "rust"]);
-    }
-
-    #[test]
-    fn test_remove_entries() {
-        let mut entries = vec![
-            "claude".to_string(),
-            "rust|auto".to_string(),
-            "python".to_string(),
-        ];
-
-        remove_entries(&mut entries, &vec!["rust".to_string()]);
-        assert_eq!(entries, vec!["claude", "python"]);
     }
 
     #[test]

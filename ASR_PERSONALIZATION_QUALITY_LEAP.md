@@ -609,7 +609,8 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成：新增 SQLite `user_terms` sidecar store，可从现有 dictionary storage strings 水合纯词、source、category、`en_phonetic_key`、`zh_pinyin_fuzzy_key`，并创建 `category/en_phonetic_key/zh_pinyin_fuzzy_key/term` 索引；生产读写路径尚未切换。
 - 已完成：新增按 `en_phonetic_key` / `zh_pinyin_fuzzy_key` 查询 enabled `user_terms` 的 store API，结果稳定排序并优先返回 manual source。
 - 已完成：配置加载/保存生命周期会 warning-only 水合默认 `user_terms.db` sidecar；运行时词库设置会优先合并 enabled `user_terms` 词条并保留 source/category metadata，同时保留前端传入的 `domain/recent/builtin/app_context` 动态热词，读取失败或为空时回退到规范化后的输入词典。
-- 未完成：前端持久化词库源完全迁移到 `user_terms.db`、持久化 phrase trie/索引结构。
+- 已完成：词库管理命令已切到 sidecar-first：`get_dictionary_entries` 优先读 enabled `user_terms`，`add_learned_word` / `delete_dictionary_entries` 直接 upsert/disable sidecar，并把 enabled entries 镜像回 `AppConfig.dictionary` 作为兼容快照。
+- 未完成：完全移除前端配置初始化/保存对 `AppConfig.dictionary` 的依赖、持久化 phrase trie/索引结构。
 
 ### 工程量
 

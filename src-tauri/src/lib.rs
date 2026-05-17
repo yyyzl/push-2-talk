@@ -1092,6 +1092,117 @@ fn sync_user_terms_sidecar_from_dictionary_at_path(
     store.hydrate_dictionary_entries(&normalized_dictionary)
 }
 
+fn dictionary_entries_from_user_terms_or_config(config_dictionary: &[String]) -> Vec<String> {
+    match default_user_terms_db_path() {
+        Ok(path) => dictionary_entries_from_user_terms_or_config_at_path(config_dictionary, &path),
+        Err(e) => {
+            tracing::warn!(
+                "解析 user_terms sidecar 路径失败，使用配置词典读取词库: {}",
+                e
+            );
+            normalize_dictionary_for_config_storage(config_dictionary.to_vec())
+        }
+    }
+}
+
+fn dictionary_entries_from_user_terms_or_config_at_path(
+    config_dictionary: &[String],
+    path: &std::path::Path,
+) -> Vec<String> {
+    let normalized_config = normalize_dictionary_for_config_storage(config_dictionary.to_vec());
+
+    let mut store = match UserTermStore::open(path) {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!("读取 user_terms sidecar 失败，回退配置词典: {}", e);
+            return normalized_config;
+        }
+    };
+
+    match store.list_enabled_dictionary_entries() {
+        Ok(entries) if !entries.is_empty() => entries,
+        Ok(_) if !normalized_config.is_empty() => {
+            tracing::debug!("user_terms sidecar 为空，从配置词典水合词库");
+            if let Err(e) = store.hydrate_dictionary_entries(&normalized_config) {
+                tracing::warn!("水合 user_terms sidecar 失败，回退配置词典: {}", e);
+                return normalized_config;
+            }
+            match store.list_enabled_dictionary_entries() {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::warn!("水合后读取 user_terms sidecar 失败，回退配置词典: {}", e);
+                    normalized_config
+                }
+            }
+        }
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            tracing::warn!("读取 user_terms sidecar 词条失败，回退配置词典: {}", e);
+            normalized_config
+        }
+    }
+}
+
+fn upsert_user_term_sidecar_entry_and_snapshot_config(
+    word: &str,
+    source: &str,
+    category: Option<&str>,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let path = default_user_terms_db_path()
+        .map_err(|e| format!("解析 user_terms sidecar 路径失败: {}", e))?;
+    upsert_user_term_sidecar_entry_and_snapshot_config_at_path(word, source, category, &path)
+}
+
+fn upsert_user_term_sidecar_entry_and_snapshot_config_at_path(
+    word: &str,
+    source: &str,
+    category: Option<&str>,
+    path: &std::path::Path,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let mut store =
+        UserTermStore::open(path).map_err(|e| format!("打开 user_terms sidecar 失败: {}", e))?;
+    store
+        .upsert_dictionary_entry(word, source, category)
+        .map_err(|e| format!("写入 user_terms sidecar 失败: {}", e))?;
+    let entries = store
+        .list_enabled_dictionary_entries()
+        .map_err(|e| format!("读取 user_terms sidecar 失败: {}", e))?;
+    snapshot_config_dictionary_from_user_term_entries(entries)
+}
+
+fn delete_user_term_sidecar_entries_and_snapshot_config(
+    words: &[String],
+) -> Result<(AppConfig, Vec<String>), String> {
+    let path = default_user_terms_db_path()
+        .map_err(|e| format!("解析 user_terms sidecar 路径失败: {}", e))?;
+    delete_user_term_sidecar_entries_and_snapshot_config_at_path(words, &path)
+}
+
+fn delete_user_term_sidecar_entries_and_snapshot_config_at_path(
+    words: &[String],
+    path: &std::path::Path,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let mut store =
+        UserTermStore::open(path).map_err(|e| format!("打开 user_terms sidecar 失败: {}", e))?;
+    store
+        .disable_dictionary_entries(words)
+        .map_err(|e| format!("删除 user_terms sidecar 词条失败: {}", e))?;
+    let entries = store
+        .list_enabled_dictionary_entries()
+        .map_err(|e| format!("读取 user_terms sidecar 失败: {}", e))?;
+    snapshot_config_dictionary_from_user_term_entries(entries)
+}
+
+fn snapshot_config_dictionary_from_user_term_entries(
+    entries: Vec<String>,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let normalized_entries = normalize_dictionary_for_config_storage(entries);
+    mutate_persisted_config_with_result(|config| {
+        config.dictionary = normalized_entries;
+        Ok(config.dictionary.clone())
+    })
+}
+
 fn runtime_dictionary_entries_from_user_terms_or_input(input_dictionary: &[String]) -> Vec<String> {
     match default_user_terms_db_path() {
         Ok(path) => {
@@ -1398,6 +1509,78 @@ mod runtime_user_terms_dictionary_tests {
                 "Claude Code|manual|product".to_string(),
                 "最近工具|recent|generic".to_string(),
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod dictionary_sidecar_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn dictionary_entries_bootstrap_empty_sidecar_from_config_snapshot() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+
+        let entries = dictionary_entries_from_user_terms_or_config_at_path(
+            &[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                "Claude Code|manual|product".to_string(),
+                "useState|auto|code_symbol".to_string(),
+            ]
+        );
+
+        let store = UserTermStore::open(&path).expect("open hydrated store");
+        assert_eq!(
+            store
+                .list_enabled_dictionary_entries()
+                .expect("list hydrated entries"),
+            entries
+        );
+    }
+
+    #[test]
+    fn dictionary_entries_prefer_existing_sidecar_over_config_snapshot() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+        let mut store = UserTermStore::open(&path).expect("open store");
+        store
+            .upsert_dictionary_entry("Claude Code", "manual", Some("product"))
+            .expect("upsert sidecar term");
+
+        let entries = dictionary_entries_from_user_terms_or_config_at_path(
+            &["Old Config Term|manual|phrase".to_string()],
+            &path,
+        );
+
+        assert_eq!(entries, vec!["Claude Code|manual|product".to_string()]);
+    }
+
+    #[test]
+    fn dictionary_entries_fall_back_to_config_when_sidecar_open_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("db_directory");
+        std::fs::create_dir(&path).expect("create directory at db path");
+
+        let entries = dictionary_entries_from_user_terms_or_config_at_path(
+            &[
+                "useState|auto".to_string(),
+                "rust|manual|generic".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec!["useState|auto|code_symbol".to_string(), "rust".to_string()]
         );
     }
 }
@@ -5466,8 +5649,6 @@ async fn add_learned_word(
     category: Option<String>,
     context: Option<String>,
 ) -> Result<(), String> {
-    use crate::dictionary_utils::{entries_to_words, upsert_entry_with_inferred_category};
-
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
     let stored_correction_pair = crate::personalization::record_accepted_correction_pair(
         original.as_deref(),
@@ -5477,27 +5658,19 @@ async fn add_learned_word(
     )
     .map_err(|e| format!("保存个性化纠错对失败: {}", e))?;
 
-    let (updated_config, words) = mutate_persisted_config_with_result(|config| {
-        // 添加词条（source: "manual" 或 "auto"）
-        upsert_entry_with_inferred_category(
-            &mut config.dictionary,
-            &word,
-            &source,
-            category.as_deref(),
-        );
-        Ok(entries_to_words(&config.dictionary))
-    })?;
+    let (updated_config, dictionary_entries) =
+        upsert_user_term_sidecar_entry_and_snapshot_config(&word, &source, category.as_deref())?;
 
     // 热更新运行时词库
     let state = app_handle.state::<AppState>();
-    *state.dictionary.lock().unwrap() = words.clone();
+    *state.dictionary.lock().unwrap() = dictionary_entries.clone();
 
     // 更新 ASR 客户端词库
     if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
-        client.update_dictionary(words.clone());
+        client.update_dictionary(dictionary_entries.clone());
     }
     if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
-        client.update_dictionary(words.clone());
+        client.update_dictionary(dictionary_entries.clone());
     }
 
     if stored_correction_pair.is_some() {
@@ -5525,13 +5698,16 @@ async fn add_learned_word(
 async fn get_dictionary_entries() -> Result<Vec<String>, String> {
     tracing::info!("获取词典条目...");
 
-    let _guard = CONFIG_LOCK
-        .lock()
-        .map_err(|e| format!("获取配置锁失败: {}", e))?;
-    let config = load_persisted_config()?;
+    let config = {
+        let _guard = CONFIG_LOCK
+            .lock()
+            .map_err(|e| format!("获取配置锁失败: {}", e))?;
+        load_persisted_config()?
+    };
+    let entries = dictionary_entries_from_user_terms_or_config(&config.dictionary);
 
-    tracing::info!("返回 {} 个词典条目", config.dictionary.len());
-    Ok(config.dictionary)
+    tracing::info!("返回 {} 个词典条目", entries.len());
+    Ok(entries)
 }
 
 /// 删除指定词汇的词典条目（按 word 匹配）
@@ -5540,25 +5716,20 @@ async fn delete_dictionary_entries(
     app_handle: AppHandle,
     words: Vec<String>,
 ) -> Result<(), String> {
-    use crate::dictionary_utils::{entries_to_words, remove_entries};
-
     tracing::info!("删除词典条目: {:?}", words);
-    let (updated_config, dict_words) = mutate_persisted_config_with_result(|config| {
-        // 删除指定词汇（按 word 匹配，不区分来源）
-        remove_entries(&mut config.dictionary, &words);
-        Ok(entries_to_words(&config.dictionary))
-    })?;
+    let (updated_config, dictionary_entries) =
+        delete_user_term_sidecar_entries_and_snapshot_config(&words)?;
 
     // 热更新运行时词库
     let state = app_handle.state::<AppState>();
-    *state.dictionary.lock().unwrap() = dict_words.clone();
+    *state.dictionary.lock().unwrap() = dictionary_entries.clone();
 
     // 更新 ASR 客户端词库
     if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
-        client.update_dictionary(dict_words.clone());
+        client.update_dictionary(dictionary_entries.clone());
     }
     if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
-        client.update_dictionary(dict_words.clone());
+        client.update_dictionary(dictionary_entries.clone());
     }
 
     // 发送事件通知前端刷新配置和词典

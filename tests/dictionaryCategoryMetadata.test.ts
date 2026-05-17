@@ -83,6 +83,10 @@ test("DictionaryPage 和 useDictionary 应暴露手动修改 category 的保存�
 
   assert.match(
     backendSource,
+    /upsert_user_term_sidecar_entry_and_snapshot_config\([\s\S]*&word,[\s\S]*&source,[\s\S]*category\.as_deref\(\)/,
+  );
+  assert.doesNotMatch(
+    backendSource,
     /upsert_entry_with_inferred_category\(\s*&mut config\.dictionary,\s*&word,\s*&source,\s*category\.as_deref\(\),\s*\)/,
   );
 });
