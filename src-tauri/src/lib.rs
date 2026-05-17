@@ -46,6 +46,7 @@ use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -1091,51 +1092,118 @@ fn sync_user_terms_sidecar_from_dictionary_at_path(
     store.hydrate_dictionary_entries(&normalized_dictionary)
 }
 
-fn runtime_dictionary_entries_from_user_terms_or_config(
-    config_dictionary: &[String],
-) -> Vec<String> {
+fn runtime_dictionary_entries_from_user_terms_or_input(input_dictionary: &[String]) -> Vec<String> {
     match default_user_terms_db_path() {
         Ok(path) => {
-            runtime_dictionary_entries_from_user_terms_or_config_at_path(config_dictionary, &path)
+            runtime_dictionary_entries_from_user_terms_or_input_at_path(input_dictionary, &path)
         }
         Err(e) => {
             tracing::warn!(
-                "解析 user_terms sidecar 路径失败，使用配置词典启动运行时词库: {}",
+                "解析 user_terms sidecar 路径失败，使用输入词典启动运行时词库: {}",
                 e
             );
-            normalized_runtime_dictionary_from_config(config_dictionary)
+            normalized_runtime_dictionary_from_input(input_dictionary)
         }
     }
 }
 
-fn runtime_dictionary_entries_from_user_terms_or_config_at_path(
-    config_dictionary: &[String],
+fn runtime_dictionary_entries_from_user_terms_or_input_at_path(
+    input_dictionary: &[String],
     path: &std::path::Path,
 ) -> Vec<String> {
+    let normalized_input = normalized_runtime_dictionary_from_input(input_dictionary);
     match UserTermStore::open(path).and_then(|store| store.list_enabled_dictionary_entries()) {
-        Ok(entries) if !entries.is_empty() => {
+        Ok(sidecar_entries) if !sidecar_entries.is_empty() => {
             tracing::debug!(
-                "从 user_terms sidecar 加载运行时词库：{} 个词条",
-                entries.len()
+                "从 user_terms sidecar 合并运行时词库：{} 个用户词条，{} 个输入词条",
+                sidecar_entries.len(),
+                normalized_input.len()
             );
-            entries
+            merge_sidecar_user_terms_with_runtime_dictionary(sidecar_entries, normalized_input)
         }
         Ok(_) => {
-            tracing::warn!("user_terms sidecar 没有启用词条，使用配置词典启动运行时词库");
-            normalized_runtime_dictionary_from_config(config_dictionary)
+            tracing::warn!("user_terms sidecar 没有启用词条，使用输入词典启动运行时词库");
+            normalized_input
         }
         Err(e) => {
             tracing::warn!(
-                "读取 user_terms sidecar 失败，使用配置词典启动运行时词库: {}",
+                "读取 user_terms sidecar 失败，使用输入词典启动运行时词库: {}",
                 e
             );
-            normalized_runtime_dictionary_from_config(config_dictionary)
+            normalized_input
         }
     }
 }
 
-fn normalized_runtime_dictionary_from_config(config_dictionary: &[String]) -> Vec<String> {
-    normalize_dictionary_for_config_storage(config_dictionary.to_vec())
+fn merge_sidecar_user_terms_with_runtime_dictionary(
+    sidecar_entries: Vec<String>,
+    runtime_entries: Vec<String>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut merged = Vec::new();
+
+    for entry in sidecar_entries.into_iter().chain(runtime_entries) {
+        let key = runtime_dictionary_entry_key(&entry);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        merged.push(entry);
+    }
+
+    merged
+}
+
+fn runtime_dictionary_entry_key(entry: &str) -> String {
+    crate::dictionary_utils::extract_word(entry)
+        .trim()
+        .to_lowercase()
+}
+
+fn normalized_runtime_dictionary_from_input(input_dictionary: &[String]) -> Vec<String> {
+    input_dictionary
+        .iter()
+        .filter_map(|entry| normalize_runtime_dictionary_entry(entry))
+        .collect()
+}
+
+fn normalize_runtime_dictionary_entry(entry: &str) -> Option<String> {
+    let word =
+        crate::dictionary_utils::normalize_word(crate::dictionary_utils::extract_word(entry));
+    if word.is_empty() {
+        return None;
+    }
+
+    let mut parts = entry.split('|');
+    let _ = parts.next();
+    let source = parts
+        .next()
+        .map(str::trim)
+        .filter(|source| !source.is_empty());
+    let category = parts
+        .next()
+        .map(str::trim)
+        .filter(|category| !category.is_empty());
+
+    if let Some(source) = source.filter(|source| is_runtime_only_dictionary_source(source)) {
+        let category = crate::dictionary_utils::normalize_category(category)
+            .unwrap_or_else(|| crate::dictionary_utils::infer_dictionary_category(&word));
+        return Some(format!("{}|{}|{}", word, source, category));
+    }
+
+    let source = match source {
+        Some("auto") => "auto",
+        _ => "manual",
+    };
+    let category = crate::dictionary_utils::normalize_or_infer_category(&word, category);
+    Some(crate::dictionary_utils::format_entry_with_category(
+        &word,
+        source,
+        Some(category),
+    ))
+}
+
+fn is_runtime_only_dictionary_source(source: &str) -> bool {
+    matches!(source, "domain" | "recent" | "builtin" | "app_context")
 }
 
 fn load_persisted_config() -> Result<AppConfig, String> {
@@ -1245,7 +1313,7 @@ mod runtime_user_terms_dictionary_tests {
     use super::*;
 
     #[test]
-    fn runtime_dictionary_uses_enabled_sidecar_entries_when_present() {
+    fn runtime_dictionary_merges_enabled_sidecar_entries_with_dynamic_runtime_entries() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let path = temp.path().join("personalization").join("user_terms.db");
         let mut store = crate::personalization::UserTermStore::open(&path).expect("open store");
@@ -1263,8 +1331,13 @@ mod runtime_user_terms_dictionary_tests {
             ])
             .expect("hydrate second snapshot");
 
-        let entries = runtime_dictionary_entries_from_user_terms_or_config_at_path(
-            &["Fallback|manual|phrase".to_string()],
+        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
+            &[
+                "Claude Code|recent|generic".to_string(),
+                "useState|recent|generic".to_string(),
+                "领域术语|domain|domain_term".to_string(),
+                "最近工具|recent|generic".to_string(),
+            ],
             &path,
         );
 
@@ -1273,6 +1346,8 @@ mod runtime_user_terms_dictionary_tests {
             vec![
                 "Claude Code|manual|product".to_string(),
                 "useState|auto|code_symbol".to_string(),
+                "领域术语|domain|domain_term".to_string(),
+                "最近工具|recent|generic".to_string(),
             ]
         );
     }
@@ -1283,10 +1358,12 @@ mod runtime_user_terms_dictionary_tests {
         let path = temp.path().join("db_directory");
         std::fs::create_dir(&path).expect("create directory at db path");
 
-        let entries = runtime_dictionary_entries_from_user_terms_or_config_at_path(
+        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
             &[
                 "useState|auto".to_string(),
                 "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+                "领域术语|domain|domain_term".to_string(),
             ],
             &path,
         );
@@ -1296,6 +1373,8 @@ mod runtime_user_terms_dictionary_tests {
             vec![
                 "useState|auto|code_symbol".to_string(),
                 "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+                "领域术语|domain|domain_term".to_string(),
             ]
         );
     }
@@ -1305,12 +1384,21 @@ mod runtime_user_terms_dictionary_tests {
         let temp = tempfile::tempdir().expect("create temp dir");
         let path = temp.path().join("personalization").join("user_terms.db");
 
-        let entries = runtime_dictionary_entries_from_user_terms_or_config_at_path(
-            &["Claude Code|manual|product".to_string()],
+        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
+            &[
+                "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+            ],
             &path,
         );
 
-        assert_eq!(entries, vec!["Claude Code|manual|product".to_string()]);
+        assert_eq!(
+            entries,
+            vec![
+                "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+            ]
+        );
     }
 }
 
@@ -1565,9 +1653,6 @@ async fn restart_service_with_config(
         tracing::warn!("切换 ASR 引擎时停止服务失败: {}", e);
     }
 
-    let runtime_dictionary =
-        runtime_dictionary_entries_from_user_terms_or_config(&config.dictionary);
-
     start_app(
         app_handle,
         config.dashscope_api_key.clone(),
@@ -1582,7 +1667,7 @@ async fn restart_service_with_config(
         Some(config.dual_hotkey_config.clone()),
         Some(config.assistant_config.clone()),
         Some(config.enable_mute_other_apps),
-        Some(runtime_dictionary),
+        Some(config.dictionary.clone()),
     )
     .await
     .map(|_| ())
@@ -2756,7 +2841,8 @@ async fn start_app(
         }
     );
 
-    let dict = dictionary.unwrap_or_default();
+    let input_dictionary = dictionary.unwrap_or_default();
+    let dict = runtime_dictionary_entries_from_user_terms_or_input(&input_dictionary);
     tracing::info!("词库: {} 个词", dict.len());
 
     // 保存词库到 state（用于 Realtime 模式热更新）
