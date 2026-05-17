@@ -606,20 +606,24 @@ fn add_candidate_arbitration_time(
     outcome
 }
 
-fn apply_assistant_personalization(
+fn apply_assistant_personalization_with_technical_spans(
     text: String,
     config: crate::personalization::PersonalizationEngineConfig,
+    technical_spans: &[crate::tnl::Span],
 ) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
     let source_text = text.clone();
-    let result =
-        match crate::personalization::apply_default_personalization_with_config(text, config) {
-            Ok(Some(result)) => result,
-            Ok(None) => return (source_text, false, None),
-            Err(e) => {
-                tracing::warn!("AI助手: 加载个性化纠错对失败，保守跳过: {}", e);
-                return (source_text, false, None);
-            }
-        };
+    let result = match crate::personalization::apply_default_personalization_with_config_and_spans(
+        text,
+        config,
+        technical_spans,
+    ) {
+        Ok(Some(result)) => result,
+        Ok(None) => return (source_text, false, None),
+        Err(e) => {
+            tracing::warn!("AI助手: 加载个性化纠错对失败，保守跳过: {}", e);
+            return (source_text, false, None);
+        }
+    };
 
     if let Err(e) = crate::personalization::write_runtime_diagnostic(&source_text, &result) {
         tracing::warn!("AI助手: 写入个性化诊断失败，已忽略: {}", e);
@@ -656,9 +660,23 @@ fn apply_assistant_personalization_with_store_and_config(
     store: crate::personalization::CorrectionPairStore,
     config: crate::personalization::PersonalizationEngineConfig,
 ) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
+    apply_assistant_personalization_with_store_and_config_and_spans(text, store, config, &[])
+}
+
+#[cfg(test)]
+fn apply_assistant_personalization_with_store_and_config_and_spans(
+    text: String,
+    store: crate::personalization::CorrectionPairStore,
+    config: crate::personalization::PersonalizationEngineConfig,
+    technical_spans: &[crate::tnl::Span],
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
     let source_text = text.clone();
-    let result =
-        crate::personalization::apply_personalization_with_store_and_config(text, store, config);
+    let result = crate::personalization::apply_personalization_with_store_and_config_and_spans(
+        text,
+        store,
+        config,
+        technical_spans,
+    );
     log_assistant_personalization_result(&source_text, &result.conversion);
 
     let diagnostics =
@@ -849,6 +867,37 @@ mod assistant_personalization_tests {
             diagnostics.candidates[0].decision,
             crate::tnl::TnlCandidateDecision::PendingLlm
         );
+    }
+
+    #[test]
+    fn assistant_personalization_uses_named_entity_spans_for_alias_score() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "claud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.accepted_count = 1;
+        pair.confidence = 0.93;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+        let text = "我打开 克劳德 code";
+        let span_start = text.find("克劳德").expect("named entity term");
+        let spans = vec![crate::tnl::Span {
+            text: "克劳德".to_string(),
+            start: span_start,
+            end: span_start + "克劳德".len(),
+            span_type: crate::tnl::SpanType::NamedEntity,
+        }];
+
+        let (text, changed, diagnostics) =
+            apply_assistant_personalization_with_store_and_config_and_spans(
+                text.to_string(),
+                store,
+                crate::personalization::PersonalizationEngineConfig::default(),
+                &spans,
+            );
+
+        assert!(changed);
+        assert_eq!(text, "我打开 Claude Code");
+        assert!(diagnostics.is_none());
     }
 
     #[test]
@@ -3893,10 +3942,12 @@ async fn handle_assistant_mode(
                 tnl_result.elapsed_us
             );
         }
-        let (text, _, personalization_diagnostics) = apply_assistant_personalization(
-            tnl_result.text,
-            crate::personalization::PersonalizationEngineConfig::from_tnl_config(&tnl_config),
-        );
+        let (text, _, personalization_diagnostics) =
+            apply_assistant_personalization_with_technical_spans(
+                tnl_result.text,
+                crate::personalization::PersonalizationEngineConfig::from_tnl_config(&tnl_config),
+                &tnl_result.technical_spans,
+            );
         let diagnostics =
             merge_assistant_tnl_diagnostics(tnl_result.diagnostics, personalization_diagnostics);
         (text, diagnostics)

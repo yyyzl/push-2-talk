@@ -649,7 +649,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 
 - 已完成：`TechSpanDetector` 已基于 `jieba-rs` 注入用户词，并将用户词作为低优先级 `NamedEntity` span 暴露给 TNL 诊断和后续保护逻辑。
 - 已完成：`TechSpanDetector` 已消费 jieba POS 标签，把 `nr/ns/nt/nz` 作为内置轻量 NER 信号形成 `NamedEntity` span；该 span 不覆盖 URL/email/path/identifier 等强技术 span。
-- 未完成：专名片段在 `SyllableMatchPass` 中的权重提升/误伤惩罚调整。
+- 已完成：普通听写与助手路径会把 TNL `technical_spans` 传入个性化二次解码；`SyllableMatchPass` 对重叠 `NamedEntity` 的 alias/phonetic/mixed 候选施加小幅有界分数加权，且不改变全局阈值、不解除 risky single-word 防护。
 
 ### 工程量
 

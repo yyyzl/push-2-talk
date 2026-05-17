@@ -646,6 +646,94 @@ impl PersonalizationEngine {
 
 ---
 
+## Scenario: Named-Entity Spans Bias Syllable-Match Candidate Scoring
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `TechSpanDetector`, `NormalizationResult.technical_spans`, personalization candidate scoring, or normal/assistant pipeline wiring between TNL and personalization.
+- Phase 6 `NamedEntity` spans are a local second-decoding hint, not a separate replacement pass and not a cloud dependency.
+
+### 2. Signatures
+
+```rust
+impl PersonalizationEngine {
+    pub fn convert(&self, text: &str) -> ConversionResult;
+    pub fn convert_with_technical_spans(
+        &self,
+        text: &str,
+        technical_spans: &[Span],
+    ) -> ConversionResult;
+}
+
+pub fn apply_personalization_with_store_and_config_and_spans(
+    text: String,
+    store: CorrectionPairStore,
+    config: PersonalizationEngineConfig,
+    technical_spans: &[Span],
+) -> PersonalizationRuntimeResult;
+
+pub fn apply_default_personalization_with_config_and_spans(
+    text: String,
+    config: PersonalizationEngineConfig,
+    technical_spans: &[Span],
+) -> Result<Option<PersonalizationRuntimeResult>>;
+```
+
+### 3. Contracts
+
+- `convert(text)` remains the compatibility API and must behave like `convert_with_technical_spans(text, &[])`.
+- Normal dictation and assistant voice paths must pass `NormalizationResult.technical_spans` into personalization when TNL is enabled.
+- Only `SpanType::NamedEntity` may produce the named-entity scoring boost.
+- The boost applies only to syllable-match candidates whose byte range overlaps a named-entity span.
+- Exact-text candidates are not boosted by named-entity spans.
+- The boost is bounded and local to candidate score; it must not change the global `personalization_apply_threshold` default.
+- If `CorrectionPair::requires_manual_for_auto_apply()` blocks a pair, the named-entity boost must not revive it.
+- Non-overlapping named-entity spans must not affect a candidate.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Learned alias candidate scores just below `personalization_apply_threshold`, no spans | Candidate remains `BelowApplyThreshold`. |
+| Same candidate overlaps a `NamedEntity` span | Candidate score may receive a bounded boost and can become `Applied`. |
+| `NamedEntity` span is elsewhere in the sentence | Candidate remains below threshold. |
+| Learned single common English word pair overlaps a `NamedEntity` span | Pair remains blocked with score `0.0`. |
+| TNL disabled or no technical spans passed | Personalization behavior matches the old no-span path. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: `克劳德 code` alias candidate for `Claude Code` crosses the apply threshold only when the candidate range overlaps the `克劳德` named-entity span.
+- Base: existing exact text and non-overlapping syllable candidates keep their previous scores.
+- Bad: lowering `personalization_apply_threshold` globally to make named entities apply more often.
+- Bad: boosting all candidates in a sentence just because one named entity appears anywhere.
+
+### 6. Tests Required
+
+- Personalization engine test: no-span borderline alias candidate stays below threshold.
+- Personalization engine test: overlapping `NamedEntity` span lifts the same candidate over threshold.
+- Personalization engine test: non-overlapping `NamedEntity` span does not boost.
+- Personalization engine test: exact-text candidates are not boosted by named-entity spans.
+- Personalization engine test: risky learned single-word pair is still blocked.
+- Assistant personalization test proving span-aware helper applies the boosted candidate.
+- Run personalization engine tests, assistant personalization tests, `cargo fmt --check`, and `cargo check`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+config.personalization_apply_threshold = 0.84;
+let conversion = engine.convert(&text);
+```
+
+#### Correct
+
+```rust
+let conversion = engine.convert_with_technical_spans(&text, &tnl_result.technical_spans);
+```
+
+---
+
 ## Scenario: ASR Eval Reports Local Decode Latency
 
 ### 1. Scope / Trigger

@@ -15,7 +15,8 @@ use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::personalization::{
-    apply_default_personalization_with_config, personalization_candidates_to_tnl_diagnostics,
+    apply_default_personalization_with_config_and_spans,
+    personalization_candidates_to_tnl_diagnostics,
     record_personalization_arbitration_feedback_from_tnl, write_runtime_diagnostic,
     ConversionResult, PersonalizationEngineConfig,
 };
@@ -79,7 +80,7 @@ impl NormalPipeline {
             .map(|(c, _)| c.tnl_config)
             .unwrap_or_default();
         let tnl_enabled = tnl_config.enabled;
-        let (text, tnl_changed, tnl_diagnostics) = if tnl_enabled {
+        let (text, tnl_changed, tnl_diagnostics, technical_spans) = if tnl_enabled {
             let engine =
                 TnlEngine::new_with_disfluency_mode(dictionary.clone(), tnl_config.disfluency_mode);
             let tnl_result = engine.normalize(&asr_text);
@@ -92,9 +93,14 @@ impl NormalPipeline {
                     tnl_result.applied.len()
                 );
             }
-            (tnl_result.text, tnl_result.changed, tnl_result.diagnostics)
+            (
+                tnl_result.text,
+                tnl_result.changed,
+                tnl_result.diagnostics,
+                tnl_result.technical_spans,
+            )
         } else {
-            (asr_text.clone(), false, None)
+            (asr_text.clone(), false, None, Vec::new())
         };
 
         // 2.5. 本地个性化二次解码（MVP：仅当 correction_pairs.json 存在时启用）
@@ -102,6 +108,7 @@ impl NormalPipeline {
             Self::maybe_apply_personalization(
                 text,
                 PersonalizationEngineConfig::from_tnl_config(&tnl_config),
+                &technical_spans,
             )
         } else {
             (text, false, None)
@@ -308,9 +315,14 @@ impl NormalPipeline {
     fn maybe_apply_personalization(
         text: String,
         config: PersonalizationEngineConfig,
+        technical_spans: &[crate::tnl::Span],
     ) -> (String, bool, Option<TnlDiagnostics>) {
         let source_text = text.clone();
-        let result = match apply_default_personalization_with_config(text, config) {
+        let result = match apply_default_personalization_with_config_and_spans(
+            text,
+            config,
+            technical_spans,
+        ) {
             Ok(Some(result)) => result,
             Ok(None) => return (source_text, false, None),
             Err(e) => {

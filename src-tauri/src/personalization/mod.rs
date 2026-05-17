@@ -7,7 +7,7 @@ use anyhow::Result;
 use std::time::Instant;
 
 use crate::tnl::{
-    TnlCandidate, TnlCandidateDecision, TnlCandidateRisk, TnlCandidateSource, TnlDiagnostics,
+    Span, TnlCandidate, TnlCandidateDecision, TnlCandidateRisk, TnlCandidateSource, TnlDiagnostics,
 };
 
 mod app_context_hotwords;
@@ -55,9 +55,18 @@ pub fn apply_personalization_with_store_and_config(
     store: CorrectionPairStore,
     config: PersonalizationEngineConfig,
 ) -> PersonalizationRuntimeResult {
+    apply_personalization_with_store_and_config_and_spans(text, store, config, &[])
+}
+
+pub fn apply_personalization_with_store_and_config_and_spans(
+    text: String,
+    store: CorrectionPairStore,
+    config: PersonalizationEngineConfig,
+    technical_spans: &[Span],
+) -> PersonalizationRuntimeResult {
     let engine = PersonalizationEngine::with_config(store, config);
     let started_at = Instant::now();
-    let conversion = engine.convert(&text);
+    let conversion = engine.convert_with_technical_spans(&text, technical_spans);
     let elapsed_us = started_at.elapsed().as_micros() as u64;
 
     PersonalizationRuntimeResult {
@@ -76,14 +85,25 @@ pub fn apply_default_personalization_with_config(
     text: String,
     config: PersonalizationEngineConfig,
 ) -> Result<Option<PersonalizationRuntimeResult>> {
+    apply_default_personalization_with_config_and_spans(text, config, &[])
+}
+
+pub fn apply_default_personalization_with_config_and_spans(
+    text: String,
+    config: PersonalizationEngineConfig,
+    technical_spans: &[Span],
+) -> Result<Option<PersonalizationRuntimeResult>> {
     let path = default_correction_pairs_path()?;
     if !path.exists() {
         return Ok(None);
     }
 
     let store = CorrectionPairStore::load_json(&path)?;
-    Ok(Some(apply_personalization_with_store_and_config(
-        text, store, config,
+    Ok(Some(apply_personalization_with_store_and_config_and_spans(
+        text,
+        store,
+        config,
+        technical_spans,
     )))
 }
 

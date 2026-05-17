@@ -23,8 +23,8 @@ pub use engine::TnlEngine;
 pub(crate) use fuzzy::is_common_english_word;
 pub(crate) use syllable_lattice::SyllableLattice;
 pub use types::{
-    TnlArbitrationSummary, TnlCandidate, TnlCandidateArbitrationResult, TnlCandidateDecision,
-    TnlDiagnostics,
+    Span, SpanType, TnlArbitrationSummary, TnlCandidate, TnlCandidateArbitrationResult,
+    TnlCandidateDecision, TnlDiagnostics,
 };
 #[allow(unused_imports)]
 pub use types::{TnlCandidateRisk, TnlCandidateSource};

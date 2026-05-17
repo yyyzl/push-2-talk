@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Instant};
 
-use crate::tnl::SyllableLattice;
+use crate::tnl::{Span, SpanType, SyllableLattice};
 
 use super::correction_pair_store::{CorrectionPair, CorrectionPairStore};
 
@@ -11,6 +11,7 @@ const EXACT_TEXT_PASS: &str = "exact_text";
 const SYLLABLE_MATCH_PASS: &str = "syllable_match";
 const CONTEXT_RANK_BONUS_PER_TOKEN: f32 = 0.08;
 const MAX_CONTEXT_RANK_BONUS: f32 = 0.24;
+const NAMED_ENTITY_SCORE_BONUS: f32 = 0.04;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PersonalizationEngineConfig {
@@ -119,6 +120,14 @@ impl PersonalizationEngine {
     }
 
     pub fn convert(&self, text: &str) -> ConversionResult {
+        self.convert_with_technical_spans(text, &[])
+    }
+
+    pub fn convert_with_technical_spans(
+        &self,
+        text: &str,
+        technical_spans: &[Span],
+    ) -> ConversionResult {
         if text.trim().is_empty() {
             return ConversionResult {
                 text: text.to_string(),
@@ -128,7 +137,8 @@ impl PersonalizationEngine {
         }
 
         let lattice = SyllableLattice::from_asr_text(text);
-        let (mut candidates, mut pass_summaries) = self.collect_candidates(&lattice);
+        let (mut candidates, mut pass_summaries) =
+            self.collect_candidates(&lattice, technical_spans);
         candidates.sort_by(|a, b| {
             let len_a = a.end.saturating_sub(a.start);
             let len_b = b.end.saturating_sub(b.start);
@@ -184,6 +194,7 @@ impl PersonalizationEngine {
     fn collect_candidates(
         &self,
         lattice: &SyllableLattice,
+        technical_spans: &[Span],
     ) -> (Vec<ConversionCandidate>, Vec<PassDiagnostics>) {
         let mut candidates = Vec::new();
         let mut exact_summary =
@@ -198,6 +209,7 @@ impl PersonalizationEngine {
             let keys = &window.keys;
             let has_chinese = window.has_chinese;
             let has_ascii = window.has_ascii;
+            let has_named_entity_overlap = overlaps_named_entity(technical_spans, start, end);
 
             if self.config.enable_exact_text_pass {
                 let started_at = Instant::now();
@@ -232,7 +244,7 @@ impl PersonalizationEngine {
                             window_text,
                             start,
                             end,
-                            auto_score(pair, pair.confidence * 0.97),
+                            syllable_score(pair, pair.confidence * 0.97, has_named_entity_overlap),
                             MatchKind::EnPhonetic,
                             &lattice.source_text,
                         );
@@ -249,7 +261,7 @@ impl PersonalizationEngine {
                             window_text,
                             start,
                             end,
-                            auto_score(pair, pair.confidence * 0.9),
+                            syllable_score(pair, pair.confidence * 0.9, has_named_entity_overlap),
                             MatchKind::ZhPinyinFuzzy,
                             &lattice.source_text,
                         );
@@ -266,7 +278,7 @@ impl PersonalizationEngine {
                             window_text,
                             start,
                             end,
-                            auto_score(pair, pair.confidence * 0.9),
+                            syllable_score(pair, pair.confidence * 0.9, has_named_entity_overlap),
                             MatchKind::Mixed,
                             &lattice.source_text,
                         );
@@ -278,7 +290,7 @@ impl PersonalizationEngine {
                             window_text,
                             start,
                             end,
-                            alias_score(pair),
+                            alias_score(pair, has_named_entity_overlap),
                             MatchKind::Alias,
                             &lattice.source_text,
                         );
@@ -293,7 +305,7 @@ impl PersonalizationEngine {
                             window_text,
                             start,
                             end,
-                            alias_score(pair),
+                            alias_score(pair, has_named_entity_overlap),
                             MatchKind::Alias,
                             &lattice.source_text,
                         );
@@ -326,13 +338,13 @@ impl PassDiagnostics {
     }
 }
 
-fn alias_score(pair: &CorrectionPair) -> f32 {
+fn alias_score(pair: &CorrectionPair, named_entity_overlap: bool) -> f32 {
     let score = if pair.is_user_confirmed() {
         pair.confidence * 0.92
     } else {
         pair.confidence * 0.82
     };
-    auto_score(pair, score)
+    syllable_score(pair, score, named_entity_overlap)
 }
 
 fn exact_score(pair: &CorrectionPair) -> f32 {
@@ -349,6 +361,21 @@ fn auto_score(pair: &CorrectionPair, score: f32) -> f32 {
     } else {
         score
     }
+}
+
+fn syllable_score(pair: &CorrectionPair, score: f32, named_entity_overlap: bool) -> f32 {
+    let score = auto_score(pair, score);
+    if named_entity_overlap && score > 0.0 {
+        (score + NAMED_ENTITY_SCORE_BONUS).min(1.0)
+    } else {
+        score
+    }
+}
+
+fn overlaps_named_entity(technical_spans: &[Span], start: usize, end: usize) -> bool {
+    technical_spans
+        .iter()
+        .any(|span| span.span_type == SpanType::NamedEntity && start < span.end && span.start < end)
 }
 
 fn push_candidate(
@@ -486,6 +513,7 @@ fn pass_name_for_match_kind(match_kind: MatchKind) -> &'static str {
 mod tests {
     use super::*;
     use crate::personalization::CorrectionPair;
+    use crate::tnl::{Span, SpanType};
 
     fn engine() -> PersonalizationEngine {
         let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
@@ -809,6 +837,93 @@ mod tests {
     }
 
     #[test]
+    fn named_entity_alias_candidate_without_span_stays_below_threshold() {
+        let engine = named_entity_alias_engine();
+
+        let result = engine.convert("我打开 克劳德 code");
+
+        assert_eq!(result.text, "我打开 克劳德 code");
+        let candidate = candidate_by_pair_id(&result, "learned-claude-code");
+        assert!(candidate.score < DEFAULT_APPLY_THRESHOLD);
+        assert_eq!(candidate.decision, CandidateDecision::BelowApplyThreshold);
+        assert!(result.diagnostics.applied.is_empty());
+    }
+
+    #[test]
+    fn named_entity_span_lifts_alias_candidate_over_threshold() {
+        let engine = named_entity_alias_engine();
+        let text = "我打开 克劳德 code";
+        let spans = vec![named_entity_span(text, "克劳德")];
+
+        let result = engine.convert_with_technical_spans(text, &spans);
+
+        assert_eq!(result.text, "我打开 Claude Code");
+        let candidate = candidate_by_pair_id(&result, "learned-claude-code");
+        assert!(candidate.score >= DEFAULT_APPLY_THRESHOLD);
+        assert_eq!(candidate.decision, CandidateDecision::Applied);
+        assert_eq!(candidate.match_kind, MatchKind::Alias);
+    }
+
+    #[test]
+    fn non_overlapping_named_entity_span_does_not_boost_candidate() {
+        let engine = named_entity_alias_engine();
+        let text = "北京 打开 克劳德 code";
+        let spans = vec![named_entity_span(text, "北京")];
+
+        let result = engine.convert_with_technical_spans(text, &spans);
+
+        assert_eq!(result.text, text);
+        let candidate = candidate_by_pair_id(&result, "learned-claude-code");
+        assert!(candidate.score < DEFAULT_APPLY_THRESHOLD);
+        assert_eq!(candidate.decision, CandidateDecision::BelowApplyThreshold);
+    }
+
+    #[test]
+    fn named_entity_span_does_not_revive_risky_single_word_pair() {
+        let mut pair = CorrectionPair::new("learned-cloud", "cloud", "Claude");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.98;
+        pair.accepted_count = 1;
+        let engine = PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]));
+        let text = "I use cloud storage";
+        let spans = vec![named_entity_span(text, "cloud")];
+
+        let result = engine.convert_with_technical_spans(text, &spans);
+
+        assert_eq!(result.text, text);
+        assert!(!result.changed);
+        assert!(result
+            .diagnostics
+            .candidates
+            .iter()
+            .all(|candidate| candidate.score == 0.0));
+    }
+
+    #[test]
+    fn named_entity_span_does_not_boost_exact_text_pass() {
+        let mut pair = CorrectionPair::new("learned-deepseek", "深度求索", "DeepSeek");
+        pair.source = "learned".to_string();
+        pair.confidence = DEFAULT_APPLY_THRESHOLD - 0.01;
+        let engine = PersonalizationEngine::with_config(
+            CorrectionPairStore::new(vec![pair]),
+            PersonalizationEngineConfig {
+                enable_syllable_match_pass: false,
+                ..PersonalizationEngineConfig::default()
+            },
+        );
+        let text = "我在用深度求索";
+        let spans = vec![named_entity_span(text, "深度求索")];
+
+        let result = engine.convert_with_technical_spans(text, &spans);
+
+        assert_eq!(result.text, text);
+        let candidate = candidate_by_pair_id(&result, "learned-deepseek");
+        assert_eq!(candidate.match_kind, MatchKind::ExactText);
+        assert!(candidate.score < DEFAULT_APPLY_THRESHOLD);
+        assert_eq!(candidate.decision, CandidateDecision::BelowApplyThreshold);
+    }
+
+    #[test]
     fn diagnostics_reports_enabled_pass_summaries() {
         let engine = engine();
 
@@ -905,5 +1020,36 @@ mod tests {
             .iter()
             .find(|summary| summary.name == name)
             .expect("pass summary")
+    }
+
+    fn named_entity_alias_engine() -> PersonalizationEngine {
+        let mut pair = CorrectionPair::new("learned-claude-code", "claud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.confidence = 0.93;
+        pair.accepted_count = 1;
+        pair.alias_keys.push("kelaode|code".to_string());
+        PersonalizationEngine::new(CorrectionPairStore::new(vec![pair]))
+    }
+
+    fn named_entity_span(text: &str, term: &str) -> Span {
+        let start = text.find(term).expect("span term exists");
+        Span {
+            text: term.to_string(),
+            start,
+            end: start + term.len(),
+            span_type: SpanType::NamedEntity,
+        }
+    }
+
+    fn candidate_by_pair_id<'a>(
+        result: &'a ConversionResult,
+        pair_id: &str,
+    ) -> &'a ConversionCandidate {
+        result
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.pair_id == pair_id)
+            .expect("candidate")
     }
 }
