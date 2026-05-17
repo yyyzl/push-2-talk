@@ -20,6 +20,7 @@
 - Use parameterized statements with `rusqlite::params!`; never format user text into SQL strings.
 - Batch hydration and migration writes should run inside a transaction.
 - Existing dictionary storage strings must be parsed through `dictionary_utils` helpers before entering SQLite so metadata compatibility stays centralized.
+- `user_terms` phonetic index columns must be hydrated through `personalization::phonetic_keys::build_key_bundle`; do not add a second phonetic-key implementation in the database layer.
 
 ---
 
@@ -29,6 +30,7 @@
 - Reopening an existing database must be safe and must not drop or rewrite existing rows.
 - Keep legacy `AppConfig.dictionary` intact until a dedicated migration task switches production consumers.
 - For `user_terms`, hydrate from current config strings as a repeatable operation and upsert by case-insensitive term.
+- `user_terms.en_phonetic_key` stores the first English phonetic key from `build_key_bundle`; `user_terms.zh_pinyin_fuzzy_key` stores the bundle's fuzzy pinyin key. Leave the column `NULL` when the key does not apply.
 
 ---
 

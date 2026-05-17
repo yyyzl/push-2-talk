@@ -8,6 +8,8 @@ use crate::dictionary_utils::{
     extract_category, extract_word, normalize_or_infer_category, normalize_word,
 };
 
+use super::phonetic_keys::build_key_bundle;
+
 const USER_TERMS_DB_FILE: &str = "user_terms.db";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +98,7 @@ impl UserTermStore {
 
             let source = extract_dictionary_source(entry);
             let category = normalize_or_infer_category(&term, extract_category(entry));
+            let (en_phonetic_key, zh_pinyin_fuzzy_key) = user_term_index_keys(&term);
             tx.execute(
                 r#"
                 INSERT INTO user_terms (
@@ -108,7 +111,7 @@ impl UserTermStore {
                     updated_at,
                     enabled
                 )
-                VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?4, 1)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 1)
                 ON CONFLICT(term) DO UPDATE SET
                     category = excluded.category,
                     source = CASE
@@ -116,10 +119,19 @@ impl UserTermStore {
                             THEN 'manual'
                         ELSE 'auto'
                     END,
+                    en_phonetic_key = excluded.en_phonetic_key,
+                    zh_pinyin_fuzzy_key = excluded.zh_pinyin_fuzzy_key,
                     updated_at = excluded.updated_at,
                     enabled = 1
                 "#,
-                params![term, category, source, now],
+                params![
+                    term,
+                    category,
+                    source,
+                    en_phonetic_key,
+                    zh_pinyin_fuzzy_key,
+                    now
+                ],
             )?;
             processed += 1;
         }
@@ -211,6 +223,14 @@ fn extract_dictionary_source(entry: &str) -> &'static str {
     }
 }
 
+fn user_term_index_keys(term: &str) -> (Option<String>, Option<String>) {
+    let keys = build_key_bundle(term);
+    (
+        keys.en_phonetic_keys.first().cloned(),
+        keys.zh_pinyin_fuzzy_key,
+    )
+}
+
 fn current_unix_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -250,6 +270,7 @@ mod tests {
         let count = store
             .hydrate_dictionary_entries(&[
                 "useState|auto".to_string(),
+                "Claude Code|manual|product".to_string(),
                 "团队约定|manual|phrase".to_string(),
                 "rust|auto".to_string(),
                 "深度求索|auto|term".to_string(),
@@ -257,7 +278,7 @@ mod tests {
             ])
             .expect("hydrate dictionary");
 
-        assert_eq!(count, 5);
+        assert_eq!(count, 6);
 
         let use_state = store
             .find_by_term("useState")
@@ -266,6 +287,14 @@ mod tests {
         assert_eq!(use_state.term, "useState");
         assert_eq!(use_state.source, "auto");
         assert_eq!(use_state.category, "code_symbol");
+
+        let claude_code = store
+            .find_by_term("Claude Code")
+            .expect("find Claude Code")
+            .unwrap();
+        assert_eq!(claude_code.category, "product");
+        assert!(claude_code.en_phonetic_key.is_some());
+        assert!(claude_code.zh_pinyin_fuzzy_key.is_none());
 
         let team_rule = store
             .find_by_term("团队约定")
@@ -279,6 +308,8 @@ mod tests {
 
         let deepseek = store.find_by_term("深度求索").expect("find term").unwrap();
         assert_eq!(deepseek.category, "domain_term");
+        assert!(deepseek.en_phonetic_key.is_none());
+        assert!(deepseek.zh_pinyin_fuzzy_key.is_some());
 
         let email = store
             .find_by_term("contact@example.com")
@@ -316,6 +347,7 @@ mod tests {
         assert_eq!(updated.id, first.id);
         assert_eq!(updated.source, "manual");
         assert_eq!(updated.category, "tool");
+        assert!(updated.en_phonetic_key.is_some());
         assert!(updated.updated_at >= first.created_at);
     }
 

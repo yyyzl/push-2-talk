@@ -606,8 +606,8 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成：后端 `add_learned_word` 对旧前端、脚本或自动化调用缺省/无效 category 做本地推断兜底，推断规则与前端 `inferDictionaryCategory` 对齐，并保留已有有效 metadata。
 - 已完成：配置加载/保存阶段会对已有 compact 词典做确定性 category backfill，旧词条可自动获得 `email/url/code_symbol/phrase` metadata，`generic` 仍保持 compact。
 - 已完成：`phrase` prepass 已有运行时首段/首字索引，匹配时只召回可能命中的候选规则，并保持最长匹配、连字符分隔、中文共享前缀等既有行为。
-- 已完成：新增 SQLite `user_terms` sidecar store，可从现有 dictionary storage strings 水合纯词、source、category，并创建 `category/en_phonetic_key/zh_pinyin_fuzzy_key/term` 索引；生产读写路径尚未切换。
-- 未完成：`en_phonetic_key` / `zh_pinyin_fuzzy_key` 实际写入、生产路径迁移到 `user_terms.db`、持久化 phrase trie/索引结构。
+- 已完成：新增 SQLite `user_terms` sidecar store，可从现有 dictionary storage strings 水合纯词、source、category、`en_phonetic_key`、`zh_pinyin_fuzzy_key`，并创建 `category/en_phonetic_key/zh_pinyin_fuzzy_key/term` 索引；生产读写路径尚未切换。
+- 未完成：按 `en_phonetic_key` / `zh_pinyin_fuzzy_key` 的查询 API、生产路径迁移到 `user_terms.db`、持久化 phrase trie/索引结构。
 
 ### 工程量
 
