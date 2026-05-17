@@ -1176,3 +1176,36 @@ Audited existing Phase 7 HotwordCompiler/provider/recent/app-context coverage, s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 33: Phase 7 to Phase 8 eval gate
+
+**Date**: 2026-05-17
+**Task**: Phase 7 to Phase 8 eval gate
+**Branch**: `main`
+
+### Summary
+
+Ran the Phase 7 mini eval gate, diagnostics export, threshold/window sweep, and syllable-match ablation; recorded the gate report and documented that Phase 8 should wait for a larger real ASR suite.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bc4a9d5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
