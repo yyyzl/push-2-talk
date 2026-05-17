@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -89,6 +90,7 @@ impl UserTermStore {
         let now = current_unix_millis();
         let tx = self.conn.transaction()?;
         let mut processed = 0usize;
+        let mut snapshot_terms = HashSet::new();
 
         for entry in entries {
             let term = normalize_word(extract_word(entry));
@@ -96,6 +98,7 @@ impl UserTermStore {
                 continue;
             }
 
+            snapshot_terms.insert(term.to_lowercase());
             let source = extract_dictionary_source(entry);
             let category = normalize_or_infer_category(&term, extract_category(entry));
             let (en_phonetic_key, zh_pinyin_fuzzy_key) = user_term_index_keys(&term);
@@ -134,6 +137,23 @@ impl UserTermStore {
                 ],
             )?;
             processed += 1;
+        }
+
+        let enabled_terms = {
+            let mut stmt = tx.prepare("SELECT id, term FROM user_terms WHERE enabled = 1")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        for (id, term) in enabled_terms {
+            if !snapshot_terms.contains(&term.to_lowercase()) {
+                tx.execute(
+                    "UPDATE user_terms SET enabled = 0, updated_at = ?1 WHERE id = ?2",
+                    params![now, id],
+                )?;
+            }
         }
 
         tx.commit()?;
@@ -402,6 +422,37 @@ mod tests {
         assert_eq!(updated.category, "tool");
         assert!(updated.en_phonetic_key.is_some());
         assert!(updated.updated_at >= first.created_at);
+    }
+
+    #[test]
+    fn rehydrating_dictionary_snapshot_disables_missing_terms() {
+        let mut store = UserTermStore::open_in_memory().expect("open store");
+
+        store
+            .hydrate_dictionary_entries(&[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto|code_symbol".to_string(),
+            ])
+            .expect("hydrate first snapshot");
+        store
+            .hydrate_dictionary_entries(&["useState|auto|code_symbol".to_string()])
+            .expect("hydrate second snapshot");
+
+        let claude_code = store
+            .find_by_term("Claude Code")
+            .expect("find removed term")
+            .unwrap();
+        assert!(!claude_code.enabled);
+
+        let use_state = store
+            .find_by_term("useState")
+            .expect("find retained term")
+            .unwrap();
+        assert!(use_state.enabled);
+
+        let key = user_term_index_keys("Claude Code").0.expect("en key");
+        let matches = store.find_by_en_phonetic_key(&key).expect("query en key");
+        assert!(matches.is_empty());
     }
 
     #[test]

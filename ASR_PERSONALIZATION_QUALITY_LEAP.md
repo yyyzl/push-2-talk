@@ -608,7 +608,8 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成：`phrase` prepass 已有运行时首段/首字索引，匹配时只召回可能命中的候选规则，并保持最长匹配、连字符分隔、中文共享前缀等既有行为。
 - 已完成：新增 SQLite `user_terms` sidecar store，可从现有 dictionary storage strings 水合纯词、source、category、`en_phonetic_key`、`zh_pinyin_fuzzy_key`，并创建 `category/en_phonetic_key/zh_pinyin_fuzzy_key/term` 索引；生产读写路径尚未切换。
 - 已完成：新增按 `en_phonetic_key` / `zh_pinyin_fuzzy_key` 查询 enabled `user_terms` 的 store API，结果稳定排序并优先返回 manual source。
-- 未完成：生产路径迁移到 `user_terms.db`、持久化 phrase trie/索引结构。
+- 已完成：配置加载/保存生命周期会 warning-only 水合默认 `user_terms.db` sidecar；ASR/TNL 运行时消费者仍继续读取 `AppConfig.dictionary`。
+- 未完成：生产运行时读取路径迁移到 `user_terms.db`、持久化 phrase trie/索引结构。
 
 ### 工程量
 

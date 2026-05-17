@@ -40,7 +40,7 @@ use futures_util::FutureExt;
 use hotkey_service::HotkeyService;
 use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
-use personalization::CorrectionPair;
+use personalization::{default_user_terms_db_path, CorrectionPair, UserTermStore};
 use pipeline::{NormalPipeline, TranscriptionContext};
 use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
@@ -1032,6 +1032,65 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     );
 }
 
+fn sync_user_terms_sidecar_from_dictionary_or_warn(dictionary: &[String], lifecycle: &str) {
+    let _ = sync_user_terms_sidecar_from_dictionary_result_or_warn(
+        sync_user_terms_sidecar_from_dictionary(dictionary),
+        lifecycle,
+    );
+}
+
+fn sync_user_terms_sidecar_from_dictionary(dictionary: &[String]) -> anyhow::Result<usize> {
+    let path = default_user_terms_db_path()?;
+    sync_user_terms_sidecar_from_dictionary_at_path(dictionary, &path)
+}
+
+#[cfg(test)]
+fn sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
+    dictionary: &[String],
+    path: &std::path::Path,
+    lifecycle: &str,
+) -> Option<usize> {
+    sync_user_terms_sidecar_from_dictionary_result_or_warn(
+        sync_user_terms_sidecar_from_dictionary_at_path(dictionary, path),
+        lifecycle,
+    )
+}
+
+fn sync_user_terms_sidecar_from_dictionary_result_or_warn(
+    result: anyhow::Result<usize>,
+    lifecycle: &str,
+) -> Option<usize> {
+    match result {
+        Ok(count) => {
+            tracing::debug!(
+                "同步 user_terms sidecar 完成（{}）：{} 个词条",
+                lifecycle,
+                count
+            );
+            Some(count)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "同步 user_terms sidecar 失败（{}），继续使用配置词典: {}",
+                lifecycle,
+                e
+            );
+            None
+        }
+    }
+}
+
+fn sync_user_terms_sidecar_from_dictionary_at_path(
+    dictionary: &[String],
+    path: &std::path::Path,
+) -> anyhow::Result<usize> {
+    let mut normalized_dictionary = dictionary.to_vec();
+    crate::dictionary_utils::backfill_inferred_categories(&mut normalized_dictionary);
+
+    let mut store = UserTermStore::open(path)?;
+    store.hydrate_dictionary_entries(&normalized_dictionary)
+}
+
 fn load_persisted_config() -> Result<AppConfig, String> {
     match AppConfig::load() {
         Ok((config, migrated)) => {
@@ -1040,6 +1099,7 @@ fn load_persisted_config() -> Result<AppConfig, String> {
                     .save()
                     .map_err(|e| format!("保存迁移后的配置失败: {}", e))?;
             }
+            sync_user_terms_sidecar_from_dictionary_or_warn(&config.dictionary, "配置加载");
             Ok(config)
         }
         Err(e) => Err(format!("加载配置失败: {}", e)),
@@ -1048,6 +1108,7 @@ fn load_persisted_config() -> Result<AppConfig, String> {
 
 fn save_persisted_config_without_emit(config: &AppConfig) -> Result<(), String> {
     config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+    sync_user_terms_sidecar_from_dictionary_or_warn(&config.dictionary, "配置保存");
     Ok(())
 }
 
@@ -1075,6 +1136,61 @@ where
         Ok(())
     })
     .map(|(config, _)| config)
+}
+
+#[cfg(test)]
+mod user_terms_sidecar_sync_tests {
+    use super::*;
+
+    #[test]
+    fn sync_user_terms_sidecar_from_dictionary_at_path_hydrates_terms() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+        let dictionary = vec![
+            "useState|auto".to_string(),
+            "Claude Code|manual|product".to_string(),
+            "  ".to_string(),
+        ];
+
+        let synced = sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
+            &dictionary,
+            &path,
+            "test success",
+        );
+
+        assert_eq!(synced, Some(2));
+
+        let store = crate::personalization::UserTermStore::open(&path).expect("open synced store");
+        let use_state = store
+            .find_by_term("useState")
+            .expect("find useState")
+            .unwrap();
+        assert_eq!(use_state.source, "auto");
+        assert_eq!(use_state.category, "code_symbol");
+
+        let claude_code = store
+            .find_by_term("claude code")
+            .expect("find Claude Code")
+            .unwrap();
+        assert_eq!(claude_code.source, "manual");
+        assert_eq!(claude_code.category, "product");
+    }
+
+    #[test]
+    fn sync_user_terms_sidecar_from_dictionary_at_path_or_warn_ignores_open_error() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("db_directory");
+        std::fs::create_dir(&path).expect("create directory at db path");
+        let dictionary = vec!["Claude Code|manual|product".to_string()];
+
+        let synced = sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
+            &dictionary,
+            &path,
+            "test failure",
+        );
+
+        assert_eq!(synced, None);
+    }
 }
 
 fn emit_config_updated(app: &AppHandle, config: &AppConfig) {

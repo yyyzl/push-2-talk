@@ -29,7 +29,7 @@
 - Use idempotent `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` for first-slice sidecar schemas.
 - Reopening an existing database must be safe and must not drop or rewrite existing rows.
 - Keep legacy `AppConfig.dictionary` intact until a dedicated migration task switches production consumers.
-- For `user_terms`, hydrate from current config strings as a repeatable operation and upsert by case-insensitive term.
+- For `user_terms`, hydrate from current config strings as a repeatable snapshot operation: upsert present terms by case-insensitive term and disable enabled rows that are absent from the current config snapshot.
 - `user_terms.en_phonetic_key` stores the first English phonetic key from `build_key_bundle`; `user_terms.zh_pinyin_fuzzy_key` stores the bundle's fuzzy pinyin key. Leave the column `NULL` when the key does not apply.
 - `user_terms` key lookup APIs must query enabled rows only, return empty results for empty keys, and order manual terms before automatic terms for deterministic candidate selection.
 
