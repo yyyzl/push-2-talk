@@ -743,3 +743,37 @@ Added deterministic backend dictionary category backfill for config load/save, p
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Phase 5 phrase dictionary runtime index
+
+**Date**: 2026-05-17
+**Task**: Phase 5 phrase dictionary runtime index
+**Branch**: `main`
+
+### Summary
+
+Added a runtime first-segment/first-character index for TNL phrase dictionary rules, preserved phrase matching behavior with regression tests, and updated the TNL spec plus ASR personalization roadmap.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `61b8ab2` | (see git log) |
+| `c6a5ff5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

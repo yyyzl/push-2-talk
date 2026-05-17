@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 19
+- **Total Sessions**: 20
 - **Last Active**: 2026-05-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~745 | Active |
+| `journal-1.md` | ~779 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-05-17 | Phase 5 phrase dictionary runtime index | `61b8ab2`, `c6a5ff5` | `main` |
 | 19 | 2026-05-17 | Phase 5 dictionary category backfill | `08a44e0` | `main` |
 | 18 | 2026-05-16 | Phase 5 backend category inference | `5f3cad7` | `main` |
 | 17 | 2026-05-16 | Phase 5 learning category taxonomy | `b4127b8` | `main` |
