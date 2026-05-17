@@ -978,3 +978,36 @@ Added enabled user_terms export preserving source/category metadata and made bac
 ### Next Steps
 
 - None - task complete
+
+
+## Session 27: Phase 5 runtime dictionary sidecar merge
+
+**Date**: 2026-05-17
+**Task**: Phase 5 runtime dictionary sidecar merge
+**Branch**: `main`
+
+### Summary
+
+Merged enabled user_terms.db entries into start_app runtime dictionaries while preserving domain, recent, builtin, and app_context runtime sources. Sidecar user metadata now wins duplicate words, with warning-only fallback to normalized input entries when the sidecar is missing, unreadable, or empty.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cb73915` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
