@@ -730,6 +730,15 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 上行热词数量稳定在 provider 上限内
 - 热词列表对用户当前场景敏感（切换 App / 切换领域时词库变化）
 
+### 当前落地状态（2026-05-17）
+
+- 已完成：`src-tauri/src/personalization/hotword_compiler.rs` 已提供 ASR / TNL / LLM 三类 pack，统一提纯 dictionary metadata、合并 correction pairs、去重、按来源权重排序并按 provider 上限截断。
+- 已完成：Qwen HTTP / Qwen Realtime / Doubao HTTP / Doubao Realtime 已接入 `compile_asr_pack_with_correction_pairs`；Qwen 输出顿号拼接 corpus，Doubao 继续保持兼容的 `{"word": "<pure word>"}` hotword 形态。
+- 已完成：frontend recent hotwords 和 backend current-App context hotwords 都是 runtime-only 输入，参与录音前词库快照，但不写回持久化用户词典。
+- 已完成：ASR correction-pair cache 在启动和接受学习更新后刷新，provider 路径消费已加载快照，不在请求发送路径同步读取 correction pair 文件。
+- 暂不执行：Doubao `weight` 字段仍未上行；当前 spec 明确保留 `AsrHotword.weight` 给未来 provider 格式，但在兼容性验证前不改变 Doubao payload。
+- 待验证：需要跑正式 raw-ASR 评测来量化"首次识别命中率"提升；HotwordCompiler 缓存复用仅在 profiling 证明编译成本有意义时再做。
+
 ---
 
 ## 十二、Phase 8（可选）｜本地小型 reranker
