@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "Quality checks for TNL personalization scoring and diagnostics"}
+{"file": ".trellis/tasks/05-17-phase-6-named-entity-syllable-weighting/research/local-code-paths.md", "reason": "Expected affected code paths and test focus"}
+{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "Verify category and dictionary behavior remains compatible"}
