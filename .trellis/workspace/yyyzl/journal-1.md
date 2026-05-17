@@ -1044,3 +1044,36 @@ Moved dictionary management commands to user_terms.db sidecar-first persistence.
 ### Next Steps
 
 - None - task complete
+
+
+## Session 29: Decouple config saves from sidecar dictionary
+
+**Date**: 2026-05-17
+**Task**: Decouple config saves from sidecar dictionary
+**Branch**: `main`
+
+### Summary
+
+Completed Phase 5 decoupling so ordinary config saves no longer send dictionary payloads or sync AppConfig.dictionary into user_terms; frontend initialization now reads get_dictionary_entries first with config fallback, explicit dictionary imports still sync sidecar, and docs/tests were updated. Verified npm run test:ts, npm run build, cargo fmt --check, targeted cargo tests, cargo check, and git diff checks; full cargo test --lib hit a Windows STATUS_HEAP_CORRUPTION process abort after compiling.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8474a0c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
