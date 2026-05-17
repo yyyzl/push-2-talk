@@ -710,3 +710,36 @@ Added backend dictionary category inference helpers aligned with frontend rules,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: Phase 5 dictionary category backfill
+
+**Date**: 2026-05-17
+**Task**: Phase 5 dictionary category backfill
+**Branch**: `main`
+
+### Summary
+
+Added deterministic backend dictionary category backfill for config load/save, preserving generic compact storage and existing metadata while canonicalizing legacy aliases. Covered dictionary, AppConfig, and save_config paths with Rust tests and synced the TNL spec plus ASR roadmap.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `08a44e0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
