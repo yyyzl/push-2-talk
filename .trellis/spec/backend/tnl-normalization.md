@@ -1030,6 +1030,7 @@ npx tsx scripts/asr-eval-draft.ts --history <history.json> --out tests/asr_eval/
 npx tsx scripts/asr-eval-draft.ts --diagnostics <file-or-dir> --out tests/asr_eval/drafts/diagnostics.json
 npx tsx scripts/asr-eval-draft.ts --history <history.json> --diagnostics <file-or-dir> --out <draft.json> --prefix phase0b --limit 80
 npx tsx scripts/asr-eval-draft.ts --promote tests/asr_eval/drafts/reviewed.json --out tests/asr_eval/cases/phase0b-real.json
+npx tsx scripts/asr-eval-readiness.ts --suite tests/asr_eval --min-cases 80
 ```
 
 Core helpers:
@@ -1039,6 +1040,8 @@ buildDraftCasesFromHistory(input, options)
 buildDraftCasesFromRuntimeDiagnostics(input, options)
 promoteReviewedDraftCases(input, options)
 runAsrEvalDraftCli(argv)
+assessEvalReadiness(inputPath, options)
+runAsrEvalReadinessCli(argv)
 ```
 
 ### 3. Contracts
@@ -1069,6 +1072,10 @@ runAsrEvalDraftCli(argv)
 - Deduplicate by `raw_asr_text + expected_text`.
 - `--limit` limits final output count and must be a positive integer.
 - `--promote` is mutually exclusive with `--history` and `--diagnostics`.
+- The readiness CLI must count only formal eval cases under a `cases/` directory or a directly supplied cases directory.
+- The readiness CLI must ignore draft-only records that still contain `review_status` or `review_notes`.
+- The readiness CLI default minimum is 80 formal cases; callers may override with `--min-cases`.
+- The readiness CLI must fail by default when below the threshold, but `--allow-not-ready` may emit a report with exit success for documentation/profiling runs.
 
 ### 4. Validation & Error Matrix
 
@@ -1086,6 +1093,10 @@ runAsrEvalDraftCli(argv)
 | Draft record has `review_status = "approved"` but missing required text fields | Skip it. |
 | Promotion finds no approved draft cases | CLI returns an error and does not write an empty formal case file. |
 | Duplicate raw/expected pairs appear across inputs | Keep the first draft case only. |
+| Readiness checks current mini suite with default minimum | Reports `ready = false`, `totalCases = 26`, and non-zero exit unless `--allow-not-ready` is set. |
+| Readiness input is suite root `tests/asr_eval` | Resolve `tests/asr_eval/cases` automatically. |
+| Readiness input contains draft records | Do not count records with `review_status` or `review_notes`. |
+| `--min-cases` is zero, negative, non-integer, or NaN | CLI returns an error. |
 
 ### 5. Good/Base/Bad Cases
 
@@ -1108,6 +1119,7 @@ runAsrEvalDraftCli(argv)
 - CLI test proving `--promote` + `--out` writes a valid formal case JSON file.
 - CLI test proving promotion with no approved cases fails and writes no empty file.
 - CLI test proving `--promote` cannot be mixed with draft input flags.
+- Readiness tests proving suite/cases path resolution, formal case counting, draft exclusion, threshold failure, `--allow-not-ready`, JSON output mode, and invalid `--min-cases`.
 - Add diagnostics-directory tests when directory ordering or recursive import behavior changes.
 
 ### 7. Wrong vs Correct
