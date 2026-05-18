@@ -1276,3 +1276,37 @@ Added approved-only ASR eval draft promotion, review status fields, tests, docs/
 ### Next Steps
 
 - None - task complete
+
+
+## Session 36: Phase 3 ConvertPipeline trait skeleton
+
+**Date**: 2026-05-18
+**Task**: Phase 3 ConvertPipeline trait skeleton
+**Branch**: `main`
+
+### Summary
+
+Added an internal ConvertPass/ConvertPipeline skeleton for personalization exact_text and syllable_match passes, kept runtime APIs unchanged, updated specs and roadmap, and archived the completed task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9c356de` | (see git log) |
+| `08e3e87` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
