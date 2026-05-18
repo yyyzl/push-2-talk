@@ -1242,3 +1242,37 @@ Added a draft ASR eval sample intake CLI for exported history and runtime person
 ### Next Steps
 
 - None - task complete
+
+
+## Session 35: Phase 0B ASR eval draft promotion
+
+**Date**: 2026-05-18
+**Task**: Phase 0B ASR eval draft promotion
+**Branch**: `main`
+
+### Summary
+
+Added approved-only ASR eval draft promotion, review status fields, tests, docs/spec guidance, and archived the completed Phase 0B promotion task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c0051db` | (see git log) |
+| `9936ab0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

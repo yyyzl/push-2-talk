@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 34
-- **Last Active**: 2026-05-17
+- **Total Sessions**: 35
+- **Last Active**: 2026-05-18
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1244 | Active |
+| `journal-1.md` | ~1278 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 35 | 2026-05-18 | Phase 0B ASR eval draft promotion | `c0051db`, `9936ab0` | `main` |
 | 34 | 2026-05-17 | Phase 0B ASR eval sample intake | `0850e00` | `main` |
 | 33 | 2026-05-17 | Phase 7 to Phase 8 eval gate | `bc4a9d5` | `main` |
 | 32 | 2026-05-17 | Phase 7 HotwordCompiler audit | `90329ca` | `main` |
