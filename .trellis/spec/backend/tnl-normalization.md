@@ -650,20 +650,20 @@ impl PersonalizationEngine {
 
 ### 1. Scope / Trigger
 
-- Trigger: any change to `ConvertPass`, `ConvertPipeline`, `PersonalizationEngine::collect_candidates`, personalization pass order, or pass diagnostics.
+- Trigger: any change to `src-tauri/src/personalization/convert_pipeline.rs`, `ConvertPass`, `ConvertPipeline`, personalization pass order, or pass diagnostics.
 - ConvertPipeline is the internal Phase 3 skeleton for decomposing the local IME-style second decoder without changing runtime entry points.
 
 ### 2. Signatures
 
-Internal backend structure:
+Internal backend structure in `src-tauri/src/personalization/convert_pipeline.rs`:
 
 ```rust
-struct ConvertContext<'a> {
-    source_text: &'a str,
-    windows: &'a [WindowKey],
-    store: &'a CorrectionPairStore,
-    config: &'a PersonalizationEngineConfig,
-    technical_spans: &'a [Span],
+pub(super) struct ConvertContext<'a> {
+    pub(super) source_text: &'a str,
+    pub(super) windows: &'a [WindowKey],
+    pub(super) store: &'a CorrectionPairStore,
+    pub(super) config: &'a PersonalizationEngineConfig,
+    pub(super) technical_spans: &'a [Span],
 }
 
 trait ConvertPass {
@@ -676,12 +676,12 @@ trait ConvertPass {
     );
 }
 
-struct ConvertPipeline {
+pub(super) struct ConvertPipeline {
     passes: Vec<Box<dyn ConvertPass>>,
 }
 
 impl ConvertPipeline {
-    fn run(&self, context: &ConvertContext<'_>) -> ConversionResult;
+    pub(super) fn run(&self, context: &ConvertContext<'_>) -> ConversionResult;
 }
 ```
 
@@ -703,7 +703,7 @@ impl PersonalizationEngine {
 - `PersonalizationEngine::convert` and `convert_with_technical_spans` remain the only production entry points for runtime personalization.
 - `PersonalizationEngine::convert_with_technical_spans` must build `SyllableLattice`, derive bounded windows once, create `ConvertContext`, and delegate the full conversion run to `ConvertPipeline::run`.
 - `ConvertPipeline::default()` must run passes in stable order: `exact_text` first, `syllable_match` second.
-- The pipeline must generate `SyllableLattice::windows(config.max_window_tokens)` once per conversion and pass the resulting windows through `ConvertContext`; passes must not re-tokenize ASR text.
+- The engine must generate `SyllableLattice::windows(config.max_window_tokens)` once per conversion and pass the resulting windows through `ConvertContext`; passes must not re-tokenize ASR text.
 - `ExactTextPass` may only query exact `original_text` matches and must emit `MatchKind::ExactText`.
 - `SyllableMatchPass` may query English phonetic, Chinese fuzzy-pinyin, mixed, and alias keys, and must emit the corresponding non-exact `MatchKind`.
 - `ConvertPipeline::run` owns candidate collection, rank sorting, threshold decisions, non-overlap selection, reverse-order byte replacement, and `update_pass_applied_counts`.
@@ -739,7 +739,7 @@ impl PersonalizationEngine {
 - Unit test: pass summaries remain present for enabled and disabled passes.
 - Unit test: disabling syllable pass preserves exact text fallback and skips phonetic/alias candidates.
 - Unit test: named-entity boost remains limited to syllable-match candidates.
-- Run `cargo test personalization::engine`, `cargo fmt --check`, and `cargo check` after changing this skeleton.
+- Run `cargo test personalization::convert_pipeline`, `cargo test personalization::engine`, `cargo fmt --check`, and `cargo check` after changing this skeleton.
 
 ### 7. Wrong vs Correct
 

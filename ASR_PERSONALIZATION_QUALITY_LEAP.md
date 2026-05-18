@@ -428,7 +428,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
    - `BaseNormalizePass`：封装现有 Unicode normalize、口语符号、字母合并、连字符 rewrite
    - `ExistingDictionaryPass`：封装现有 `FuzzyMatcher` 的拼音/英文音近逻辑
    - `ExistingCandidateDiagnosticsPass`：保留当前中置信候选进入 LLM 仲裁的能力
-2. **第二步：新建** `src-tauri/src/tnl/convert_pipeline.rs`
+2. **第二步：新建** `src-tauri/src/personalization/convert_pipeline.rs` 作为当前 Phase 3 的个性化二次解码承载面；后续如果 TNL 基础规范化也迁入统一 pipeline，再评估是否抽到 `tnl/convert_pipeline.rs`
 3. **trait 定义**：
    ```rust
    pub struct ConvertContext {
@@ -507,7 +507,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 
 - Phase 0B：扩展到 80-120 条真实错误样本
 - Phase 0B intake：已具备 history / runtime diagnostics 到 eval draft 的离线生成入口，以及 approved-only promotion；下一步需要人工持续复核并扩充真实 case 数量
-- 完整 ConvertPipeline trait 化：已先在 `PersonalizationEngine` 内落地 `ConvertPass` / `ConvertPipeline` 内部骨架，并让 pipeline 接管候选收集、排序、阈值、overlap 选择和文本替换；当前仍为了降低风险由 `PersonalizationEngine` + `TnlEngine` 渐进承载，后续再把更多 pass 迁入统一结构
+- 完整 ConvertPipeline trait 化：已将 `ConvertPass` / `ConvertPipeline` 抽到 `src-tauri/src/personalization/convert_pipeline.rs` 内部模块，并让 pipeline 接管候选收集、排序、阈值、overlap 选择和文本替换；当前仍为了降低风险由 `PersonalizationEngine` + `TnlEngine` 渐进承载，后续再把更多 pass 迁入统一结构
 - 助手路径的中置信候选云端仲裁已接入：助手语音指令会在发出 `assistant_turn_pending` 和调用主助手 LLM 前，复用同一套 bounded candidate arbiter 处理 TNL/个性化中置信候选，并将真实 LLM apply/reject 弱反馈写回 correction pair
 
 ---
@@ -851,11 +851,12 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 新增 [src-tauri/src/personalization/]
   correction_pair_store.rs    -> Phase 1（MVP JSON store，稳定后 SQLite）
   phonetic_keys.rs            -> Phase 1/2 共享 key 生成：en / zh / mixed / alias
+  convert_pipeline.rs         -> Phase 3 个性化二次解码 pipeline
   hotword_compiler.rs         -> Phase 7
 
 新增 [src-tauri/src/tnl/]
   syllable_lattice.rs    -> Phase 2
-  convert_pipeline.rs    -> Phase 3
+  convert_pipeline.rs    -> 后续统一 TNL pipeline 时再评估是否新增
   passes/                -> Phase 3 各 Pass
     exact_user_word.rs
     correction_pair_exact.rs

@@ -11,6 +11,7 @@ use crate::tnl::{
 };
 
 mod app_context_hotwords;
+mod convert_pipeline;
 mod correction_pair_store;
 mod engine;
 pub mod hotword_compiler;
