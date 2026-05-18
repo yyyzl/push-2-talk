@@ -1031,6 +1031,7 @@ npx tsx scripts/asr-eval-draft.ts --diagnostics <file-or-dir> --out tests/asr_ev
 npx tsx scripts/asr-eval-draft.ts --history <history.json> --diagnostics <file-or-dir> --out <draft.json> --prefix phase0b --limit 80
 npx tsx scripts/asr-eval-draft.ts --promote tests/asr_eval/drafts/reviewed.json --out tests/asr_eval/cases/phase0b-real.json
 npx tsx scripts/asr-eval-readiness.ts --suite tests/asr_eval --min-cases 80
+npx tsx scripts/asr-eval-readiness.ts --suite tests/asr_eval --allow-not-ready --json --out target/asr_eval_readiness/readiness.json
 ```
 
 Core helpers:
@@ -1076,6 +1077,8 @@ runAsrEvalReadinessCli(argv)
 - The readiness CLI must ignore draft-only records that still contain `review_status` or `review_notes`.
 - The readiness CLI default minimum is 80 formal cases; callers may override with `--min-cases`.
 - The readiness CLI must fail by default when below the threshold, but `--allow-not-ready` may emit a report with exit success for documentation/profiling runs.
+- The readiness CLI may write the same text or JSON summary to `--out <path>` and must create missing parent directories.
+- If readiness fails and `--allow-not-ready` is not set, `--out` must not write a success-looking report.
 
 ### 4. Validation & Error Matrix
 
@@ -1097,6 +1100,8 @@ runAsrEvalReadinessCli(argv)
 | Readiness input is suite root `tests/asr_eval` | Resolve `tests/asr_eval/cases` automatically. |
 | Readiness input contains draft records | Do not count records with `review_status` or `review_notes`. |
 | `--min-cases` is zero, negative, non-integer, or NaN | CLI returns an error. |
+| Readiness uses `--json --out target/asr_eval_readiness/readiness.json --allow-not-ready` | Create the JSON report with `ready = false` and exit successfully. |
+| Readiness uses `--out` while below threshold without `--allow-not-ready` | Return an error and do not write the output file. |
 
 ### 5. Good/Base/Bad Cases
 
@@ -1119,7 +1124,7 @@ runAsrEvalReadinessCli(argv)
 - CLI test proving `--promote` + `--out` writes a valid formal case JSON file.
 - CLI test proving promotion with no approved cases fails and writes no empty file.
 - CLI test proving `--promote` cannot be mixed with draft input flags.
-- Readiness tests proving suite/cases path resolution, formal case counting, draft exclusion, threshold failure, `--allow-not-ready`, JSON output mode, and invalid `--min-cases`.
+- Readiness tests proving suite/cases path resolution, formal case counting, draft exclusion, threshold failure, `--allow-not-ready`, JSON/text output modes, `--out` report writing, and invalid `--min-cases`.
 - Add diagnostics-directory tests when directory ordering or recursive import behavior changes.
 
 ### 7. Wrong vs Correct

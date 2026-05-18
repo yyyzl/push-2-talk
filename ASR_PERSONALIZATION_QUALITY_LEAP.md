@@ -148,7 +148,7 @@ flowchart LR
 1. **Phase 0A mini eval**：先收 15-30 条真实错误样本，跑通 case schema、runner、报告输出和诊断字段
 2. **Phase 0B 完整评测集**：从日常使用中扩展到 80-120 条真实错误样本
 3. **Phase 0B 样本入口（已完成两段式闭环）**：新增 `scripts/asr-eval-draft.ts`，可从导出的前端 history JSON 或 runtime personalization diagnostics JSON/目录生成 `tests/asr_eval/drafts/*.json` 形态的待人工复核草稿；新草稿默认 `review_status: "needs_review"`，人工确认后通过 `--promote` 只把 `review_status: "approved"` 的记录提升为正式 `cases/`，避免未经确认的真实文本污染质量门槛
-4. **Phase 0B readiness gate（已完成）**：新增 `scripts/asr-eval-readiness.ts`，默认检查正式 `tests/asr_eval/cases/` 是否达到 80 条门槛；当前 mini suite 为 26/80，会明确报告 not ready，防止把 mini gate 100% 误当成可启动 Phase 8 的充分证据
+4. **Phase 0B readiness gate（已完成）**：新增 `scripts/asr-eval-readiness.ts`，默认检查正式 `tests/asr_eval/cases/` 是否达到 80 条门槛；当前 mini suite 为 26/80，会明确报告 not ready，并可用 `--json --out target/asr_eval_readiness/readiness.json` 落盘报告，防止把 mini gate 100% 误当成可启动 Phase 8 的充分证据
 5. **分桶**：
    - 技术词（30%，如 `Claude Code / Cursor / Windsurf / TypeScript`）
    - 中英混合（25%，如 `调用 LLM 接口 / 部署到 Kubernetes`）
@@ -748,7 +748,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 - 已完成 diagnostics 验证：`--diagnostics-out target/asr_eval_phase7_gate` 成功生成 schema v4 诊断，包含 `eval_config`、`metrics`、`quality_gate` 和 26 条 bounded case 明细。
 - 已完成 sweep：`threshold = 0.88` 且 `window = 5` 通过；`window = 3` 退化到 24/26，说明当前窗口上限仍然必要；`threshold = 0.99` 退化到 16/26，说明过度保守阈值会吞掉音化候选收益。
 - 已完成 ablation：禁用 `syllable_match` 后退化到 16/26，说明当前 mini suite 中 10 条通过来自本地 syllable/window second-decoding，而不是上游 ASR 或 reranker。
-- 当前决策：不基于这组 mini gate 启动 Phase 8；`scripts/asr-eval-readiness.ts --suite tests/asr_eval --allow-not-ready` 当前会报告 26/80、缺 54 条。下一次 Phase 8 决策应先补 Phase 0B 的 80-120 条真实 ASR 样本，再看残留失败是否集中在低频长尾或上下文歧义。
+- 当前决策：不基于这组 mini gate 启动 Phase 8；`scripts/asr-eval-readiness.ts --suite tests/asr_eval --allow-not-ready --json --out target/asr_eval_readiness/readiness.json` 当前会报告 26/80、缺 54 条并可落盘 JSON 报告。下一次 Phase 8 决策应先补 Phase 0B 的 80-120 条真实 ASR 样本，再看残留失败是否集中在低频长尾或上下文歧义。
 
 ---
 

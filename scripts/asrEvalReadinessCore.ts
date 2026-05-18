@@ -1,5 +1,5 @@
-import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
 type OutputFormat = "text" | "json";
@@ -21,6 +21,7 @@ export interface EvalReadinessOptions {
 export interface EvalReadinessCliResult {
   summary: EvalReadinessSummary;
   outputFormat: OutputFormat;
+  outPath?: string;
 }
 
 interface CliArgs {
@@ -28,6 +29,7 @@ interface CliArgs {
   minCases: number;
   allowNotReady: boolean;
   outputFormat: OutputFormat;
+  outPath?: string;
 }
 
 const DEFAULT_SUITE_PATH = "tests/asr_eval";
@@ -80,9 +82,14 @@ export async function runAsrEvalReadinessCli(
     );
   }
 
+  if (args.outPath) {
+    await writeReadinessOutput(args.outPath, formatReadiness(summary, args.outputFormat));
+  }
+
   return {
     summary,
     outputFormat: args.outputFormat,
+    outPath: args.outPath,
   };
 }
 
@@ -104,6 +111,10 @@ export function formatReadinessJson(summary: EvalReadinessSummary): string {
   return `${JSON.stringify(summary, null, 2)}\n`;
 }
 
+export function formatReadiness(summary: EvalReadinessSummary, format: OutputFormat): string {
+  return format === "json" ? formatReadinessJson(summary) : `${formatReadinessText(summary)}\n`;
+}
+
 function parseCliArgs(argv: string[]): CliArgs {
   let targetPath = DEFAULT_SUITE_PATH;
   let sawSuite = false;
@@ -111,6 +122,7 @@ function parseCliArgs(argv: string[]): CliArgs {
   let minCases = DEFAULT_MIN_CASES;
   let allowNotReady = false;
   let outputFormat: OutputFormat = "text";
+  let outPath: string | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -135,6 +147,10 @@ function parseCliArgs(argv: string[]): CliArgs {
       case "--json":
         outputFormat = "json";
         break;
+      case "--out":
+        outPath = requiredValue(argv, index, arg);
+        index += 1;
+        break;
       case "--help":
         throw new Error(usage());
       default:
@@ -151,7 +167,13 @@ function parseCliArgs(argv: string[]): CliArgs {
     minCases,
     allowNotReady,
     outputFormat,
+    outPath,
   };
+}
+
+async function writeReadinessOutput(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content, "utf8");
 }
 
 async function resolveCasesPath(inputPath: string): Promise<string> {
@@ -249,5 +271,6 @@ function usage(): string {
     "  --min-cases <n>        最小正式 case 数，默认 80",
     "  --allow-not-ready      未达标时仍以 0 退出，适合生成报告",
     "  --json                 输出 JSON 摘要",
+    "  --out <path>           将摘要写入文件，格式跟随 --json/text",
   ].join("\n");
 }

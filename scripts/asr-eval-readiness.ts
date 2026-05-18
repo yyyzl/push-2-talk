@@ -1,16 +1,17 @@
 import {
-  formatReadinessJson,
-  formatReadinessText,
+  formatReadiness,
   runAsrEvalReadinessCli,
 } from "./asrEvalReadinessCore";
 
 runAsrEvalReadinessCli(process.argv.slice(2))
   .then((result) => {
-    const output =
-      result.outputFormat === "json"
-        ? formatReadinessJson(result.summary)
-        : formatReadinessText(result.summary);
-    console.log(output);
+    const output = formatReadiness(result.summary, result.outputFormat);
+    console.log(output.trimEnd());
+    if (result.outPath) {
+      console.error(
+        `ASR eval readiness report written: ${result.outPath} (${output.length} bytes)`,
+      );
+    }
   })
   .catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);

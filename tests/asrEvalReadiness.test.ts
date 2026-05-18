@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -121,6 +121,74 @@ test("readiness CLI 拒绝非法 min-cases", async () => {
     runAsrEvalReadinessCli(["--min-cases", "0"]),
     /--min-cases 必须是正整数/,
   );
+});
+
+test("readiness CLI 可写入 JSON 报告并自动创建父目录", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "asr-readiness-out-json-"));
+  try {
+    await writeFile(join(dir, "mini.json"), JSON.stringify([caseA]), "utf8");
+    const outPath = join(dir, "reports", "readiness.json");
+
+    const result = await runAsrEvalReadinessCli([
+      "--cases",
+      dir,
+      "--min-cases",
+      "2",
+      "--allow-not-ready",
+      "--json",
+      "--out",
+      outPath,
+    ]);
+
+    assert.equal(result.outPath, outPath);
+    const written = JSON.parse(await readFile(outPath, "utf8"));
+    assert.equal(written.totalCases, 1);
+    assert.equal(written.minimumCases, 2);
+    assert.equal(written.ready, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readiness CLI 可写入文本报告", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "asr-readiness-out-text-"));
+  try {
+    await writeFile(join(dir, "ready.json"), JSON.stringify([caseA, caseB]), "utf8");
+    const outPath = join(dir, "reports", "readiness.md");
+
+    const result = await runAsrEvalReadinessCli([
+      "--cases",
+      dir,
+      "--min-cases",
+      "2",
+      "--out",
+      outPath,
+    ]);
+
+    assert.equal(result.summary.ready, true);
+    assert.equal(result.outPath, outPath);
+    const written = await readFile(outPath, "utf8");
+    assert.match(written, /# ASR Eval Readiness/);
+    assert.match(written, /ready: true/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readiness CLI 未达标且不允许报告时不写 out 文件", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "asr-readiness-out-fail-"));
+  try {
+    await writeFile(join(dir, "mini.json"), JSON.stringify([caseA]), "utf8");
+    const outPath = join(dir, "reports", "readiness.json");
+
+    await assert.rejects(
+      runAsrEvalReadinessCli(["--cases", dir, "--min-cases", "2", "--json", "--out", outPath]),
+      /ASR eval readiness 未达标/,
+    );
+    await assert.rejects(readFile(outPath, "utf8"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("readiness 格式化输出包含关键字段", async () => {
