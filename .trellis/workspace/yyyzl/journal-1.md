@@ -1310,3 +1310,37 @@ Added an internal ConvertPass/ConvertPipeline skeleton for personalization exact
 ### Next Steps
 
 - None - task complete
+
+
+## Session 37: Phase 3 ConvertPipeline run stage
+
+**Date**: 2026-05-18
+**Task**: Phase 3 ConvertPipeline run stage
+**Branch**: `main`
+
+### Summary
+
+Moved personalization candidate sorting, threshold decisions, overlap selection, byte replacement, and pass applied-count updates into ConvertPipeline::run while keeping PersonalizationEngine APIs unchanged.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e5ae5e8` | (see git log) |
+| `c19fd19` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

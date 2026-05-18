@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 36
+- **Total Sessions**: 37
 - **Last Active**: 2026-05-18
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1312 | Active |
+| `journal-1.md` | ~1346 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 37 | 2026-05-18 | Phase 3 ConvertPipeline run stage | `e5ae5e8`, `c19fd19` | `main` |
 | 36 | 2026-05-18 | Phase 3 ConvertPipeline trait skeleton | `9c356de`, `08e3e87` | `main` |
 | 35 | 2026-05-18 | Phase 0B ASR eval draft promotion | `c0051db`, `9936ab0` | `main` |
 | 34 | 2026-05-17 | Phase 0B ASR eval sample intake | `0850e00` | `main` |
