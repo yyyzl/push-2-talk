@@ -1344,3 +1344,36 @@ Moved personalization candidate sorting, threshold decisions, overlap selection,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 38: Phase 3 ConvertPipeline module extraction
+
+**Date**: 2026-05-18
+**Task**: Phase 3 ConvertPipeline module extraction
+**Branch**: `main`
+
+### Summary
+
+Extracted personalization ConvertPipeline internals into a dedicated module while preserving PersonalizationEngine APIs and conversion behavior.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0ab1c6a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
