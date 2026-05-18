@@ -646,6 +646,117 @@ impl PersonalizationEngine {
 
 ---
 
+## Scenario: ConvertPipeline Owns Personalization Pass Ordering
+
+### 1. Scope / Trigger
+
+- Trigger: any change to `ConvertPass`, `ConvertPipeline`, `PersonalizationEngine::collect_candidates`, personalization pass order, or pass diagnostics.
+- ConvertPipeline is the internal Phase 3 skeleton for decomposing the local IME-style second decoder without changing runtime entry points.
+
+### 2. Signatures
+
+Internal backend structure:
+
+```rust
+struct ConvertContext<'a> {
+    source_text: &'a str,
+    windows: &'a [WindowKey],
+    store: &'a CorrectionPairStore,
+    config: &'a PersonalizationEngineConfig,
+    technical_spans: &'a [Span],
+}
+
+trait ConvertPass {
+    fn name(&self) -> &'static str;
+    fn enabled(&self, config: &PersonalizationEngineConfig) -> bool;
+    fn collect_candidates(
+        &self,
+        context: &ConvertContext<'_>,
+        candidates: &mut Vec<ConversionCandidate>,
+    );
+}
+
+struct ConvertPipeline {
+    passes: Vec<Box<dyn ConvertPass>>,
+}
+```
+
+Compatibility API:
+
+```rust
+impl PersonalizationEngine {
+    pub fn convert(&self, text: &str) -> ConversionResult;
+    pub fn convert_with_technical_spans(
+        &self,
+        text: &str,
+        technical_spans: &[Span],
+    ) -> ConversionResult;
+}
+```
+
+### 3. Contracts
+
+- `PersonalizationEngine::convert` and `convert_with_technical_spans` remain the only production entry points for runtime personalization.
+- `PersonalizationEngine::collect_candidates` must delegate candidate collection to `ConvertPipeline`.
+- `ConvertPipeline::default()` must run passes in stable order: `exact_text` first, `syllable_match` second.
+- The pipeline must generate `SyllableLattice::windows(config.max_window_tokens)` once per conversion and pass the resulting windows through `ConvertContext`; passes must not re-tokenize ASR text.
+- `ExactTextPass` may only query exact `original_text` matches and must emit `MatchKind::ExactText`.
+- `SyllableMatchPass` may query English phonetic, Chinese fuzzy-pinyin, mixed, and alias keys, and must emit the corresponding non-exact `MatchKind`.
+- Candidate selection, overlap handling, rank sorting, output replacement, and `update_pass_applied_counts` remain outside individual passes in this skeleton.
+- Disabled passes must still produce a `PassDiagnostics` summary with `enabled = false`, zero candidate count, and zero applied count.
+- Pass names remain serialized as `exact_text` and `syllable_match` for eval/runtime diagnostics compatibility.
+
+### 4. Validation & Error Matrix
+
+| Condition | Expected behavior |
+|---|---|
+| Default pipeline is constructed | `pass_names()` in tests reports `["exact_text", "syllable_match"]`. |
+| Exact and syllable paths can both recall the same pair/range | Exact pass remains preferred because it runs first and dedupe does not downgrade it. |
+| `enable_syllable_match_pass = false` | Exact pass still runs, syllable pass emits disabled summary and no phonetic/alias candidates. |
+| Input contains a `NamedEntity` span overlapping an alias candidate | Only syllable-match scoring can receive the bounded named-entity boost. |
+| Input is empty or whitespace | `PersonalizationEngine` returns default diagnostics and does not construct pass summaries. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: adding a future pass means adding one `ConvertPass` implementation and placing it in `ConvertPipeline::default()` without touching selection/replacement logic.
+- Base: existing `PersonalizationEngine::convert("我打开 claud code")` still applies the same syllable-match candidate and reports the same pass summary names.
+- Bad: a pass directly mutates output text before global overlap selection.
+- Bad: a new pass changes the serialized pass name used by eval metrics.
+- Bad: a pass calls `SyllableLattice::from_asr_text` or rebuilds windows independently.
+
+### 6. Tests Required
+
+- Unit test: default pipeline pass order is stable.
+- Unit test: pass summaries remain present for enabled and disabled passes.
+- Unit test: disabling syllable pass preserves exact text fallback and skips phonetic/alias candidates.
+- Unit test: named-entity boost remains limited to syllable-match candidates.
+- Run `cargo test personalization::engine`, `cargo fmt --check`, and `cargo check` after changing this skeleton.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+for pass in passes {
+    let lattice = SyllableLattice::from_asr_text(text);
+    let windows = lattice.windows(config.max_window_tokens);
+    pass.collect(&windows);
+    apply_replacements_immediately();
+}
+```
+
+#### Correct
+
+```rust
+let lattice = SyllableLattice::from_asr_text(text);
+let windows = lattice.windows(config.max_window_tokens);
+let context = ConvertContext { windows: &windows, /* ... */ };
+let (candidates, summaries) = ConvertPipeline::default().collect_candidates(&context);
+select_non_overlapping_candidates(candidates, summaries);
+```
+
+---
+
 ## Scenario: Named-Entity Spans Bias Syllable-Match Candidate Scoring
 
 ### 1. Scope / Trigger

@@ -507,7 +507,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 
 - Phase 0B：扩展到 80-120 条真实错误样本
 - Phase 0B intake：已具备 history / runtime diagnostics 到 eval draft 的离线生成入口，以及 approved-only promotion；下一步需要人工持续复核并扩充真实 case 数量
-- 完整 ConvertPipeline trait 化：当前为了降低风险仍由 `PersonalizationEngine` + `TnlEngine` 渐进承载
+- 完整 ConvertPipeline trait 化：已先在 `PersonalizationEngine` 内落地 `ConvertPass` / `ConvertPipeline` 内部骨架；当前仍为了降低风险由 `PersonalizationEngine` + `TnlEngine` 渐进承载，后续再把更多 pass 迁入统一结构
 - 助手路径的中置信候选云端仲裁已接入：助手语音指令会在发出 `assistant_turn_pending` 和调用主助手 LLM 前，复用同一套 bounded candidate arbiter 处理 TNL/个性化中置信候选，并将真实 LLM apply/reject 弱反馈写回 correction pair
 
 ---

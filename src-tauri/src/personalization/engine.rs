@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Instant};
 
-use crate::tnl::{Span, SpanType, SyllableLattice};
+use crate::tnl::{Span, SpanType, SyllableLattice, WindowKey};
 
 use super::correction_pair_store::{CorrectionPair, CorrectionPairStore};
 
@@ -196,57 +196,158 @@ impl PersonalizationEngine {
         lattice: &SyllableLattice,
         technical_spans: &[Span],
     ) -> (Vec<ConversionCandidate>, Vec<PassDiagnostics>) {
-        let mut candidates = Vec::new();
-        let mut exact_summary =
-            PassDiagnostics::new(EXACT_TEXT_PASS, self.config.enable_exact_text_pass);
-        let mut syllable_summary =
-            PassDiagnostics::new(SYLLABLE_MATCH_PASS, self.config.enable_syllable_match_pass);
+        let pipeline = ConvertPipeline::default();
+        let windows = lattice.windows(self.config.max_window_tokens);
+        let context = ConvertContext {
+            source_text: &lattice.source_text,
+            windows: &windows,
+            store: &self.store,
+            config: &self.config,
+            technical_spans,
+        };
 
-        for window in lattice.windows(self.config.max_window_tokens) {
+        pipeline.collect_candidates(&context)
+    }
+}
+
+struct ConvertContext<'a> {
+    source_text: &'a str,
+    windows: &'a [WindowKey],
+    store: &'a CorrectionPairStore,
+    config: &'a PersonalizationEngineConfig,
+    technical_spans: &'a [Span],
+}
+
+trait ConvertPass {
+    fn name(&self) -> &'static str;
+
+    fn enabled(&self, config: &PersonalizationEngineConfig) -> bool;
+
+    fn collect_candidates(
+        &self,
+        context: &ConvertContext<'_>,
+        candidates: &mut Vec<ConversionCandidate>,
+    );
+}
+
+struct ConvertPipeline {
+    passes: Vec<Box<dyn ConvertPass>>,
+}
+
+impl Default for ConvertPipeline {
+    fn default() -> Self {
+        Self {
+            passes: vec![Box::new(ExactTextPass), Box::new(SyllableMatchPass)],
+        }
+    }
+}
+
+impl ConvertPipeline {
+    fn collect_candidates(
+        &self,
+        context: &ConvertContext<'_>,
+    ) -> (Vec<ConversionCandidate>, Vec<PassDiagnostics>) {
+        let mut candidates = Vec::new();
+        let mut summaries = Vec::with_capacity(self.passes.len());
+
+        for pass in &self.passes {
+            let enabled = pass.enabled(context.config);
+            let mut summary = PassDiagnostics::new(pass.name(), enabled);
+
+            if enabled {
+                let started_at = Instant::now();
+                let before_count = candidates.len();
+                pass.collect_candidates(context, &mut candidates);
+                summary.record(started_at, candidates.len() - before_count);
+            }
+
+            summaries.push(summary);
+        }
+
+        (candidates, summaries)
+    }
+
+    #[cfg(test)]
+    fn pass_names(&self) -> Vec<&'static str> {
+        self.passes.iter().map(|pass| pass.name()).collect()
+    }
+}
+
+struct ExactTextPass;
+
+impl ConvertPass for ExactTextPass {
+    fn name(&self) -> &'static str {
+        EXACT_TEXT_PASS
+    }
+
+    fn enabled(&self, config: &PersonalizationEngineConfig) -> bool {
+        config.enable_exact_text_pass
+    }
+
+    fn collect_candidates(
+        &self,
+        context: &ConvertContext<'_>,
+        candidates: &mut Vec<ConversionCandidate>,
+    ) {
+        for window in context.windows {
+            let start = window.byte_range.start;
+            let end = window.byte_range.end;
+            let window_text = window.text.as_str();
+
+            for pair in context.store.lookup_by_text(window_text) {
+                push_candidate(
+                    candidates,
+                    pair,
+                    window_text,
+                    start,
+                    end,
+                    exact_score(pair),
+                    MatchKind::ExactText,
+                    context.source_text,
+                );
+            }
+        }
+    }
+}
+
+struct SyllableMatchPass;
+
+impl ConvertPass for SyllableMatchPass {
+    fn name(&self) -> &'static str {
+        SYLLABLE_MATCH_PASS
+    }
+
+    fn enabled(&self, config: &PersonalizationEngineConfig) -> bool {
+        config.enable_syllable_match_pass
+    }
+
+    fn collect_candidates(
+        &self,
+        context: &ConvertContext<'_>,
+        candidates: &mut Vec<ConversionCandidate>,
+    ) {
+        for window in context.windows {
             let start = window.byte_range.start;
             let end = window.byte_range.end;
             let window_text = window.text.as_str();
             let keys = &window.keys;
             let has_chinese = window.has_chinese;
             let has_ascii = window.has_ascii;
-            let has_named_entity_overlap = overlaps_named_entity(technical_spans, start, end);
+            let has_named_entity_overlap =
+                overlaps_named_entity(context.technical_spans, start, end);
 
-            if self.config.enable_exact_text_pass {
-                let started_at = Instant::now();
-                let before_count = candidates.len();
-                for pair in self.store.lookup_by_text(window_text) {
-                    push_candidate(
-                        &mut candidates,
-                        pair,
-                        window_text,
-                        start,
-                        end,
-                        exact_score(pair),
-                        MatchKind::ExactText,
-                        &lattice.source_text,
-                    );
-                }
-                exact_summary.record(started_at, candidates.len() - before_count);
-            }
-
-            if !self.config.enable_syllable_match_pass {
-                continue;
-            }
-
-            let started_at = Instant::now();
-            let before_count = candidates.len();
             if has_ascii && !has_chinese {
                 for key in &keys.en_phonetic_keys {
-                    for pair in self.store.lookup_by_en_phonetic(key) {
+                    for pair in context.store.lookup_by_en_phonetic(key) {
                         push_candidate(
-                            &mut candidates,
+                            candidates,
                             pair,
                             window_text,
                             start,
                             end,
                             syllable_score(pair, pair.confidence * 0.97, has_named_entity_overlap),
                             MatchKind::EnPhonetic,
-                            &lattice.source_text,
+                            context.source_text,
                         );
                     }
                 }
@@ -254,16 +355,16 @@ impl PersonalizationEngine {
 
             if has_chinese && !has_ascii {
                 if let Some(key) = &keys.zh_pinyin_fuzzy_key {
-                    for pair in self.store.lookup_by_zh_pinyin_fuzzy(key) {
+                    for pair in context.store.lookup_by_zh_pinyin_fuzzy(key) {
                         push_candidate(
-                            &mut candidates,
+                            candidates,
                             pair,
                             window_text,
                             start,
                             end,
                             syllable_score(pair, pair.confidence * 0.9, has_named_entity_overlap),
                             MatchKind::ZhPinyinFuzzy,
-                            &lattice.source_text,
+                            context.source_text,
                         );
                     }
                 }
@@ -271,51 +372,48 @@ impl PersonalizationEngine {
 
             if has_chinese && has_ascii {
                 for key in &keys.mixed_keys {
-                    for pair in self.store.lookup_by_mixed(key) {
+                    for pair in context.store.lookup_by_mixed(key) {
                         push_candidate(
-                            &mut candidates,
+                            candidates,
                             pair,
                             window_text,
                             start,
                             end,
                             syllable_score(pair, pair.confidence * 0.9, has_named_entity_overlap),
                             MatchKind::Mixed,
-                            &lattice.source_text,
+                            context.source_text,
                         );
                     }
-                    for pair in self.store.lookup_by_alias_key(key) {
+                    for pair in context.store.lookup_by_alias_key(key) {
                         push_candidate(
-                            &mut candidates,
+                            candidates,
                             pair,
                             window_text,
                             start,
                             end,
                             alias_score(pair, has_named_entity_overlap),
                             MatchKind::Alias,
-                            &lattice.source_text,
+                            context.source_text,
                         );
                     }
                 }
 
                 for key in &keys.alias_keys {
-                    for pair in self.store.lookup_by_alias_key(key) {
+                    for pair in context.store.lookup_by_alias_key(key) {
                         push_candidate(
-                            &mut candidates,
+                            candidates,
                             pair,
                             window_text,
                             start,
                             end,
                             alias_score(pair, has_named_entity_overlap),
                             MatchKind::Alias,
-                            &lattice.source_text,
+                            context.source_text,
                         );
                     }
                 }
             }
-            syllable_summary.record(started_at, candidates.len() - before_count);
         }
-
-        (candidates, vec![exact_summary, syllable_summary])
     }
 }
 
@@ -937,6 +1035,16 @@ mod tests {
         assert!(syllable.enabled);
         assert_eq!(syllable.candidate_count, 1);
         assert_eq!(syllable.applied_count, 1);
+    }
+
+    #[test]
+    fn convert_pipeline_default_pass_order_is_stable() {
+        let pipeline = ConvertPipeline::default();
+
+        assert_eq!(
+            pipeline.pass_names(),
+            vec![EXACT_TEXT_PASS, SYLLABLE_MATCH_PASS]
+        );
     }
 
     #[test]

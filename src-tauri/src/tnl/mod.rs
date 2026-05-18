@@ -21,7 +21,7 @@ mod types;
 pub(crate) use disfluency::DisfluencyMode;
 pub use engine::TnlEngine;
 pub(crate) use fuzzy::is_common_english_word;
-pub(crate) use syllable_lattice::SyllableLattice;
+pub(crate) use syllable_lattice::{SyllableLattice, WindowKey};
 pub use types::{
     Span, SpanType, TnlArbitrationSummary, TnlCandidate, TnlCandidateArbitrationResult,
     TnlCandidateDecision, TnlDiagnostics,
