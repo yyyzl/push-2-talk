@@ -1443,3 +1443,36 @@ Added --out report writing to the ASR eval readiness CLI, including JSON/text ou
 ### Next Steps
 
 - None - task complete
+
+
+## Session 41: Phase 4 disfluency eval coverage
+
+**Date**: 2026-05-18
+**Task**: Phase 4 disfluency eval coverage
+**Branch**: `main`
+
+### Summary
+
+Added disfluency mode support to ASR eval, case-level mode overrides, diagnostics mode recording, and mini eval cases for conservative cleanup, aggressive cleanup, and false-positive guards.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6558da9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
