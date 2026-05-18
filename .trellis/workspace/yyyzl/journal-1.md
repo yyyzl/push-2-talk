@@ -1410,3 +1410,36 @@ Added a TypeScript readiness gate that counts formal ASR eval cases, reports the
 ### Next Steps
 
 - None - task complete
+
+
+## Session 40: Phase 0B readiness report output
+
+**Date**: 2026-05-18
+**Task**: Phase 0B readiness report output
+**Branch**: `main`
+
+### Summary
+
+Added --out report writing to the ASR eval readiness CLI, including JSON/text output tests and documented Phase 8 readiness usage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b448072` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

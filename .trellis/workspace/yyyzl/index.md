@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 39
+- **Total Sessions**: 40
 - **Last Active**: 2026-05-18
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1412 | Active |
+| `journal-1.md` | ~1445 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 40 | 2026-05-18 | Phase 0B readiness report output | `b448072` | `main` |
 | 39 | 2026-05-18 | Phase 0B ASR eval readiness gate | `8dbb8e8` | `main` |
 | 38 | 2026-05-18 | Phase 3 ConvertPipeline module extraction | `0ab1c6a` | `main` |
 | 37 | 2026-05-18 | Phase 3 ConvertPipeline run stage | `e5ae5e8`, `c19fd19` | `main` |
