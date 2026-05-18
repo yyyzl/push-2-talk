@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
+type ReviewStatus = "needs_review" | "approved" | "rejected";
 
 export interface EvalDraftCase {
   audio_id: string;
@@ -11,6 +12,20 @@ export interface EvalDraftCase {
   expected_text: string;
   user_final_text: string;
   category: "real_history_draft" | "runtime_personalization_draft";
+  notes: string;
+  review_status: ReviewStatus;
+  review_notes: string;
+  diagnostics: null;
+}
+
+export interface FormalEvalCase {
+  audio_id: string;
+  audio_wav_path: string | null;
+  provider: string;
+  raw_asr_text: string;
+  expected_text: string;
+  user_final_text: string;
+  category: string;
   notes: string;
   diagnostics: null;
 }
@@ -28,6 +43,7 @@ export interface CliResult {
 interface CliArgs {
   historyPath?: string;
   diagnosticsPath?: string;
+  promotePath?: string;
   outPath: string;
   idPrefix: string;
   limit?: number;
@@ -73,6 +89,8 @@ export function buildDraftCasesFromHistory(input: unknown, options: DraftOptions
       user_final_text: expectedText,
       category: "real_history_draft",
       notes: `history draft: 需要人工确认 expected_text 后再移入正式 cases；history_id=${historyId}`,
+      review_status: "needs_review",
+      review_notes: "",
       diagnostics: null,
     });
 
@@ -127,6 +145,8 @@ export function buildDraftCasesFromRuntimeDiagnostics(
       user_final_text: expectedText,
       category: "runtime_personalization_draft",
       notes: `runtime diagnostic draft: 需要人工确认 expected_text 后再移入正式 cases；timestamp_ms=${timestamp}`,
+      review_status: "needs_review",
+      review_notes: "",
       diagnostics: null,
     });
 
@@ -138,8 +158,64 @@ export function buildDraftCasesFromRuntimeDiagnostics(
   return cases;
 }
 
+export function promoteReviewedDraftCases(input: unknown, options: DraftOptions = {}): FormalEvalCase[] {
+  const records = extractInputArray(input, ["drafts", "cases", "records"]);
+  const promoted: FormalEvalCase[] = [];
+  const seen = new Set<string>();
+
+  for (const value of records) {
+    if (!isRecord(value) || value.review_status !== "approved") {
+      continue;
+    }
+
+    const audioId = cleanText(value.audio_id);
+    const rawText = cleanText(value.raw_asr_text);
+    const expectedText = cleanText(value.expected_text);
+    if (!audioId || !rawText || !expectedText) {
+      continue;
+    }
+
+    const key = dedupeKey(rawText, expectedText);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    promoted.push({
+      audio_id: audioId,
+      audio_wav_path: cleanAudioPath(value.audio_wav_path),
+      provider: cleanText(value.provider) || "reviewed-draft",
+      raw_asr_text: rawText,
+      expected_text: expectedText,
+      user_final_text: cleanText(value.user_final_text) || expectedText,
+      category: cleanText(value.category) || "phase0b_reviewed",
+      notes: cleanText(value.notes) || "promoted from reviewed draft",
+      diagnostics: null,
+    });
+
+    if (options.limit !== undefined && promoted.length >= options.limit) {
+      break;
+    }
+  }
+
+  return promoted;
+}
+
 export async function runAsrEvalDraftCli(argv: string[]): Promise<CliResult> {
   const args = parseCliArgs(argv);
+  if (args.promotePath) {
+    const draftInput = await readJsonFile(args.promotePath);
+    const promoted = promoteReviewedDraftCases(draftInput, { limit: args.limit });
+    if (promoted.length === 0) {
+      throw new Error("没有可提升的 approved draft case");
+    }
+    await writeJsonOutput(args.outPath, promoted);
+    return {
+      count: promoted.length,
+      outPath: args.outPath,
+    };
+  }
+
   const cases: EvalDraftCase[] = [];
 
   if (args.historyPath) {
@@ -153,8 +229,7 @@ export async function runAsrEvalDraftCli(argv: string[]): Promise<CliResult> {
   }
 
   const deduped = applyLimit(dedupeCases(cases), args.limit);
-  await mkdir(dirname(args.outPath), { recursive: true });
-  await writeFile(args.outPath, `${JSON.stringify(deduped, null, 2)}\n`, "utf8");
+  await writeJsonOutput(args.outPath, deduped);
 
   return {
     count: deduped.length,
@@ -187,6 +262,7 @@ async function readJsonFile(path: string): Promise<unknown> {
 function parseCliArgs(argv: string[]): CliArgs {
   let historyPath: string | undefined;
   let diagnosticsPath: string | undefined;
+  let promotePath: string | undefined;
   let outPath: string | undefined;
   let idPrefix = DEFAULT_ID_PREFIX;
   let limit: number | undefined;
@@ -200,6 +276,10 @@ function parseCliArgs(argv: string[]): CliArgs {
         break;
       case "--diagnostics":
         diagnosticsPath = requiredValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--promote":
+        promotePath = requiredValue(argv, index, arg);
         index += 1;
         break;
       case "--out":
@@ -221,8 +301,11 @@ function parseCliArgs(argv: string[]): CliArgs {
     }
   }
 
-  if (!historyPath && !diagnosticsPath) {
-    throw new Error(`必须提供 --history 或 --diagnostics。\n\n${usage()}`);
+  if (promotePath && (historyPath || diagnosticsPath)) {
+    throw new Error("--promote 不能和 --history 或 --diagnostics 混用");
+  }
+  if (!promotePath && !historyPath && !diagnosticsPath) {
+    throw new Error(`必须提供 --history、--diagnostics 或 --promote。\n\n${usage()}`);
   }
   if (!outPath) {
     throw new Error(`必须提供 --out。\n\n${usage()}`);
@@ -231,6 +314,7 @@ function parseCliArgs(argv: string[]): CliArgs {
   return {
     historyPath,
     diagnosticsPath,
+    promotePath,
     outPath,
     idPrefix,
     limit,
@@ -258,6 +342,7 @@ function usage(): string {
     "Usage:",
     "  npx tsx scripts/asr-eval-draft.ts --history <history.json> --out tests/asr_eval/drafts/history.json",
     "  npx tsx scripts/asr-eval-draft.ts --diagnostics <file-or-dir> --out tests/asr_eval/drafts/diagnostics.json",
+    "  npx tsx scripts/asr-eval-draft.ts --promote tests/asr_eval/drafts/reviewed.json --out tests/asr_eval/cases/phase0b-real.json",
     "",
     "Options:",
     "  --prefix <id-prefix>  audio_id 前缀，默认 phase0b",
@@ -302,6 +387,11 @@ function applyLimit(cases: EvalDraftCase[], limit: number | undefined): EvalDraf
   return limit === undefined ? cases : cases.slice(0, limit);
 }
 
+async function writeJsonOutput(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
 function dedupeKey(rawText: string, expectedText: string): string {
   return `${rawText}\u0000${expectedText}`;
 }
@@ -318,6 +408,11 @@ function cleanText(value: unknown): string {
     return String(value);
   }
   return "";
+}
+
+function cleanAudioPath(value: unknown): string | null {
+  const text = cleanText(value);
+  return text || null;
 }
 
 function numberValue(value: unknown): number {

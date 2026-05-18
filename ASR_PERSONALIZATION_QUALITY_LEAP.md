@@ -147,7 +147,7 @@ flowchart LR
 
 1. **Phase 0A mini eval**：先收 15-30 条真实错误样本，跑通 case schema、runner、报告输出和诊断字段
 2. **Phase 0B 完整评测集**：从日常使用中扩展到 80-120 条真实错误样本
-3. **Phase 0B 样本入口（已完成第一刀）**：新增 `scripts/asr-eval-draft.ts`，可从导出的前端 history JSON 或 runtime personalization diagnostics JSON/目录生成 `tests/asr_eval/drafts/*.json` 形态的待人工复核草稿；草稿不会自动进入正式 `cases/`，避免未经确认的真实文本污染质量门槛
+3. **Phase 0B 样本入口（已完成两段式闭环）**：新增 `scripts/asr-eval-draft.ts`，可从导出的前端 history JSON 或 runtime personalization diagnostics JSON/目录生成 `tests/asr_eval/drafts/*.json` 形态的待人工复核草稿；新草稿默认 `review_status: "needs_review"`，人工确认后通过 `--promote` 只把 `review_status: "approved"` 的记录提升为正式 `cases/`，避免未经确认的真实文本污染质量门槛
 4. **分桶**：
    - 技术词（30%，如 `Claude Code / Cursor / Windsurf / TypeScript`）
    - 中英混合（25%，如 `调用 LLM 接口 / 部署到 Kubernetes`）
@@ -506,7 +506,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 剩余不阻塞闭环但属于增强项：
 
 - Phase 0B：扩展到 80-120 条真实错误样本
-- Phase 0B intake：已具备 history / runtime diagnostics 到 eval draft 的离线生成入口；下一步需要人工确认 draft 的 `expected_text` 后再提升为正式 case
+- Phase 0B intake：已具备 history / runtime diagnostics 到 eval draft 的离线生成入口，以及 approved-only promotion；下一步需要人工持续复核并扩充真实 case 数量
 - 完整 ConvertPipeline trait 化：当前为了降低风险仍由 `PersonalizationEngine` + `TnlEngine` 渐进承载
 - 助手路径的中置信候选云端仲裁已接入：助手语音指令会在发出 `assistant_turn_pending` 和调用主助手 LLM 前，复用同一套 bounded candidate arbiter 处理 TNL/个性化中置信候选，并将真实 LLM apply/reject 弱反馈写回 correction pair
 

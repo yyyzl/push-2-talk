@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   buildDraftCasesFromHistory,
   buildDraftCasesFromRuntimeDiagnostics,
+  promoteReviewedDraftCases,
   runAsrEvalDraftCli,
 } from "../scripts/asrEvalDraftCore";
 
@@ -58,6 +59,8 @@ test("history draft 只收成功的普通听写记录并去重", () => {
     user_final_text: "我打开 Claude Code",
     category: "real_history_draft",
     notes: "history draft: 需要人工确认 expected_text 后再移入正式 cases；history_id=h1",
+    review_status: "needs_review",
+    review_notes: "",
     diagnostics: null,
   });
 });
@@ -94,7 +97,55 @@ test("runtime diagnostics draft 只收 changed 或 applied 的记录", () => {
   assert.equal(cases[0].provider, "runtime-diagnostic-draft");
   assert.equal(cases[0].raw_asr_text, "我调用 open eye 接口");
   assert.equal(cases[0].expected_text, "我调用 OpenAI 接口");
+  assert.equal(cases[0].review_status, "needs_review");
   assert.match(cases[0].notes, /需要人工确认/);
+});
+
+test("promotion 只输出 approved draft 并去掉 draft-only 字段", () => {
+  const promoted = promoteReviewedDraftCases([
+    {
+      audio_id: "phase0b-history-001",
+      audio_wav_path: null,
+      provider: "history-draft",
+      raw_asr_text: "我打开 cloud code",
+      expected_text: "我打开 Claude Code",
+      user_final_text: "我打开 Claude Code",
+      category: "real_history_draft",
+      notes: "reviewed by user",
+      review_status: "approved",
+      review_notes: "确认正确",
+      diagnostics: null,
+    },
+    {
+      audio_id: "phase0b-history-002",
+      audio_wav_path: null,
+      provider: "history-draft",
+      raw_asr_text: "未复核",
+      expected_text: "未复核",
+      user_final_text: "未复核",
+      category: "real_history_draft",
+      notes: "not reviewed",
+      review_status: "needs_review",
+      review_notes: "",
+      diagnostics: null,
+    },
+  ]);
+
+  assert.deepEqual(promoted, [
+    {
+      audio_id: "phase0b-history-001",
+      audio_wav_path: null,
+      provider: "history-draft",
+      raw_asr_text: "我打开 cloud code",
+      expected_text: "我打开 Claude Code",
+      user_final_text: "我打开 Claude Code",
+      category: "real_history_draft",
+      notes: "reviewed by user",
+      diagnostics: null,
+    },
+  ]);
+  assert.equal("review_status" in promoted[0], false);
+  assert.equal("review_notes" in promoted[0], false);
 });
 
 test("CLI 可以读取 history 文件并写出 draft JSON", async () => {
@@ -181,4 +232,83 @@ test("CLI 可以读取 diagnostics 目录并忽略无关 JSON", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("CLI 可以提升 approved draft 到正式 case 输出", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "asr-promote-"));
+  try {
+    const draftPath = join(dir, "reviewed.json");
+    const outPath = join(dir, "cases", "phase0b.json");
+    await writeFile(
+      draftPath,
+      JSON.stringify([
+        {
+          audio_id: "phase0b-history-001",
+          audio_wav_path: null,
+          provider: "history-draft",
+          raw_asr_text: "打开 wind surf",
+          expected_text: "打开 Windsurf",
+          user_final_text: "打开 Windsurf",
+          category: "real_history_draft",
+          notes: "人工确认",
+          review_status: "approved",
+          review_notes: "OK",
+          diagnostics: null,
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runAsrEvalDraftCli(["--promote", draftPath, "--out", outPath]);
+
+    assert.equal(result.count, 1);
+    const written = JSON.parse(await readFile(outPath, "utf8"));
+    assert.equal(written[0].audio_id, "phase0b-history-001");
+    assert.equal("review_status" in written[0], false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI promotion 没有 approved case 时失败且不写空文件", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "asr-promote-empty-"));
+  try {
+    const draftPath = join(dir, "reviewed.json");
+    const outPath = join(dir, "cases", "phase0b.json");
+    await writeFile(
+      draftPath,
+      JSON.stringify([
+        {
+          audio_id: "phase0b-history-001",
+          raw_asr_text: "未复核",
+          expected_text: "未复核",
+          user_final_text: "未复核",
+          review_status: "needs_review",
+        },
+      ]),
+      "utf8",
+    );
+
+    await assert.rejects(
+      runAsrEvalDraftCli(["--promote", draftPath, "--out", outPath]),
+      /没有可提升的 approved draft case/,
+    );
+    await assert.rejects(readFile(outPath, "utf8"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI 不允许混用 promote 与 draft 输入", async () => {
+  await assert.rejects(
+    runAsrEvalDraftCli([
+      "--promote",
+      "reviewed.json",
+      "--history",
+      "history.json",
+      "--out",
+      "cases.json",
+    ]),
+    /--promote 不能和 --history 或 --diagnostics 混用/,
+  );
 });

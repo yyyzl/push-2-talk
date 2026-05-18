@@ -910,6 +910,7 @@ CLI:
 npx tsx scripts/asr-eval-draft.ts --history <history.json> --out tests/asr_eval/drafts/history.json
 npx tsx scripts/asr-eval-draft.ts --diagnostics <file-or-dir> --out tests/asr_eval/drafts/diagnostics.json
 npx tsx scripts/asr-eval-draft.ts --history <history.json> --diagnostics <file-or-dir> --out <draft.json> --prefix phase0b --limit 80
+npx tsx scripts/asr-eval-draft.ts --promote tests/asr_eval/drafts/reviewed.json --out tests/asr_eval/cases/phase0b-real.json
 ```
 
 Core helpers:
@@ -917,13 +918,16 @@ Core helpers:
 ```typescript
 buildDraftCasesFromHistory(input, options)
 buildDraftCasesFromRuntimeDiagnostics(input, options)
+promoteReviewedDraftCases(input, options)
 runAsrEvalDraftCli(argv)
 ```
 
 ### 3. Contracts
 
 - Output records must use the eval case field names: `audio_id`, `audio_wav_path`, `provider`, `raw_asr_text`, `expected_text`, `user_final_text`, `category`, `notes`, `diagnostics`.
+- Draft records must also include draft-only review fields: `review_status = "needs_review"` and `review_notes = ""`.
 - Draft files belong under `tests/asr_eval/drafts/` or another explicitly provided staging path, not under `tests/asr_eval/cases/`.
+- Formal case files belong under `tests/asr_eval/cases/` only after explicit promotion from reviewed drafts.
 - History input may be a JSON array or an object containing `records`, `history`, or `pushtotalk_history`.
 - History mapping:
   - include only `success = true` and `mode = "normal"` records by default,
@@ -939,36 +943,52 @@ runAsrEvalDraftCli(argv)
   - `provider = "runtime-diagnostic-draft"`,
   - `category = "runtime_personalization_draft"`.
 - Every draft `notes` value must clearly state that `expected_text` requires manual confirmation before moving into formal cases.
+- Promotion input may be a JSON array or an object containing `drafts`, `cases`, or `records`.
+- Promotion must include only draft records whose `review_status = "approved"`.
+- Promotion must skip approved records with empty `audio_id`, `raw_asr_text`, or `expected_text`.
+- Promotion output must strip draft-only fields such as `review_status` and `review_notes`; formal cases should contain only eval case fields.
 - Deduplicate by `raw_asr_text + expected_text`.
 - `--limit` limits final output count and must be a positive integer.
+- `--promote` is mutually exclusive with `--history` and `--diagnostics`.
 
 ### 4. Validation & Error Matrix
 
 | Condition | Expected behavior |
 |---|---|
-| `--history` and `--diagnostics` are both omitted | CLI returns an error and writes no output. |
+| `--history`, `--diagnostics`, and `--promote` are all omitted | CLI returns an error and writes no output. |
 | `--out` is omitted | CLI returns an error and writes no output. |
 | `--limit` is zero, negative, non-integer, or NaN | CLI returns an error and writes no output. |
+| `--promote` is combined with `--history` or `--diagnostics` | CLI returns an error and writes no output. |
 | History record is assistant mode or unsuccessful | Skip it. |
 | History record has empty `originalText` | Skip it. |
 | Runtime diagnostic has `changed = false` and `applied_count = 0` | Skip it. |
 | Runtime diagnostics directory has unrelated JSON files | Ignore files that do not match `personalization-*.json`. |
+| Draft record has `review_status = "needs_review"` or `"rejected"` | Do not promote it. |
+| Draft record has `review_status = "approved"` but missing required text fields | Skip it. |
+| Promotion finds no approved draft cases | CLI returns an error and does not write an empty formal case file. |
 | Duplicate raw/expected pairs appear across inputs | Keep the first draft case only. |
 
 ### 5. Good/Base/Bad Cases
 
-- Good: a successful normal history record `cloud code -> Claude Code` becomes one `history-draft` case with a manual-review note.
+- Good: a successful normal history record `cloud code -> Claude Code` becomes one `history-draft` case with `review_status = "needs_review"` and a manual-review note.
 - Good: a runtime diagnostic with `source_text = "open eye"` and `output_text = "OpenAI"` becomes one `runtime-diagnostic-draft` case.
+- Good: an approved reviewed draft promotes into a formal case and no longer contains `review_status` or `review_notes`.
 - Base: unchanged successful history can become a false-positive-guard draft, but still requires manual confirmation.
 - Bad: draft intake writes directly into `tests/asr_eval/cases/`.
+- Bad: `needs_review` or `rejected` drafts are promoted into formal cases.
 - Bad: assistant-mode or LLM-polishing output is treated as raw ASR correction evidence.
 - Bad: runtime diagnostics are assumed to represent the user's intended final text without review.
 
 ### 6. Tests Required
 
 - Unit test for history filtering, mapping, and deduplication.
+- Unit test that newly generated drafts carry `review_status = "needs_review"` and empty `review_notes`.
 - Unit test for runtime diagnostics filtering and mapping.
+- Unit test that promotion includes only `approved` drafts and strips draft-only fields.
 - CLI test proving `--history` + `--out` writes a valid draft JSON file.
+- CLI test proving `--promote` + `--out` writes a valid formal case JSON file.
+- CLI test proving promotion with no approved cases fails and writes no empty file.
+- CLI test proving `--promote` cannot be mixed with draft input flags.
 - Add diagnostics-directory tests when directory ordering or recursive import behavior changes.
 
 ### 7. Wrong vs Correct
@@ -977,12 +997,14 @@ runAsrEvalDraftCli(argv)
 
 ```powershell
 npx tsx scripts/asr-eval-draft.ts --history history.json --out tests/asr_eval/cases/real.json
+npx tsx scripts/asr-eval-draft.ts --promote tests/asr_eval/drafts/reviewed.json --history history.json --out tests/asr_eval/cases/real.json
 ```
 
 #### Correct
 
 ```powershell
 npx tsx scripts/asr-eval-draft.ts --history history.json --out tests/asr_eval/drafts/history-review.json
+npx tsx scripts/asr-eval-draft.ts --promote tests/asr_eval/drafts/history-review.json --out tests/asr_eval/cases/phase0b-real.json
 ```
 
 ---
