@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "Verify ConvertPipeline run-stage behavior preserves diagnostics, pass toggles, and scoring contracts."}
+{"file": ".trellis/tasks/05-18-phase-3-convert-pipeline-run-stage/research/current-state.md", "reason": "Review moved orchestration against documented risk notes."}
