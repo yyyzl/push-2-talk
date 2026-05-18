@@ -679,6 +679,10 @@ trait ConvertPass {
 struct ConvertPipeline {
     passes: Vec<Box<dyn ConvertPass>>,
 }
+
+impl ConvertPipeline {
+    fn run(&self, context: &ConvertContext<'_>) -> ConversionResult;
+}
 ```
 
 Compatibility API:
@@ -697,12 +701,13 @@ impl PersonalizationEngine {
 ### 3. Contracts
 
 - `PersonalizationEngine::convert` and `convert_with_technical_spans` remain the only production entry points for runtime personalization.
-- `PersonalizationEngine::collect_candidates` must delegate candidate collection to `ConvertPipeline`.
+- `PersonalizationEngine::convert_with_technical_spans` must build `SyllableLattice`, derive bounded windows once, create `ConvertContext`, and delegate the full conversion run to `ConvertPipeline::run`.
 - `ConvertPipeline::default()` must run passes in stable order: `exact_text` first, `syllable_match` second.
 - The pipeline must generate `SyllableLattice::windows(config.max_window_tokens)` once per conversion and pass the resulting windows through `ConvertContext`; passes must not re-tokenize ASR text.
 - `ExactTextPass` may only query exact `original_text` matches and must emit `MatchKind::ExactText`.
 - `SyllableMatchPass` may query English phonetic, Chinese fuzzy-pinyin, mixed, and alias keys, and must emit the corresponding non-exact `MatchKind`.
-- Candidate selection, overlap handling, rank sorting, output replacement, and `update_pass_applied_counts` remain outside individual passes in this skeleton.
+- `ConvertPipeline::run` owns candidate collection, rank sorting, threshold decisions, non-overlap selection, reverse-order byte replacement, and `update_pass_applied_counts`.
+- Individual `ConvertPass` implementations remain collect-only and must not mutate output text or decide final overlap resolution.
 - Disabled passes must still produce a `PassDiagnostics` summary with `enabled = false`, zero candidate count, and zero applied count.
 - Pass names remain serialized as `exact_text` and `syllable_match` for eval/runtime diagnostics compatibility.
 
@@ -714,6 +719,8 @@ impl PersonalizationEngine {
 | Exact and syllable paths can both recall the same pair/range | Exact pass remains preferred because it runs first and dedupe does not downgrade it. |
 | `enable_syllable_match_pass = false` | Exact pass still runs, syllable pass emits disabled summary and no phonetic/alias candidates. |
 | Input contains a `NamedEntity` span overlapping an alias candidate | Only syllable-match scoring can receive the bounded named-entity boost. |
+| A lower-ranked candidate overlaps the selected candidate | `ConvertPipeline::run` marks it `SkippedOverlap` and sets `blocked_by_pair_id`. |
+| Candidate `rank_score` is high but `score < apply_threshold` | Candidate remains `BelowApplyThreshold`; rank never bypasses threshold. |
 | Input is empty or whitespace | `PersonalizationEngine` returns default diagnostics and does not construct pass summaries. |
 
 ### 5. Good/Base/Bad Cases
@@ -721,12 +728,14 @@ impl PersonalizationEngine {
 - Good: adding a future pass means adding one `ConvertPass` implementation and placing it in `ConvertPipeline::default()` without touching selection/replacement logic.
 - Base: existing `PersonalizationEngine::convert("我打开 claud code")` still applies the same syllable-match candidate and reports the same pass summary names.
 - Bad: a pass directly mutates output text before global overlap selection.
+- Bad: `PersonalizationEngine` and `ConvertPipeline` both implement their own candidate sorting and replacement loops.
 - Bad: a new pass changes the serialized pass name used by eval metrics.
 - Bad: a pass calls `SyllableLattice::from_asr_text` or rebuilds windows independently.
 
 ### 6. Tests Required
 
 - Unit test: default pipeline pass order is stable.
+- Unit test: `ConvertPipeline::run` returns a complete `ConversionResult` with applied candidate and pass applied count.
 - Unit test: pass summaries remain present for enabled and disabled passes.
 - Unit test: disabling syllable pass preserves exact text fallback and skips phonetic/alias candidates.
 - Unit test: named-entity boost remains limited to syllable-match candidates.
@@ -751,8 +760,7 @@ for pass in passes {
 let lattice = SyllableLattice::from_asr_text(text);
 let windows = lattice.windows(config.max_window_tokens);
 let context = ConvertContext { windows: &windows, /* ... */ };
-let (candidates, summaries) = ConvertPipeline::default().collect_candidates(&context);
-select_non_overlapping_candidates(candidates, summaries);
+let conversion = ConvertPipeline::default().run(&context);
 ```
 
 ---

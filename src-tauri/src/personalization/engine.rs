@@ -137,66 +137,6 @@ impl PersonalizationEngine {
         }
 
         let lattice = SyllableLattice::from_asr_text(text);
-        let (mut candidates, mut pass_summaries) =
-            self.collect_candidates(&lattice, technical_spans);
-        candidates.sort_by(|a, b| {
-            let len_a = a.end.saturating_sub(a.start);
-            let len_b = b.end.saturating_sub(b.start);
-            len_b
-                .cmp(&len_a)
-                .then_with(|| b.rank_score.total_cmp(&a.rank_score))
-                .then_with(|| b.score.total_cmp(&a.score))
-                .then_with(|| a.start.cmp(&b.start))
-        });
-
-        let mut selected = Vec::new();
-        for candidate in &mut candidates {
-            if candidate.score < self.config.apply_threshold {
-                candidate.decision = CandidateDecision::BelowApplyThreshold;
-                continue;
-            }
-            if let Some(existing) = selected
-                .iter()
-                .find(|existing: &&ConversionCandidate| overlaps(existing, candidate))
-            {
-                candidate.decision = CandidateDecision::SkippedOverlap;
-                candidate.blocked_by_pair_id = Some(existing.pair_id.clone());
-                continue;
-            }
-            let mut applied = candidate.clone();
-            applied.applied = true;
-            applied.decision = CandidateDecision::Applied;
-            candidate.applied = true;
-            candidate.decision = CandidateDecision::Applied;
-            selected.push(applied);
-        }
-
-        selected.sort_by(|a, b| b.start.cmp(&a.start));
-        let mut output = text.to_string();
-        for candidate in &selected {
-            output.replace_range(candidate.start..candidate.end, &candidate.target);
-        }
-
-        selected.sort_by(|a, b| a.start.cmp(&b.start));
-        update_pass_applied_counts(&mut pass_summaries, &selected);
-
-        ConversionResult {
-            changed: output != text,
-            text: output,
-            diagnostics: ConversionDiagnostics {
-                candidates,
-                applied: selected,
-                pass_summaries,
-            },
-        }
-    }
-
-    fn collect_candidates(
-        &self,
-        lattice: &SyllableLattice,
-        technical_spans: &[Span],
-    ) -> (Vec<ConversionCandidate>, Vec<PassDiagnostics>) {
-        let pipeline = ConvertPipeline::default();
         let windows = lattice.windows(self.config.max_window_tokens);
         let context = ConvertContext {
             source_text: &lattice.source_text,
@@ -206,7 +146,7 @@ impl PersonalizationEngine {
             technical_spans,
         };
 
-        pipeline.collect_candidates(&context)
+        ConvertPipeline::default().run(&context)
     }
 }
 
@@ -243,6 +183,60 @@ impl Default for ConvertPipeline {
 }
 
 impl ConvertPipeline {
+    fn run(&self, context: &ConvertContext<'_>) -> ConversionResult {
+        let (mut candidates, mut pass_summaries) = self.collect_candidates(context);
+        candidates.sort_by(|a, b| {
+            let len_a = a.end.saturating_sub(a.start);
+            let len_b = b.end.saturating_sub(b.start);
+            len_b
+                .cmp(&len_a)
+                .then_with(|| b.rank_score.total_cmp(&a.rank_score))
+                .then_with(|| b.score.total_cmp(&a.score))
+                .then_with(|| a.start.cmp(&b.start))
+        });
+
+        let mut selected = Vec::new();
+        for candidate in &mut candidates {
+            if candidate.score < context.config.apply_threshold {
+                candidate.decision = CandidateDecision::BelowApplyThreshold;
+                continue;
+            }
+            if let Some(existing) = selected
+                .iter()
+                .find(|existing: &&ConversionCandidate| overlaps(existing, candidate))
+            {
+                candidate.decision = CandidateDecision::SkippedOverlap;
+                candidate.blocked_by_pair_id = Some(existing.pair_id.clone());
+                continue;
+            }
+            let mut applied = candidate.clone();
+            applied.applied = true;
+            applied.decision = CandidateDecision::Applied;
+            candidate.applied = true;
+            candidate.decision = CandidateDecision::Applied;
+            selected.push(applied);
+        }
+
+        selected.sort_by(|a, b| b.start.cmp(&a.start));
+        let mut output = context.source_text.to_string();
+        for candidate in &selected {
+            output.replace_range(candidate.start..candidate.end, &candidate.target);
+        }
+
+        selected.sort_by(|a, b| a.start.cmp(&b.start));
+        update_pass_applied_counts(&mut pass_summaries, &selected);
+
+        ConversionResult {
+            changed: output != context.source_text,
+            text: output,
+            diagnostics: ConversionDiagnostics {
+                candidates,
+                applied: selected,
+                pass_summaries,
+            },
+        }
+    }
+
     fn collect_candidates(
         &self,
         context: &ConvertContext<'_>,
@@ -1045,6 +1039,36 @@ mod tests {
             pipeline.pass_names(),
             vec![EXACT_TEXT_PASS, SYLLABLE_MATCH_PASS]
         );
+    }
+
+    #[test]
+    fn convert_pipeline_run_returns_complete_conversion_result() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let store = CorrectionPairStore::new(vec![pair]);
+        let config = PersonalizationEngineConfig::default();
+        let text = "我打开 cloud code";
+        let lattice = SyllableLattice::from_asr_text(text);
+        let windows = lattice.windows(config.max_window_tokens);
+        let context = ConvertContext {
+            source_text: &lattice.source_text,
+            windows: &windows,
+            store: &store,
+            config: &config,
+            technical_spans: &[],
+        };
+
+        let result = ConvertPipeline::default().run(&context);
+
+        assert_eq!(result.text, "我打开 Claude Code");
+        assert!(result.changed);
+        assert_eq!(result.diagnostics.applied.len(), 1);
+        assert_eq!(
+            result.diagnostics.applied[0].decision,
+            CandidateDecision::Applied
+        );
+        assert_eq!(pass_summary(&result, EXACT_TEXT_PASS).applied_count, 1);
     }
 
     #[test]
