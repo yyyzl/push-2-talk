@@ -1377,3 +1377,36 @@ Extracted personalization ConvertPipeline internals into a dedicated module whil
 ### Next Steps
 
 - None - task complete
+
+
+## Session 39: Phase 0B ASR eval readiness gate
+
+**Date**: 2026-05-18
+**Task**: Phase 0B ASR eval readiness gate
+**Branch**: `main`
+
+### Summary
+
+Added a TypeScript readiness gate that counts formal ASR eval cases, reports the current 26/80 mini-suite status, and prevents Phase 8 decisions from relying on the mini gate alone.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8dbb8e8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
