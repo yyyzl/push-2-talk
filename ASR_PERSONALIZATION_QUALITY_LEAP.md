@@ -148,7 +148,7 @@ flowchart LR
 1. **Phase 0A mini eval**：先收 15-30 条真实错误样本，跑通 case schema、runner、报告输出和诊断字段
 2. **Phase 0B 完整评测集**：从日常使用中扩展到 80-120 条真实错误样本
 3. **Phase 0B 样本入口（已完成两段式闭环）**：新增 `scripts/asr-eval-draft.ts`，可从导出的前端 history JSON 或 runtime personalization diagnostics JSON/目录生成 `tests/asr_eval/drafts/*.json` 形态的待人工复核草稿；新草稿默认 `review_status: "needs_review"`，人工确认后通过 `--promote` 只把 `review_status: "approved"` 的记录提升为正式 `cases/`，避免未经确认的真实文本污染质量门槛
-4. **Phase 0B readiness gate（已完成）**：新增 `scripts/asr-eval-readiness.ts`，默认检查正式 `tests/asr_eval/cases/` 是否达到 80 条门槛；当前 mini suite 为 26/80，会明确报告 not ready，并可用 `--json --out target/asr_eval_readiness/readiness.json` 落盘报告，防止把 mini gate 100% 误当成可启动 Phase 8 的充分证据
+4. **Phase 0B readiness gate（已完成）**：新增 `scripts/asr-eval-readiness.ts`，默认检查正式 `tests/asr_eval/cases/` 是否达到 80 条门槛；当前 mini suite 为 32/80，会明确报告 not ready，并可用 `--json --out target/asr_eval_readiness/readiness.json` 落盘报告，防止把 mini gate 100% 误当成可启动 Phase 8 的充分证据
 5. **分桶**：
    - 技术词（30%，如 `Claude Code / Cursor / Windsurf / TypeScript`）
    - 中英混合（25%，如 `调用 LLM 接口 / 部署到 Kubernetes`）
@@ -499,7 +499,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
 
 已完成 MVP 垂直闭环，不等同于完整 80-120 条真实样本评测集：
 
-1. **Phase 0**：`eval_asr`、26 条 mini eval、baseline report、schema v4 diagnostics、threshold/window sweep 已跑通
+1. **Phase 0**：`eval_asr`、32 条 mini eval、baseline report、schema v4 diagnostics、threshold/window sweep 已跑通
 2. **Phase 1**：CorrectionPairStore JSON 旁路存储、原子写入、生命周期字段、alias key、接受/拒绝/撤销/观察/LLM 仲裁反馈回写已接入
 3. **Phase 2**：SyllableLattice token window、英文音近、中文 fuzzy pinyin、mixed/alias key、跨句保护、窗口上限已接入
 4. **Phase 3**：ExactText 与 SyllableMatch 分级 pass、pass summary、运行时配置开关、普通听写中置信 LLM 仲裁与反馈回写已接入
@@ -526,6 +526,7 @@ v1 方案的 `PersonalizedRanker` 是一个综合打分函数（多个权重相�
    - `TnlEngine::new()` 默认使用 Conservative，并在 TNL 最早期执行清洗
    - 已接入 `TnlConfig.disfluency_mode`，普通听写和 AI 助手语音指令路径会按配置创建 `TnlEngine`
    - 已接入偏好设置页三档 UI 开关，前端通过 `patch_config_fields` 的 `tnlConfig.disfluencyMode` 字段级 patch 保存 Off/Conservative/Aggressive
+   - 已接入 ASR eval gate：`eval_asr --disfluency-mode off|conservative|aggressive` 默认 Conservative，case 可用 `disfluency_mode` 覆盖；`tests/asr_eval/cases/disfluency_mini.json` 覆盖 Conservative 清理、Aggressive 重复字/false start、`这个东西`/`嗯哼` 误删保护
 2. **三档模式**：
    ```rust
    pub enum DisfluencyMode {
@@ -744,11 +745,11 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 
 ### Phase 7 → Phase 8 评测门槛（2026-05-17）
 
-- 已完成 mini gate：当前 `tests/asr_eval` 26 条固定文本样本默认运行 26/26 通过，`final_accuracy = 100.00%`，`false_replacement_rate = 0.00%`，`pending_candidates = 0`，`p95_latency_ms = 1.110`。
-- 已完成 diagnostics 验证：`--diagnostics-out target/asr_eval_phase7_gate` 成功生成 schema v4 诊断，包含 `eval_config`、`metrics`、`quality_gate` 和 26 条 bounded case 明细。
+- 已完成 mini gate：当前 `tests/asr_eval` 32 条固定文本样本默认运行 32/32 通过，`final_accuracy = 100.00%`，`false_replacement_rate = 0.00%`，`pending_candidates = 0`，`p95_latency_ms` 仍远低于 30ms 门槛。
+- 已完成 diagnostics 验证：`--diagnostics-out target/asr_eval_phase7_gate` 成功生成 schema v4 诊断，包含 `eval_config`、`metrics`、`quality_gate` 和 bounded case 明细，并记录 `disfluency_mode`。
 - 已完成 sweep：`threshold = 0.88` 且 `window = 5` 通过；`window = 3` 退化到 24/26，说明当前窗口上限仍然必要；`threshold = 0.99` 退化到 16/26，说明过度保守阈值会吞掉音化候选收益。
 - 已完成 ablation：禁用 `syllable_match` 后退化到 16/26，说明当前 mini suite 中 10 条通过来自本地 syllable/window second-decoding，而不是上游 ASR 或 reranker。
-- 当前决策：不基于这组 mini gate 启动 Phase 8；`scripts/asr-eval-readiness.ts --suite tests/asr_eval --allow-not-ready --json --out target/asr_eval_readiness/readiness.json` 当前会报告 26/80、缺 54 条并可落盘 JSON 报告。下一次 Phase 8 决策应先补 Phase 0B 的 80-120 条真实 ASR 样本，再看残留失败是否集中在低频长尾或上下文歧义。
+- 当前决策：不基于这组 mini gate 启动 Phase 8；`scripts/asr-eval-readiness.ts --suite tests/asr_eval --allow-not-ready --json --out target/asr_eval_readiness/readiness.json` 当前会报告 32/80、缺 48 条并可落盘 JSON 报告。下一次 Phase 8 决策应先补 Phase 0B 的 80-120 条真实 ASR 样本，再看残留失败是否集中在低频长尾或上下文歧义。
 
 ---
 
@@ -760,7 +761,7 @@ Phase 1 已经建立了 correction pair 存储（MVP JSON 或稳定后的 SQLite
 
 ### 当前决策（2026-05-17）
 
-暂不启动。Phase 7 mini gate 已经在 26 条固定文本样本上达到 100% 通过，且无误替换、无 pending candidate；现有残留风险是样本规模不足，而不是 mini suite 已暴露出 reranker 能解决的问题。下一步应优先扩展 Phase 0B 真实样本集，再决定是否评估 ONNX reranker / 本地小 LLM / KenLM。
+暂不启动。Phase 7/Phase 4 mini gate 已经在 32 条固定文本样本上达到 100% 通过，且无误替换、无 pending candidate；现有残留风险是样本规模不足，而不是 mini suite 已暴露出 reranker 能解决的问题。下一步应优先扩展 Phase 0B 真实样本集，再决定是否评估 ONNX reranker / 本地小 LLM / KenLM。
 
 ### 候选方案
 

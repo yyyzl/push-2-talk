@@ -284,6 +284,10 @@ struct ConfigFieldPatch {
 - Preferences UI must save disfluency mode through `patch_config_fields` with payload `tnlConfig.disfluencyMode`; full `save_config` currently preserves `existing.tnl_config` and is not the source of truth for this lightweight switch.
 - `patch_config_fields` may update only the requested `config.tnl_config.disfluency_mode` field and must preserve other `TnlConfig` fields such as personalization pass toggles, window size, and threshold.
 - Disfluency cleaning runs before Unicode normalization, tokenization, technical span detection, spoken-symbol mapping, pinyin, hyphen rewrite, and phonetic dictionary replacement.
+- `eval_asr` must mirror the runtime ordering by applying disfluency cleaning to each `raw_asr_text` before calling `PersonalizationEngine::convert`.
+- `eval_asr --disfluency-mode off|conservative|aggressive` controls the default eval cleaner mode; the default must be `conservative`.
+- Individual ASR eval cases may set `disfluency_mode` to override the CLI default for targeted Off/Aggressive fixtures.
+- Eval diagnostics must record the top-level `eval_config.disfluency_mode` and each case's effective `disfluency_mode`.
 - `DisfluencyMode::Off` must return the input unchanged.
 - Conservative mode may remove only leading/isolated fillers:
   - filler chars: `嗯`, `啊`, `呃`, `唉`, `哎`, `诶`;
@@ -306,6 +310,10 @@ struct ConfigFieldPatch {
 | Aggressive, input `我我我想打开设置` | Return `我想打开设置`. |
 | Aggressive, input `嗯嗯嗯，我准备好了` | Return `我准备好了`. |
 | Aggressive, input `我，那个，今天开会` | Return `今天开会`. |
+| `eval_asr`, default mode, raw `嗯，我打开 cloud code` | Evaluate the cleaned text and return `我打开 Claude Code`. |
+| `eval_asr --disfluency-mode off`, same raw text | Keep leading `嗯，` before personalization; this case may fail a conservative expected-text fixture while the command still runs with `--allow-quality-gate-failure`. |
+| ASR eval case has `"disfluency_mode": "aggressive"` | Use Aggressive for that case even when the CLI default is Conservative. |
+| Eval diagnostics are written | Include `eval_config.disfluency_mode` and per-case effective `disfluency_mode`. |
 | TNL with dictionary `Claude`, input `嗯，我最近学习了他们的那个标准产品 cloud` | Return `我最近学习了他们的那个标准产品 Claude`. |
 | TNL with mode `Off`, dictionary `Claude`, same input | Return `嗯，我最近学习了他们的那个标准产品 Claude`. |
 | Config JSON `disfluency_mode: "off"` | Loads as `DisfluencyMode::Off`. |
@@ -329,6 +337,8 @@ struct ConfigFieldPatch {
 - Disfluency unit tests for Aggressive repeated-character and false-start cleanup.
 - TNL engine integration test proving disfluency runs before phonetic dictionary replacement.
 - TNL/config test proving `Off` mode keeps leading fillers while preserving later dictionary correction.
+- `cargo test --bin eval_asr` coverage for disfluency CLI parsing, default Conservative mode, per-case mode override, and diagnostics serialization.
+- ASR eval fixture coverage for Conservative cleanup, Aggressive cleanup, and false-positive preservation.
 - Config serde/default tests for legacy and explicit `disfluency_mode`.
 - Frontend runtime regression test proving `AppConfig.tnl_config`, `normalizeTnlConfig`, settings UI, event sync, and `tnlConfig.disfluencyMode` patch wiring remain present.
 - Backend patch deserialization test proving camelCase payload `tnlConfig.disfluencyMode` reaches `ConfigFieldPatch`.

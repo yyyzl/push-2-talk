@@ -1,5 +1,7 @@
 # ASR Phase 7 Gate 评测报告
 
+> 2026-05-18 更新：本文件主体保留 2026-05-17 的 Phase 7 历史快照。当 Phase 4 disfluency mini cases 接入后，当前 `tests/asr_eval` 已扩展到 32 条；默认 Conservative eval 运行 32/32 通过，readiness gate 为 32/80、缺 48 条。Phase 8 决策仍然不变：不要基于 mini suite 启动本地 reranker。
+
 ## 评测范围
 
 - 日期：2026-05-17
@@ -109,5 +111,5 @@ Diagnostics 文件已成功解析：
 ## 限制
 
 - 本报告使用固定文本 fixture，不是新的 provider audio transcript。
-- 当前 suite 仍是 26 条 case，所以这是 mini gate，不是完整 Phase 0B 正式评测。
+- 历史快照的 suite 是 26 条 case；当前 suite 已扩展到 32 条，但仍是 mini gate，不是完整 Phase 0B 正式评测。
 - 延迟值来自本地样本运行，只适合方向性比较。

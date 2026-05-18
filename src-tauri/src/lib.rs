@@ -16,6 +16,7 @@ mod learning;
 mod llm_post_processor;
 mod openai_client;
 pub mod personalization;
+pub use tnl::{clean_disfluency, DisfluencyMode, DisfluencyResult};
 mod pipeline;
 mod search;
 mod streaming_recorder;

@@ -3,6 +3,7 @@ use push_to_talk_lib::personalization::{
     CandidateDecision, ConversionCandidate, ConversionDiagnostics, CorrectionPairStore, MatchKind,
     PassDiagnostics, PersonalizationEngine, PersonalizationEngineConfig,
 };
+use push_to_talk_lib::{clean_disfluency, DisfluencyMode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -24,6 +25,7 @@ struct EvalArgs {
     disable_exact_text_pass: bool,
     disable_syllable_match_pass: bool,
     allow_quality_gate_failure: bool,
+    disfluency_mode: DisfluencyMode,
     apply_threshold: Option<f32>,
     max_window_tokens: Option<usize>,
     sweep_thresholds: Vec<f32>,
@@ -79,6 +81,7 @@ struct EvalRunConfig {
     apply_threshold: f32,
     max_window_tokens: usize,
     allow_quality_gate_failure: bool,
+    disfluency_mode: DisfluencyMode,
 }
 
 impl EvalRunConfig {
@@ -91,6 +94,7 @@ impl EvalRunConfig {
             apply_threshold: engine_config.apply_threshold,
             max_window_tokens: engine_config.max_window_tokens,
             allow_quality_gate_failure: args.allow_quality_gate_failure,
+            disfluency_mode: args.disfluency_mode,
         }
     }
 }
@@ -108,6 +112,8 @@ struct EvalCase {
     category: String,
     #[allow(dead_code)]
     notes: Option<String>,
+    #[serde(default)]
+    disfluency_mode: Option<DisfluencyMode>,
 }
 
 #[derive(Debug)]
@@ -118,6 +124,7 @@ struct CaseResult {
     applied_count: usize,
     decision_counts: CandidateDecisionCounts,
     local_latency_ms: f64,
+    effective_disfluency_mode: DisfluencyMode,
     diagnostics: ConversionDiagnostics,
 }
 
@@ -213,7 +220,7 @@ fn main() -> Result<()> {
 }
 
 fn run_single_eval(args: &EvalArgs, store: &CorrectionPairStore, cases: &[EvalCase]) -> Result<()> {
-    let results = evaluate_cases(store, cases, args.engine_config());
+    let results = evaluate_cases(store, cases, args.engine_config(), args.disfluency_mode);
     print_report(&results);
     if let Some(output_dir) = &args.diagnostics_out {
         let run_config = EvalRunConfig::from_args(args);
@@ -247,7 +254,7 @@ fn run_sweep(args: &EvalArgs, store: &CorrectionPairStore, cases: &[EvalCase]) -
             let mut config = args.engine_config();
             config.apply_threshold = apply_threshold;
             config.max_window_tokens = max_window_tokens;
-            let results = evaluate_cases(store, cases, config);
+            let results = evaluate_cases(store, cases, config, args.disfluency_mode);
             let metrics = compute_metrics(&results);
             let quality_gate = evaluate_quality_gates(&metrics);
             rows.push(SweepRow {
@@ -290,12 +297,15 @@ fn evaluate_cases(
     store: &CorrectionPairStore,
     cases: &[EvalCase],
     engine_config: PersonalizationEngineConfig,
+    default_disfluency_mode: DisfluencyMode,
 ) -> Vec<CaseResult> {
     let engine = PersonalizationEngine::with_config(store.clone(), engine_config);
     let mut results = Vec::with_capacity(cases.len());
     for case in cases.iter().cloned() {
         let started_at = Instant::now();
-        let conversion = engine.convert(&case.raw_asr_text);
+        let effective_disfluency_mode = case.disfluency_mode.unwrap_or(default_disfluency_mode);
+        let cleaned = clean_disfluency(&case.raw_asr_text, effective_disfluency_mode);
+        let conversion = engine.convert(&cleaned.text);
         let local_latency_ms = started_at.elapsed().as_secs_f64() * 1000.0;
         let passed = conversion.text == case.expected_text;
         results.push(CaseResult {
@@ -305,6 +315,7 @@ fn evaluate_cases(
             applied_count: conversion.diagnostics.applied.len(),
             decision_counts: count_candidate_decisions(&conversion.diagnostics.candidates),
             local_latency_ms,
+            effective_disfluency_mode,
             diagnostics: conversion.diagnostics,
         });
     }
@@ -322,6 +333,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
     let mut disable_exact_text_pass = false;
     let mut disable_syllable_match_pass = false;
     let mut allow_quality_gate_failure = false;
+    let mut disfluency_mode = DisfluencyMode::Conservative;
     let mut apply_threshold = None;
     let mut max_window_tokens = None;
     let mut sweep_thresholds = Vec::new();
@@ -350,6 +362,12 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
             }
             "--allow-quality-gate-failure" => {
                 allow_quality_gate_failure = true;
+            }
+            "--disfluency-mode" => {
+                let Some(value) = args.next() else {
+                    anyhow::bail!("--disfluency-mode 缺少模式参数");
+                };
+                disfluency_mode = parse_disfluency_mode(&value)?;
             }
             "--apply-threshold" => {
                 let Some(value) = args.next() else {
@@ -387,11 +405,21 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<EvalArgs> {
         disable_exact_text_pass,
         disable_syllable_match_pass,
         allow_quality_gate_failure,
+        disfluency_mode,
         apply_threshold,
         max_window_tokens,
         sweep_thresholds,
         sweep_window_tokens,
     })
+}
+
+fn parse_disfluency_mode(value: &str) -> Result<DisfluencyMode> {
+    match value {
+        "off" => Ok(DisfluencyMode::Off),
+        "conservative" => Ok(DisfluencyMode::Conservative),
+        "aggressive" => Ok(DisfluencyMode::Aggressive),
+        _ => anyhow::bail!("--disfluency-mode 必须是 off、conservative 或 aggressive: {value}"),
+    }
 }
 
 fn parse_apply_threshold(value: &str) -> Result<f32> {
@@ -940,6 +968,7 @@ struct EvalCaseDiagnostics {
     raw_asr_text: String,
     actual_text: String,
     expected_text: String,
+    disfluency_mode: DisfluencyMode,
     local_latency_ms: f64,
     candidate_count: usize,
     applied_count: usize,
@@ -958,6 +987,7 @@ impl EvalCaseDiagnostics {
             raw_asr_text: truncate_chars(&result.case.raw_asr_text, MAX_DIAGNOSTIC_TEXT_CHARS),
             actual_text: truncate_chars(&result.actual_text, MAX_DIAGNOSTIC_TEXT_CHARS),
             expected_text: truncate_chars(&result.case.expected_text, MAX_DIAGNOSTIC_TEXT_CHARS),
+            disfluency_mode: result.effective_disfluency_mode,
             local_latency_ms: result.local_latency_ms,
             candidate_count: result.diagnostics.candidates.len(),
             applied_count: result.diagnostics.applied.len(),
@@ -1246,6 +1276,8 @@ mod tests {
             "target/asr-diagnostics".to_string(),
             "--disable-syllable-match-pass".to_string(),
             "--allow-quality-gate-failure".to_string(),
+            "--disfluency-mode".to_string(),
+            "aggressive".to_string(),
             "--apply-threshold".to_string(),
             "0.75".to_string(),
             "--max-window-tokens".to_string(),
@@ -1260,6 +1292,7 @@ mod tests {
         );
         assert!(args.disable_syllable_match_pass);
         assert!(args.allow_quality_gate_failure);
+        assert_eq!(args.disfluency_mode, DisfluencyMode::Aggressive);
         let config = args.engine_config();
         assert!(config.enable_exact_text_pass);
         assert!(!config.enable_syllable_match_pass);
@@ -1274,6 +1307,7 @@ mod tests {
 
         assert!(args.disable_exact_text_pass);
         assert!(!args.engine_config().enable_exact_text_pass);
+        assert_eq!(args.disfluency_mode, DisfluencyMode::Conservative);
     }
 
     #[test]
@@ -1281,6 +1315,7 @@ mod tests {
         assert!(parse_args_from(["--apply-threshold".to_string(), "1.5".to_string(),]).is_err());
         assert!(parse_args_from(["--apply-threshold".to_string(), "nan".to_string(),]).is_err());
         assert!(parse_args_from(["--max-window-tokens".to_string(), "0".to_string(),]).is_err());
+        assert!(parse_args_from(["--disfluency-mode".to_string(), "fast".to_string(),]).is_err());
         assert!(parse_args_from([
             "--max-window-tokens".to_string(),
             (MAX_EVAL_WINDOW_TOKENS + 1).to_string(),
@@ -1301,6 +1336,58 @@ mod tests {
         assert!(args.is_sweep());
         assert_eq!(args.sweep_thresholds, vec![0.70, 0.88, 0.99]);
         assert_eq!(args.sweep_window_tokens, vec![2, 5]);
+    }
+
+    #[test]
+    fn evaluate_cases_applies_default_and_case_disfluency_modes() {
+        let mut cloud_pair = CorrectionPair::new("cloud-code", "cloud code", "Claude Code");
+        cloud_pair.source = "manual".to_string();
+        cloud_pair.confidence = 0.98;
+        let mut windsurf_pair = CorrectionPair::new("wind-surf", "wind surf", "Windsurf");
+        windsurf_pair.source = "manual".to_string();
+        windsurf_pair.confidence = 0.98;
+        let store = CorrectionPairStore::new(vec![cloud_pair, windsurf_pair]);
+        let cases = vec![
+            EvalCase {
+                audio_id: "default-conservative".to_string(),
+                audio_wav_path: None,
+                provider: "fixture".to_string(),
+                raw_asr_text: "嗯，我打开 cloud code".to_string(),
+                expected_text: "我打开 Claude Code".to_string(),
+                user_final_text: None,
+                category: "disfluency_cleanup".to_string(),
+                notes: None,
+                disfluency_mode: None,
+            },
+            EvalCase {
+                audio_id: "case-aggressive".to_string(),
+                audio_wav_path: None,
+                provider: "fixture".to_string(),
+                raw_asr_text: "我我我打开 wind surf".to_string(),
+                expected_text: "我打开 Windsurf".to_string(),
+                user_final_text: None,
+                category: "disfluency_cleanup".to_string(),
+                notes: None,
+                disfluency_mode: Some(DisfluencyMode::Aggressive),
+            },
+        ];
+
+        let results = evaluate_cases(
+            &store,
+            &cases,
+            PersonalizationEngineConfig::default(),
+            DisfluencyMode::Conservative,
+        );
+
+        assert!(results.iter().all(|result| result.passed));
+        assert_eq!(
+            results[0].effective_disfluency_mode,
+            DisfluencyMode::Conservative
+        );
+        assert_eq!(
+            results[1].effective_disfluency_mode,
+            DisfluencyMode::Aggressive
+        );
     }
 
     #[test]
@@ -1455,6 +1542,8 @@ mod tests {
             "tests/custom_eval".to_string(),
             "--disable-syllable-match-pass".to_string(),
             "--allow-quality-gate-failure".to_string(),
+            "--disfluency-mode".to_string(),
+            "off".to_string(),
             "--apply-threshold".to_string(),
             "0.75".to_string(),
             "--max-window-tokens".to_string(),
@@ -1480,6 +1569,8 @@ mod tests {
         assert_eq!(payload["eval_config"]["apply_threshold"], 0.75);
         assert_eq!(payload["eval_config"]["max_window_tokens"], 3);
         assert_eq!(payload["eval_config"]["allow_quality_gate_failure"], true);
+        assert_eq!(payload["eval_config"]["disfluency_mode"], "off");
+        assert_eq!(payload["cases"][0]["disfluency_mode"], "conservative");
     }
 
     fn case_result_with_counts(decision_counts: CandidateDecisionCounts) -> CaseResult {
@@ -1493,12 +1584,14 @@ mod tests {
                 user_final_text: None,
                 category: "test".to_string(),
                 notes: None,
+                disfluency_mode: None,
             },
             actual_text: "actual".to_string(),
             passed: false,
             applied_count: decision_counts.applied,
             decision_counts,
             local_latency_ms: 0.0,
+            effective_disfluency_mode: DisfluencyMode::Conservative,
             diagnostics: ConversionDiagnostics::default(),
         }
     }
@@ -1510,6 +1603,7 @@ mod tests {
             disable_exact_text_pass: false,
             disable_syllable_match_pass: false,
             allow_quality_gate_failure: false,
+            disfluency_mode: DisfluencyMode::Conservative,
             apply_threshold: None,
             max_window_tokens: None,
             sweep_thresholds: Vec::new(),
