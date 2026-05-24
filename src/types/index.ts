@@ -53,6 +53,12 @@ export interface AsrConfig {
 }
 
 // LLM 配置
+export type ReasoningEffort = "default" | "none" | "auto" | "low" | "medium" | "high" | "xhigh";
+
+export interface LlmReasoningConfig {
+  effort: ReasoningEffort;
+}
+
 export interface LlmPreset {
   id: string;
   name: string;
@@ -61,6 +67,8 @@ export interface LlmPreset {
   provider_id?: string;
   /** Per-preset model override. Invariant: requires `provider_id` to be set. */
   model?: string;
+  reasoning?: LlmReasoningConfig;
+  custom_body?: unknown;
 }
 
 // LLM 提供商配置
@@ -99,6 +107,8 @@ export interface LlmFeatureConfig {
   // 如果 use_shared=false，完全独立配置
   endpoint?: string;
   api_key?: string;
+  reasoning?: LlmReasoningConfig;
+  custom_body?: unknown;
 }
 
 export interface LlmConfig {
@@ -112,6 +122,8 @@ export interface LlmConfig {
 export interface AssistantConfig {
   enabled: boolean;
   llm: LlmFeatureConfig;
+  qa_llm?: LlmFeatureConfig;
+  text_processing_llm?: LlmFeatureConfig;
   qa_system_prompt: string;               // 问答模式提示词（无选中文本时）
   text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
   enable_web_search: boolean;

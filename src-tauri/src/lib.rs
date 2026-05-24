@@ -14,6 +14,7 @@ mod dictionary_utils;
 mod hotkey_service;
 mod learning;
 mod llm_post_processor;
+mod llm_reasoning;
 mod openai_client;
 pub mod personalization;
 pub use tnl::{clean_disfluency, DisfluencyMode, DisfluencyResult};
@@ -6293,6 +6294,8 @@ async fn test_llm_provider(
             ChatOptions {
                 max_tokens: 4,
                 temperature: 0.0,
+                reasoning: None,
+                custom_body: None,
             },
         )
         .await

@@ -16,12 +16,15 @@ import {
 } from "lucide-react";
 import type {
   AssistantConfig,
+  LlmFeatureConfig,
+  ReasoningEffort,
   SearchConfig,
   SearchProviderConfig,
   SearchProviderType,
   SharedLlmConfig,
 } from "../types";
 import { ApiKeyInput, LlmConnectionConfig } from "../components/common";
+import { ReasoningEffortSelect } from "../components/llm/ReasoningEffortSelect";
 import { useConfigSave, type ConfigSyncStatus } from "../contexts/ConfigSaveContext";
 import {
   isSearchProviderApiConfigured,
@@ -45,6 +48,17 @@ type SearchProviderTestState = {
   message?: string;
   resultCount?: number;
   latencyMs?: number;
+};
+
+const withReasoningEffort = (
+  config: LlmFeatureConfig | undefined,
+  effort: ReasoningEffort | undefined,
+): LlmFeatureConfig | undefined => {
+  if (!config && !effort) return undefined;
+  return {
+    ...(config ?? { use_shared: true }),
+    reasoning: effort ? { effort } : undefined,
+  };
 };
 
 export function AssistantPage({
@@ -442,6 +456,18 @@ export function AssistantPage({
         <div className="space-y-4">
           <h4 className="text-sm font-bold text-stone-700">问答模式提示词</h4>
           <p className="text-xs text-stone-500">无选中文本时，用于回答问题。</p>
+          <ReasoningEffortSelect
+            value={assistantConfig.qa_llm?.reasoning?.effort}
+            disabled={isRunning}
+            label="问答思考模式"
+            description="默认表示沿用旧行为；复杂问答可选择中/高，日常问答可保持默认。"
+            onChange={(effort) =>
+              setAssistantConfig((prev) => ({
+                ...prev,
+                qa_llm: withReasoningEffort(prev.qa_llm, effort),
+              }))
+            }
+          />
           <textarea
             value={assistantConfig.qa_system_prompt}
             disabled={isRunning}
@@ -454,6 +480,18 @@ export function AssistantPage({
         <div className="space-y-4">
           <h4 className="text-sm font-bold text-stone-700">文本处理提示词</h4>
           <p className="text-xs text-stone-500">有选中文本时，用于翻译、润色、总结等。</p>
+          <ReasoningEffortSelect
+            value={assistantConfig.text_processing_llm?.reasoning?.effort}
+            disabled={isRunning}
+            label="文本处理思考模式"
+            description="润色、翻译、总结通常建议关闭思考；默认表示沿用旧行为。"
+            onChange={(effort) =>
+              setAssistantConfig((prev) => ({
+                ...prev,
+                text_processing_llm: withReasoningEffort(prev.text_processing_llm, effort),
+              }))
+            }
+          />
           <textarea
             value={assistantConfig.text_processing_system_prompt}
             disabled={isRunning}

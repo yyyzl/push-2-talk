@@ -744,6 +744,29 @@ pub struct LlmPreset {
     /// Migration 9 cleans up violations on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<LlmReasoningConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_body: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    #[default]
+    Default,
+    None,
+    Auto,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LlmReasoningConfig {
+    #[serde(default)]
+    pub effort: ReasoningEffort,
 }
 
 // ============================================================================
@@ -877,6 +900,10 @@ pub struct LlmFeatureConfig {
     /// 模型覆盖（共享模式或独立模式都可用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<LlmReasoningConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_body: Option<serde_json::Value>,
 }
 
 impl Default for LlmFeatureConfig {
@@ -887,6 +914,8 @@ impl Default for LlmFeatureConfig {
             endpoint: None,
             api_key: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         }
     }
 }
@@ -902,6 +931,14 @@ pub struct ResolvedLlmClientConfig {
 }
 
 impl LlmFeatureConfig {
+    fn has_connection_override(&self) -> bool {
+        !self.use_shared
+            || self.provider_id.is_some()
+            || self.endpoint.is_some()
+            || self.api_key.is_some()
+            || self.model.is_some()
+    }
+
     /// 解析配置：根据 use_shared 决定使用共享配置还是独立配置
     pub fn resolve(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
         self.resolve_with_feature(shared, "")
@@ -1136,6 +1173,8 @@ fn default_presets() -> Vec<LlmPreset> {
             system_prompt: "你是一个语音转写润色助手。请在不改变原意的前提下：1）删除重复或意义相近的句子；2）合并同一主题的内容；3）去除「嗯」「啊」等口头禅；4）保留数字与关键信息；5）相关数字和时间不要使用中文；6）整理成自然的段落。输出纯文本即可。".to_string(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         },
         LlmPreset {
             id: "translation".to_string(),
@@ -1143,6 +1182,8 @@ fn default_presets() -> Vec<LlmPreset> {
             system_prompt: "你是一个专业的翻译助手。请将用户的中文语音转写内容翻译成地道、流畅的英文。不要输出任何解释性文字，只输出翻译结果。".to_string(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         }
     ]
 }
@@ -1225,6 +1266,10 @@ pub struct AssistantConfig {
     /// LLM 配置（使用共享或独立）
     #[serde(default)]
     pub llm: LlmFeatureConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa_llm: Option<LlmFeatureConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_processing_llm: Option<LlmFeatureConfig>,
     /// 问答模式系统提示词（无选中文本时使用）
     #[serde(default = "default_assistant_qa_prompt")]
     pub qa_system_prompt: String,
@@ -1349,6 +1394,8 @@ impl Default for AssistantConfig {
         Self {
             enabled: false,
             llm: LlmFeatureConfig::default(),
+            qa_llm: None,
+            text_processing_llm: None,
             qa_system_prompt: default_assistant_qa_prompt(),
             text_processing_system_prompt: default_assistant_text_processing_prompt(),
             enable_web_search: false,
@@ -1378,14 +1425,45 @@ impl SmartCommandConfig {
 }
 
 impl AssistantConfig {
-    /// 解析 LLM 配置
-    pub fn resolve_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
-        self.llm.resolve_with_feature(shared, "assistant")
+    fn merge_mode_llm_config(&self, mode_config: Option<&LlmFeatureConfig>) -> LlmFeatureConfig {
+        let Some(mode_config) = mode_config else {
+            return self.llm.clone();
+        };
+
+        if mode_config.has_connection_override() {
+            return mode_config.clone();
+        }
+
+        let mut merged = self.llm.clone();
+        merged.reasoning = mode_config.reasoning.clone();
+        merged.custom_body = mode_config.custom_body.clone();
+        merged
+    }
+
+    pub fn qa_feature_config(&self) -> LlmFeatureConfig {
+        self.merge_mode_llm_config(self.qa_llm.as_ref())
+    }
+
+    pub fn text_processing_feature_config(&self) -> LlmFeatureConfig {
+        self.merge_mode_llm_config(self.text_processing_llm.as_ref())
+    }
+
+    pub fn resolve_qa_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
+        self.qa_feature_config()
+            .resolve_with_feature(shared, "assistant")
+    }
+
+    pub fn resolve_text_processing_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
+        self.text_processing_feature_config()
+            .resolve_with_feature(shared, "assistant")
     }
 
     /// 检查配置是否有效（结合共享配置）
     pub fn is_valid_with_shared(&self, shared: &SharedLlmConfig) -> bool {
-        self.llm.is_valid_with_shared(shared)
+        self.qa_feature_config().is_valid_with_shared(shared)
+            && self
+                .text_processing_feature_config()
+                .is_valid_with_shared(shared)
     }
 }
 
@@ -1676,7 +1754,11 @@ impl AppConfig {
                             endpoint: Some(config.smart_command_config.endpoint.clone()),
                             model: Some(config.smart_command_config.model.clone()),
                             api_key: Some(config.smart_command_config.api_key.clone()),
+                            reasoning: None,
+                            custom_body: None,
                         },
+                        qa_llm: None,
+                        text_processing_llm: None,
                         qa_system_prompt: config.smart_command_config.system_prompt.clone(),
                         text_processing_system_prompt: default_assistant_text_processing_prompt(),
                         enable_web_search: false,
@@ -2000,8 +2082,8 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, AsrConfig, AsrLanguageMode, AssistantConfig, LlmConfig, LlmPreset, SearchConfig,
-        TnlConfig,
+        AppConfig, AsrConfig, AsrLanguageMode, AssistantConfig, LlmConfig, LlmFeatureConfig,
+        LlmPreset, LlmReasoningConfig, ReasoningEffort, SearchConfig, SharedLlmConfig, TnlConfig,
     };
 
     #[test]
@@ -2027,6 +2109,80 @@ mod tests {
         assert!(!cfg.enable_web_search);
         assert_eq!(cfg.web_search_max_loops, 3);
         assert!(!cfg.web_search_in_text_mode);
+    }
+
+    #[test]
+    fn assistant_reasoning_override_preserves_base_independent_connection() {
+        let mut cfg = AssistantConfig::default();
+        cfg.llm = LlmFeatureConfig {
+            use_shared: false,
+            provider_id: None,
+            endpoint: Some("https://assistant.example.com/v1".to_string()),
+            api_key: Some("assistant-key".to_string()),
+            model: Some("assistant-model".to_string()),
+            reasoning: None,
+            custom_body: None,
+        };
+        cfg.qa_llm = Some(LlmFeatureConfig {
+            reasoning: Some(LlmReasoningConfig {
+                effort: ReasoningEffort::High,
+            }),
+            ..LlmFeatureConfig::default()
+        });
+
+        let resolved = cfg.resolve_qa_llm(&SharedLlmConfig::default());
+        let qa_config = cfg.qa_feature_config();
+
+        assert_eq!(
+            resolved.endpoint,
+            "https://assistant.example.com/v1/chat/completions"
+        );
+        assert_eq!(resolved.api_key, "assistant-key");
+        assert_eq!(resolved.model, "assistant-model");
+        assert_eq!(
+            qa_config.reasoning.expect("reasoning override").effort,
+            ReasoningEffort::High
+        );
+        assert!(cfg.is_valid_with_shared(&SharedLlmConfig::default()));
+    }
+
+    #[test]
+    fn assistant_mode_connection_override_replaces_base_connection_when_explicit() {
+        let mut cfg = AssistantConfig::default();
+        cfg.llm = LlmFeatureConfig {
+            use_shared: false,
+            provider_id: None,
+            endpoint: Some("https://base.example.com/v1".to_string()),
+            api_key: Some("base-key".to_string()),
+            model: Some("base-model".to_string()),
+            reasoning: None,
+            custom_body: None,
+        };
+        cfg.text_processing_llm = Some(LlmFeatureConfig {
+            use_shared: false,
+            provider_id: None,
+            endpoint: Some("https://text.example.com/v1".to_string()),
+            api_key: Some("text-key".to_string()),
+            model: Some("text-model".to_string()),
+            reasoning: Some(LlmReasoningConfig {
+                effort: ReasoningEffort::None,
+            }),
+            custom_body: None,
+        });
+
+        let resolved = cfg.resolve_text_processing_llm(&SharedLlmConfig::default());
+        let text_config = cfg.text_processing_feature_config();
+
+        assert_eq!(
+            resolved.endpoint,
+            "https://text.example.com/v1/chat/completions"
+        );
+        assert_eq!(resolved.api_key, "text-key");
+        assert_eq!(resolved.model, "text-model");
+        assert_eq!(
+            text_config.reasoning.expect("reasoning override").effort,
+            ReasoningEffort::None
+        );
     }
 
     #[test]
@@ -2142,6 +2298,8 @@ mod tests {
                 system_prompt: String::new(),
                 provider_id: Some("some-provider".to_string()),
                 model: Some("some-model".to_string()),
+                reasoning: None,
+                custom_body: None,
             },
             LlmPreset {
                 id: "p2".to_string(),
@@ -2149,6 +2307,8 @@ mod tests {
                 system_prompt: String::new(),
                 provider_id: None, // ← violates invariant
                 model: Some("orphan-model".to_string()),
+                reasoning: None,
+                custom_body: None,
             },
             LlmPreset {
                 id: "p3".to_string(),
@@ -2156,6 +2316,8 @@ mod tests {
                 system_prompt: String::new(),
                 provider_id: None,
                 model: None,
+                reasoning: None,
+                custom_body: None,
             },
         ];
 
@@ -2184,6 +2346,8 @@ mod tests {
             system_prompt: String::new(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         }];
 
         let cleaned = llm.cleanup_preset_state_invariant();
@@ -2222,6 +2386,8 @@ mod tests {
             system_prompt: "prompt".to_string(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         };
 
         let json = serde_json::to_string(&preset).expect("序列化必须成功");
@@ -2250,6 +2416,8 @@ mod tests {
             system_prompt: "prompt".to_string(),
             provider_id: Some("prov-1".to_string()),
             model: Some("m1".to_string()),
+            reasoning: None,
+            custom_body: None,
         };
 
         let json = serde_json::to_string(&preset).expect("序列化必须成功");

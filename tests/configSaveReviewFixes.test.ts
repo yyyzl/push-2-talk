@@ -366,7 +366,7 @@ test("A13: 搜索达到轮数上限后应强制基于已有结果生成最终回
   );
   assert.match(
     source,
-    /\.chat_stream\([\s\S]*&messages,[\s\S]*ChatOptions::for_smart_command\(\),[\s\S]*None,[\s\S]*cancel_token\.clone\(\),/,
+    /\.chat_stream\([\s\S]*&messages,[\s\S]*self\.options_for_prompt_mode\(prompt_mode\),[\s\S]*None,[\s\S]*cancel_token\.clone\(\),/,
   );
   assert.doesNotMatch(
     source,

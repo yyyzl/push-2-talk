@@ -13,6 +13,9 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::LlmReasoningConfig;
+use crate::llm_reasoning::merge_request_options;
+
 // ============================================================================
 // 消息类型定义
 // ============================================================================
@@ -192,6 +195,8 @@ pub struct ChatOptions {
     /// 温度参数（0.0-1.0，越低越确定）
     /// 使用 f64 避免浮点精度问题（f32 的 0.3 会变成 0.30000001192092896）
     pub temperature: f64,
+    pub reasoning: Option<LlmReasoningConfig>,
+    pub custom_body: Option<Value>,
 }
 
 impl Default for ChatOptions {
@@ -199,6 +204,8 @@ impl Default for ChatOptions {
         Self {
             max_tokens: 1024,
             temperature: 0.3,
+            reasoning: None,
+            custom_body: None,
         }
     }
 }
@@ -209,6 +216,8 @@ impl ChatOptions {
         Self {
             max_tokens: 2048, // 使用与 Smart Command 相同的值，避免 API 兼容性问题
             temperature: 0.7,
+            reasoning: None,
+            custom_body: None,
         }
     }
 
@@ -217,6 +226,8 @@ impl ChatOptions {
         Self {
             max_tokens: 2048,
             temperature: 0.5,
+            reasoning: None,
+            custom_body: None,
         }
     }
 
@@ -225,6 +236,8 @@ impl ChatOptions {
         Self {
             max_tokens: 256,
             temperature: 0.1,
+            reasoning: None,
+            custom_body: None,
         }
     }
 }
@@ -321,12 +334,19 @@ impl OpenAiClient {
         // 构建 OpenAI 兼容格式的消息
         let messages_json: Vec<Value> = messages.iter().map(Message::to_openai_json).collect();
 
-        let request_body = serde_json::json!({
+        let mut request_body = serde_json::json!({
             "model": self.config.model,
             "messages": messages_json,
             "max_tokens": options.max_tokens,
             "temperature": options.temperature
         });
+
+        merge_request_options(
+            &mut request_body,
+            &self.config.model,
+            options.reasoning.as_ref(),
+            options.custom_body.as_ref(),
+        );
 
         // 打印完整请求信息用于调试
         tracing::info!(
@@ -426,6 +446,13 @@ impl OpenAiClient {
                 request_body["tool_choice"] = Value::String("auto".to_string());
             }
         }
+
+        merge_request_options(
+            &mut request_body,
+            &self.config.model,
+            options.reasoning.as_ref(),
+            options.custom_body.as_ref(),
+        );
 
         tracing::info!(
             "[DEBUG] OpenAI stream 请求: endpoint={}, model={}, api_key_len={}, max_tokens={}, temperature={}",

@@ -96,8 +96,12 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
     provider_id: undefined,
     model: undefined,
     endpoint: undefined,
-    api_key: undefined
+    api_key: undefined,
+    reasoning: undefined,
+    custom_body: undefined
   },
+  qa_llm: undefined,
+  text_processing_llm: undefined,
   qa_system_prompt: `你是一个智能语音助手。用户会通过语音向你提问，你需要：
 1. 理解用户的问题
 2. 给出简洁、准确、有用的回答

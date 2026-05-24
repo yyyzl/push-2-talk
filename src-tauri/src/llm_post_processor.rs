@@ -117,7 +117,19 @@ impl LlmPostProcessor {
             .find(|p| p.id == config.active_preset_id)
         {
             preset.system_prompt.hash(&mut hasher);
+            serde_json::to_string(&preset.reasoning)
+                .unwrap_or_default()
+                .hash(&mut hasher);
+            serde_json::to_string(&preset.custom_body)
+                .unwrap_or_default()
+                .hash(&mut hasher);
         }
+        serde_json::to_string(&config.feature_override.reasoning)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+        serde_json::to_string(&config.feature_override.custom_body)
+            .unwrap_or_default()
+            .hash(&mut hasher);
         hasher.finish()
     }
 
@@ -135,6 +147,22 @@ impl LlmPostProcessor {
             .find(|p| p.id == self.config.active_preset_id)
             .map(|p| p.system_prompt.clone())
             .unwrap_or_else(|| "You are a helpful assistant.".to_string())
+    }
+
+    fn active_chat_options(&self) -> ChatOptions {
+        let preset = self
+            .config
+            .presets
+            .iter()
+            .find(|p| p.id == self.config.active_preset_id);
+        let mut options = ChatOptions::for_polishing();
+        options.reasoning = preset
+            .and_then(|p| p.reasoning.clone())
+            .or_else(|| self.config.feature_override.reasoning.clone());
+        options.custom_body = preset
+            .and_then(|p| p.custom_body.clone())
+            .or_else(|| self.config.feature_override.custom_body.clone());
+        options
     }
 
     fn build_user_message(
@@ -548,7 +576,7 @@ impl LlmPostProcessor {
             Self::build_user_message(raw_text, dictionary, enable_dictionary_enhancement);
 
         self.client
-            .chat_simple(&system_prompt, &user_message, ChatOptions::for_polishing())
+            .chat_simple(&system_prompt, &user_message, self.active_chat_options())
             .await
     }
 }
@@ -580,6 +608,8 @@ mod tests {
                 system_prompt: "You are a test assistant.".to_string(),
                 provider_id: None,
                 model: None,
+                reasoning: None,
+                custom_body: None,
             }],
             active_preset_id: "test".to_string(),
         }
@@ -843,6 +873,8 @@ mod tests {
                     system_prompt: "default prompt".to_string(),
                     provider_id: None,
                     model: None,
+                    reasoning: None,
+                    custom_body: None,
                 },
                 LlmPreset {
                     id: "p-override".to_string(),
@@ -850,6 +882,8 @@ mod tests {
                     system_prompt: "override prompt".to_string(),
                     provider_id: Some("prov-strong".to_string()),
                     model: None,
+                    reasoning: None,
+                    custom_body: None,
                 },
             ],
             active_preset_id: "p-default".to_string(),

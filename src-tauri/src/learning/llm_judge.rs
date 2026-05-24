@@ -166,6 +166,8 @@ impl LlmJudge {
         let options = ChatOptions {
             max_tokens: 256,
             temperature: 0.1,
+            reasoning: None,
+            custom_body: None,
         };
 
         // 5 秒超时（适应更长的 Few-Shot prompt）

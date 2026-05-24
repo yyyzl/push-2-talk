@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{AssistantConfig, SearchConfig, SharedLlmConfig};
+use crate::config::{AssistantConfig, LlmFeatureConfig, SearchConfig, SharedLlmConfig};
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::openai_client::{
     ChatOptions, Message, OpenAiClient, OpenAiClientConfig, StreamChunk, ToolCall, ToolDefinition,
@@ -25,11 +25,14 @@ use crate::{ConversationTurn, PromptMode};
 /// 根据是否有上下文（选中文本）使用不同的系统提示词
 #[derive(Clone)]
 pub struct AssistantProcessor {
-    client: OpenAiClient,
+    qa_client: OpenAiClient,
+    text_processing_client: OpenAiClient,
     /// 问答模式系统提示词（无选中文本时使用）
     qa_system_prompt: String,
     /// 文本处理模式系统提示词（有选中文本时使用）
     text_processing_system_prompt: String,
+    qa_options: ChatOptions,
+    text_processing_options: ChatOptions,
     enable_web_search: bool,
     web_search_max_loops: u32,
     web_search_in_text_mode: bool,
@@ -77,19 +80,52 @@ impl AssistantProcessor {
 
     /// 创建新的 AI 助手处理器实例
     pub fn new(config: AssistantConfig, shared: &SharedLlmConfig) -> Self {
-        let resolved = config.resolve_llm(shared);
-        let client_config =
-            OpenAiClientConfig::new(&resolved.endpoint, &resolved.api_key, &resolved.model)
-                .with_timeout_secs(Self::ASSISTANT_TIMEOUT_SECS);
-        let client = OpenAiClient::new(client_config);
+        let qa_resolved = config.resolve_qa_llm(shared);
+        let qa_client = OpenAiClient::new(
+            OpenAiClientConfig::new(
+                &qa_resolved.endpoint,
+                &qa_resolved.api_key,
+                &qa_resolved.model,
+            )
+            .with_timeout_secs(Self::ASSISTANT_TIMEOUT_SECS),
+        );
+        let text_resolved = config.resolve_text_processing_llm(shared);
+        let text_processing_client = OpenAiClient::new(
+            OpenAiClientConfig::new(
+                &text_resolved.endpoint,
+                &text_resolved.api_key,
+                &text_resolved.model,
+            )
+            .with_timeout_secs(Self::ASSISTANT_TIMEOUT_SECS),
+        );
+        let qa_options = feature_chat_options(&config.qa_feature_config());
+        let text_processing_options =
+            feature_chat_options(&config.text_processing_feature_config());
 
         Self {
-            client,
+            qa_client,
+            text_processing_client,
             qa_system_prompt: config.qa_system_prompt,
             text_processing_system_prompt: config.text_processing_system_prompt,
+            qa_options,
+            text_processing_options,
             enable_web_search: config.enable_web_search,
             web_search_max_loops: config.web_search_max_loops,
             web_search_in_text_mode: config.web_search_in_text_mode,
+        }
+    }
+
+    fn client_for_prompt_mode(&self, prompt_mode: &PromptMode) -> &OpenAiClient {
+        match prompt_mode {
+            PromptMode::QA => &self.qa_client,
+            PromptMode::TextProcessing => &self.text_processing_client,
+        }
+    }
+
+    fn options_for_prompt_mode(&self, prompt_mode: &PromptMode) -> ChatOptions {
+        match prompt_mode {
+            PromptMode::QA => self.qa_options.clone(),
+            PromptMode::TextProcessing => self.text_processing_options.clone(),
         }
     }
 
@@ -107,12 +143,8 @@ impl AssistantProcessor {
 
         tracing::info!("AssistantProcessor: 问答模式处理指令: {}", user_input);
 
-        self.client
-            .chat_simple(
-                &self.qa_system_prompt,
-                user_input,
-                ChatOptions::for_smart_command(),
-            )
+        self.qa_client
+            .chat_simple(&self.qa_system_prompt, user_input, self.qa_options.clone())
             .await
     }
 
@@ -145,11 +177,11 @@ impl AssistantProcessor {
             selected_text, user_instruction
         );
 
-        self.client
+        self.text_processing_client
             .chat_simple(
                 &self.text_processing_system_prompt,
                 &user_message,
-                ChatOptions::for_smart_command(),
+                self.text_processing_options.clone(),
             )
             .await
     }
@@ -160,8 +192,12 @@ impl AssistantProcessor {
         text: &str,
         diagnostics: TnlDiagnostics,
     ) -> Result<TnlCandidateArbitrationResult> {
-        LlmPostProcessor::arbitrate_tnl_candidates_with_client(&self.client, text, diagnostics)
-            .await
+        LlmPostProcessor::arbitrate_tnl_candidates_with_client(
+            &self.text_processing_client,
+            text,
+            diagnostics,
+        )
+        .await
     }
 
     /// 多轮对话追问处理
@@ -201,8 +237,8 @@ impl AssistantProcessor {
             prompt_mode,
         );
 
-        self.client
-            .chat(&messages, ChatOptions::for_smart_command())
+        self.client_for_prompt_mode(prompt_mode)
+            .chat(&messages, self.options_for_prompt_mode(prompt_mode))
             .await
     }
 
@@ -296,10 +332,10 @@ impl AssistantProcessor {
             loop_round += 1;
             let mut streamed_content = String::new();
             let response = self
-                .client
+                .client_for_prompt_mode(prompt_mode)
                 .chat_stream(
                     &messages,
-                    ChatOptions::for_smart_command(),
+                    self.options_for_prompt_mode(prompt_mode),
                     tools.clone(),
                     cancel_token.clone(),
                     |chunk: StreamChunk| {
@@ -349,10 +385,10 @@ impl AssistantProcessor {
 
                 let mut streamed_content = String::new();
                 let response = self
-                    .client
+                    .client_for_prompt_mode(prompt_mode)
                     .chat_stream(
                         &messages,
-                        ChatOptions::for_smart_command(),
+                        self.options_for_prompt_mode(prompt_mode),
                         None,
                         cancel_token.clone(),
                         |chunk: StreamChunk| {
@@ -468,6 +504,13 @@ impl AssistantProcessor {
 
         true
     }
+}
+
+fn feature_chat_options(config: &LlmFeatureConfig) -> ChatOptions {
+    let mut options = ChatOptions::for_smart_command();
+    options.reasoning = config.reasoning.clone();
+    options.custom_body = config.custom_body.clone();
+    options
 }
 
 // ================== 多轮对话纯函数 ==================
@@ -969,7 +1012,11 @@ mod tests {
                 endpoint: Some("https://api.example.com/v1/chat/completions".to_string()),
                 model: Some("test-model".to_string()),
                 api_key: Some("test-key".to_string()),
+                reasoning: None,
+                custom_body: None,
             },
+            qa_llm: None,
+            text_processing_llm: None,
             qa_system_prompt: DEFAULT_ASSISTANT_QA_PROMPT.to_string(),
             text_processing_system_prompt: DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string(),
             enable_web_search: false,
