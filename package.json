@@ -11,10 +11,10 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-opener": "^2.5.2",
     "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.9.0",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@types/react-syntax-highlighter": "^15.5.13",
     "lucide-react": "^0.554.0",
     "nanoid": "^5.0.0",
@@ -25,7 +25,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.11.2",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
