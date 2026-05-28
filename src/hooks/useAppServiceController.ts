@@ -81,6 +81,7 @@ type ConfigFieldPatchPayload = {
   learningEnabled?: boolean;
   theme?: string;
   enableMuteOtherApps?: boolean;
+  enableAutoEnter?: boolean;
   closeAction?: "close" | "minimize" | null;
 };
 
@@ -153,6 +154,8 @@ export type UseAppServiceControllerParams = {
   enableMuteOtherApps: boolean;
   setEnableMuteOtherApps: React.Dispatch<React.SetStateAction<boolean>>;
 
+  setEnableAutoEnter: React.Dispatch<React.SetStateAction<boolean>>;
+
   theme: string;
   setTheme: React.Dispatch<React.SetStateAction<string>>;
 
@@ -202,6 +205,7 @@ export function useAppServiceController({
   setEnableAutostart,
   enableMuteOtherApps,
   setEnableMuteOtherApps,
+  setEnableAutoEnter,
   theme,
   setTheme,
   closeAction,
@@ -555,6 +559,7 @@ export function useAppServiceController({
       }
 
       setEnableMuteOtherApps(config.enable_mute_other_apps ?? false);
+      setEnableAutoEnter(config.enable_auto_enter ?? false);
       setTheme(config.theme || "light");
 
       const configDictionary =

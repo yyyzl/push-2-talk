@@ -10,7 +10,7 @@ use std::time::Duration;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-    VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
+    VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
 };
 
 /// 按键间延迟（毫秒）
@@ -111,6 +111,18 @@ pub fn send_ctrl_v() -> Result<()> {
 
     // 释放 Ctrl
     send_key_up(VK_CONTROL)?;
+
+    Ok(())
+}
+
+/// 模拟单次 Enter 按键（按下并释放）
+#[cfg(target_os = "windows")]
+pub fn send_enter() -> Result<()> {
+    tracing::debug!("win32_input: 发送 Enter");
+
+    send_key_down(VK_RETURN)?;
+    thread::sleep(Duration::from_millis(KEY_DELAY_MS));
+    send_key_up(VK_RETURN)?;
 
     Ok(())
 }

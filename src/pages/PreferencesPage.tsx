@@ -1,4 +1,4 @@
-import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle } from "lucide-react";
+import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle, CornerDownLeft } from "lucide-react";
 import { useState } from "react";
 import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
 import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../components/common";
@@ -14,6 +14,9 @@ export type PreferencesPageProps = {
 
   enableMuteOtherApps: boolean;
   onSetEnableMuteOtherApps: (next: boolean) => Promise<void>;
+
+  enableAutoEnter: boolean;
+  onSetEnableAutoEnter: (next: boolean) => Promise<void>;
 
   theme: string;
   setTheme: (theme: string) => Promise<void>;
@@ -37,6 +40,8 @@ export function PreferencesPage({
   onToggleAutostart,
   enableMuteOtherApps,
   onSetEnableMuteOtherApps,
+  enableAutoEnter,
+  onSetEnableAutoEnter,
   theme,
   setTheme,
   updateStatus,
@@ -125,6 +130,41 @@ export function PreferencesPage({
             checked={enableMuteOtherApps}
             onCheckedChange={(next) => {
               void onSetEnableMuteOtherApps(next);
+            }}
+            disabled={status === "recording" || status === "transcribing"}
+            size="sm"
+            variant="orange"
+          />
+        </div>
+
+        <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
+          <div className="flex items-center gap-3">
+            <div
+              className={[
+                "p-2 rounded-xl",
+                enableAutoEnter
+                  ? "bg-[rgba(217,119,87,0.12)] text-[var(--crail)]"
+                  : "bg-white border border-[var(--stone)] text-stone-500",
+              ].join(" ")}
+            >
+              <CornerDownLeft size={16} />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <div className="text-sm font-bold text-[var(--ink)]">听写后自动回车</div>
+                <Tooltip content="听写模式插入文本后自动模拟一次 Enter，常用于聊天框/搜索框直接发送。AI 助手模式不受影响。">
+                  <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+                </Tooltip>
+              </div>
+              <div className="text-[11px] text-stone-400 font-semibold">
+                {enableAutoEnter ? "插入文本后自动按 Enter 发送" : "插入后保持光标，由你手动确认"}
+              </div>
+            </div>
+          </div>
+          <Toggle
+            checked={enableAutoEnter}
+            onCheckedChange={(next) => {
+              void onSetEnableAutoEnter(next);
             }}
             disabled={status === "recording" || status === "transcribing"}
             size="sm"
