@@ -131,6 +131,7 @@ export interface AppConfig {
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;
   enable_mute_other_apps: boolean;
+  enable_auto_enter: boolean;
   dictionary: string[];  // 简化格式："word" 或 "word|auto"
   builtin_dictionary_domains: string[];  // 内置词库领域列表
   theme: string;

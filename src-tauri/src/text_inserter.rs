@@ -18,8 +18,8 @@ impl TextInserter {
         })
     }
 
-    pub fn insert_text(&mut self, text: &str) -> Result<()> {
-        tracing::info!("准备插入文本: {}", text);
+    pub fn insert_text(&mut self, text: &str, auto_enter: bool) -> Result<()> {
+        tracing::info!("准备插入文本: {} (auto_enter={})", text, auto_enter);
 
         // 1. 保存当前剪贴板内容
         let original_clipboard = self.clipboard.get_text().ok();
@@ -36,7 +36,12 @@ impl TextInserter {
         // 5. 等待粘贴完成
         thread::sleep(Duration::from_millis(150));
 
-        // 6. 恢复原剪贴板内容
+        // 6. 可选：模拟 Enter 自动发送
+        if auto_enter {
+            win32_input::send_enter()?;
+        }
+
+        // 7. 恢复原剪贴板内容
         if let Some(original) = original_clipboard {
             self.clipboard.set_text(original)?;
         }

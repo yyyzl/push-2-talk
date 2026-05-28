@@ -54,6 +54,7 @@ export type UseTauriEventListenersParams = {
   setAssistantConfig?: React.Dispatch<React.SetStateAction<AssistantConfig>>;
   setLearningConfig?: React.Dispatch<React.SetStateAction<LearningConfig>>;
   setEnableMuteOtherApps?: React.Dispatch<React.SetStateAction<boolean>>;
+  setEnableAutoEnter?: React.Dispatch<React.SetStateAction<boolean>>;
   setTheme?: React.Dispatch<React.SetStateAction<string>>;
   setCloseAction?: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
   setDictionary?: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
@@ -94,6 +95,7 @@ export function useTauriEventListeners({
   setAssistantConfig,
   setLearningConfig,
   setEnableMuteOtherApps,
+  setEnableAutoEnter,
   setTheme,
   setCloseAction,
   setDictionary,
@@ -262,6 +264,7 @@ export function useTauriEventListeners({
             normalizeLearningConfig(config.learning_config || DEFAULT_LEARNING_CONFIG),
           );
           setEnableMuteOtherApps?.(config.enable_mute_other_apps ?? false);
+          setEnableAutoEnter?.(config.enable_auto_enter ?? false);
           setTheme?.(config.theme || "light");
 
           if (config.dual_hotkey_config) {
@@ -354,6 +357,7 @@ export function useTauriEventListeners({
     setAssistantConfig,
     setLearningConfig,
     setEnableMuteOtherApps,
+    setEnableAutoEnter,
     setTheme,
     setCloseAction,
     setDictionary,

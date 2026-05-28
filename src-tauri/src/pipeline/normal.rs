@@ -323,10 +323,18 @@ impl NormalPipeline {
     ///
     /// 返回是否成功插入
     fn insert_text(text_inserter: &mut Option<TextInserter>, text: &str) -> bool {
+        // 读取自动回车开关（仅听写模式生效）
+        let auto_enter = AppConfig::load()
+            .map(|(c, _)| c.enable_auto_enter)
+            .unwrap_or(false);
+
         if let Some(ref mut inserter) = text_inserter {
-            match inserter.insert_text(text) {
+            match inserter.insert_text(text, auto_enter) {
                 Ok(()) => {
-                    tracing::info!("NormalPipeline: 文本插入成功");
+                    tracing::info!(
+                        "NormalPipeline: 文本插入成功 (auto_enter={})",
+                        auto_enter
+                    );
                     true
                 }
                 Err(e) => {

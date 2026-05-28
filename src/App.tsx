@@ -139,6 +139,7 @@ function App() {
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
   const [enableMuteOtherApps, setEnableMuteOtherApps] = useState(false);
+  const [enableAutoEnter, setEnableAutoEnter] = useState(false);
   const [theme, setTheme] = useState("light");
   const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -308,6 +309,7 @@ function App() {
     setAssistantConfig,
     setLearningConfig,
     setEnableMuteOtherApps,
+    setEnableAutoEnter,
     setTheme,
     setCloseAction,
     setDictionary,
@@ -382,6 +384,7 @@ function App() {
     setEnableAutostart,
     enableMuteOtherApps,
     setEnableMuteOtherApps,
+    setEnableAutoEnter,
     theme,
     setTheme,
     closeAction,
@@ -431,6 +434,7 @@ function App() {
     learningEnabled?: boolean;
     theme?: string;
     enableMuteOtherApps?: boolean;
+    enableAutoEnter?: boolean;
     closeAction?: "close" | "minimize" | null;
   }) => {
     cancelAutoSaveDebounce();
@@ -444,6 +448,7 @@ function App() {
 
     const previousTheme = theme;
     const previousEnableMuteOtherApps = enableMuteOtherApps;
+    const previousEnableAutoEnter = enableAutoEnter;
     const previousLearningConfig = learningConfig;
     const previousCloseAction = closeAction;
 
@@ -452,6 +457,9 @@ function App() {
     }
     if (typeof patch.enableMuteOtherApps === "boolean") {
       setEnableMuteOtherApps(patch.enableMuteOtherApps);
+    }
+    if (typeof patch.enableAutoEnter === "boolean") {
+      setEnableAutoEnter(patch.enableAutoEnter);
     }
     if (typeof patch.learningEnabled === "boolean") {
       const nextLearningEnabled = patch.learningEnabled;
@@ -476,6 +484,9 @@ function App() {
       if (typeof patch.enableMuteOtherApps === "boolean") {
         setEnableMuteOtherApps(previousEnableMuteOtherApps);
       }
+      if (typeof patch.enableAutoEnter === "boolean") {
+        setEnableAutoEnter(previousEnableAutoEnter);
+      }
       if (typeof patch.learningEnabled === "boolean") {
         setLearningConfig(previousLearningConfig);
       }
@@ -494,11 +505,13 @@ function App() {
   }, [
     theme,
     enableMuteOtherApps,
+    enableAutoEnter,
     learningConfig,
     closeAction,
     patchConfigFields,
     setTheme,
     setEnableMuteOtherApps,
+    setEnableAutoEnter,
     setLearningConfig,
     setCloseAction,
     cancelAutoSaveDebounce,
@@ -849,6 +862,10 @@ function App() {
             enableMuteOtherApps={enableMuteOtherApps}
             onSetEnableMuteOtherApps={async (next) => {
               await saveFieldPatchWithStatus({ enableMuteOtherApps: next });
+            }}
+            enableAutoEnter={enableAutoEnter}
+            onSetEnableAutoEnter={async (next) => {
+              await saveFieldPatchWithStatus({ enableAutoEnter: next });
             }}
             updateStatus={updateStatus}
             updateInfo={updateInfo}

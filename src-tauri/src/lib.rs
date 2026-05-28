@@ -755,6 +755,7 @@ struct ConfigFieldPatch {
     learning_enabled: Option<bool>,
     theme: Option<String>,
     enable_mute_other_apps: Option<bool>,
+    enable_auto_enter: Option<bool>,
     close_action: Option<Option<String>>,
 }
 
@@ -863,6 +864,7 @@ async fn save_config(
             transcription_mode: existing.transcription_mode,
             enable_mute_other_apps: enable_mute_other_apps
                 .unwrap_or(existing.enable_mute_other_apps),
+            enable_auto_enter: existing.enable_auto_enter,
             dictionary: final_dictionary,
             builtin_dictionary_domains: builtin_dictionary_domains
                 .unwrap_or_else(|| existing.builtin_dictionary_domains.clone()),
@@ -980,6 +982,10 @@ async fn patch_config_fields(app: AppHandle, patch: ConfigFieldPatch) -> Result<
 
         if let Some(enabled) = patch.enable_mute_other_apps {
             config.enable_mute_other_apps = enabled;
+        }
+
+        if let Some(enabled) = patch.enable_auto_enter {
+            config.enable_auto_enter = enabled;
         }
 
         if let Some(close_action_patch) = patch.close_action {

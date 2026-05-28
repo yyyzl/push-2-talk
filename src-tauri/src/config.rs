@@ -597,6 +597,9 @@ pub struct AppConfig {
     /// 录音时自动静音其他应用
     #[serde(default)]
     pub enable_mute_other_apps: bool,
+    /// 听写模式：插入文本后自动模拟 Enter 发送（默认关闭）
+    #[serde(default)]
+    pub enable_auto_enter: bool,
     /// 个人词典（热词列表）- 简化格式："word" 或 "word|auto"
     #[serde(default)]
     pub dictionary: Vec<String>,
@@ -1294,6 +1297,7 @@ impl AppConfig {
             dual_hotkey_config: DualHotkeyConfig::default(),
             transcription_mode: TranscriptionMode::default(),
             enable_mute_other_apps: false,
+            enable_auto_enter: false,
             dictionary: Vec::new(),
             builtin_dictionary_domains: Vec::new(),
             theme: default_theme(),
