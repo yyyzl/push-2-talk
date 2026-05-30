@@ -2985,6 +2985,24 @@ async fn handle_qwen_realtime_start(
     }
 }
 
+fn capture_selected_text_via_uia(target_hwnd: Option<isize>) -> Option<String> {
+    let hwnd = target_hwnd?;
+    match uia_text_reader::get_selected_text(hwnd) {
+        Ok(text) if !text.trim().is_empty() => {
+            tracing::info!("UIA 兜底捕获选中文本: {} 字符", text.len());
+            Some(text)
+        }
+        Ok(_) => {
+            tracing::debug!("UIA 兜底未检测到选中文本");
+            None
+        }
+        Err(e) => {
+            tracing::debug!("UIA 兜底捕获选中文本失败: {}", e);
+            None
+        }
+    }
+}
+
 #[tauri::command]
 async fn start_app(
     app_handle: AppHandle,
@@ -3635,22 +3653,26 @@ async fn start_app(
                     // 捕获选中文本（此时用户已松开热键，Ctrl+C 模拟安全）
                     // 剪贴板即时释放：ClipboardGuard 在此 scope 结束时 drop，立即恢复用户剪贴板
                     tracing::info!("AI 助手模式：开始捕获选中文本...");
-                    let selected_text = match clipboard_manager::get_selected_text() {
-                        Ok((guard, text)) => {
-                            if let Some(ref t) = text {
-                                tracing::info!("已捕获选中文本: {} 字符", t.len());
-                            } else {
-                                tracing::info!("无选中文本，将使用问答模式");
+                    let selected_text =
+                        match clipboard_manager::get_selected_text_from_window(target_hwnd) {
+                            Ok((guard, text)) => {
+                                if let Some(ref t) = text {
+                                    tracing::info!("已捕获选中文本: {} 字符", t.len());
+                                } else {
+                                    tracing::info!("剪贴板未捕获选中文本，尝试 UIA 兜底");
+                                }
+                                // guard 在此 scope 结束时 drop，自动恢复剪贴板
+                                drop(guard);
+                                text.or_else(|| capture_selected_text_via_uia(target_hwnd))
                             }
-                            // guard 在此 scope 结束时 drop，自动恢复剪贴板
-                            drop(guard);
-                            text
-                        }
-                        Err(e) => {
-                            tracing::warn!("捕获选中文本失败: {}，继续处理但无上下文", e);
-                            None
-                        }
-                    };
+                            Err(e) => {
+                                tracing::warn!("剪贴板捕获选中文本失败: {}，尝试 UIA 兜底", e);
+                                capture_selected_text_via_uia(target_hwnd)
+                            }
+                        };
+                    if selected_text.is_none() {
+                        tracing::info!("无选中文本，将使用问答模式");
+                    }
 
                     handle_assistant_mode(
                         app,

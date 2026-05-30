@@ -297,6 +297,47 @@ pub fn get_focused_window_text(hwnd: isize) -> Result<String> {
     res
 }
 
+/// 使用 UI Automation 读取目标窗口当前选中的文本。
+///
+/// 这是剪贴板 Ctrl+C 捕获失败时的兜底路径，不会修改用户剪贴板。
+pub fn get_selected_text(hwnd: isize) -> Result<String> {
+    // 校验窗口句柄有效性
+    if hwnd == 0 || !crate::win32_input::is_window_valid(hwnd) {
+        return Err(anyhow!("无效的窗口句柄（hwnd={}）", hwnd));
+    }
+
+    let now = Instant::now();
+    if is_blacklisted(hwnd, now) {
+        return Err(anyhow!("UIA 暂时黑名单（hwnd={}）", hwnd));
+    }
+
+    let res = run_with_timeout(UIA_TIMEOUT, move || get_selected_text_inner(hwnd));
+
+    match &res {
+        Ok(_) => record_success(hwnd),
+        Err(e) => {
+            let now = Instant::now();
+            let blacklisted = record_failure(hwnd, now);
+            if blacklisted {
+                tracing::warn!(
+                    "uia_text_reader: UIA 选区读取连续失败，黑名单 hwnd={} 持续 {:?}（最后错误: {}）",
+                    hwnd,
+                    BLACKLIST_DURATION,
+                    e
+                );
+            } else {
+                tracing::debug!(
+                    "uia_text_reader: UIA 选区读取失败 hwnd={}（错误: {}）",
+                    hwnd,
+                    e
+                );
+            }
+        }
+    }
+
+    res
+}
+
 /// UI Automation 文本读取核心实现
 fn get_focused_window_text_inner(hwnd: isize) -> Result<String> {
     let _com = ComGuard::new()?;
@@ -341,12 +382,56 @@ fn get_focused_window_text_inner(hwnd: isize) -> Result<String> {
     Ok(normalize_text(text))
 }
 
+/// UI Automation 选中文本读取核心实现
+fn get_selected_text_inner(hwnd: isize) -> Result<String> {
+    let _com = ComGuard::new()?;
+
+    let automation: IUIAutomation = unsafe {
+        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+            .context("创建 CUIAutomation 实例失败")?
+    };
+
+    let hwnd = HWND(hwnd as *mut _);
+    let root = unsafe { automation.ElementFromHandle(hwnd) }.ok();
+    let mut focused = unsafe { automation.GetFocusedElement() }.ok();
+
+    if let (Some(root_el), Some(focused_el)) = (&root, &focused) {
+        let root_pid = unsafe { root_el.CurrentProcessId() }.unwrap_or(0);
+        if root_pid != 0 {
+            let focused_pid = unsafe { focused_el.CurrentProcessId() }.unwrap_or(0);
+            if focused_pid != 0 && focused_pid != root_pid {
+                tracing::debug!(
+                    "uia_text_reader: 选区焦点元素进程不匹配（focused_pid={}, root_pid={}），使用根元素",
+                    focused_pid,
+                    root_pid
+                );
+                focused = None;
+            }
+        }
+    }
+
+    let element = focused
+        .or(root)
+        .ok_or_else(|| anyhow!("UIA: 无法获取焦点元素且 ElementFromHandle 失败"))?;
+
+    read_selected_text_from_element(&element)
+}
+
 /// 规范化文本（统一换行符）
 fn normalize_text(mut text: String) -> String {
     if text.contains('\r') {
         text = text.replace("\r\n", "\n").replace('\r', "\n");
     }
     text
+}
+
+fn normalize_selected_text(text: String) -> Option<String> {
+    let text = normalize_text(text);
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// 从 UI Automation 元素读取文本
@@ -369,6 +454,34 @@ fn read_text_from_element(element: &IUIAutomationElement) -> Result<String> {
     // 3) Fallback: CurrentName
     let name = unsafe { element.CurrentName() }.context("UIA CurrentName 失败")?;
     Ok(name.to_string())
+}
+
+/// 通过 TextPattern 读取当前选区文本
+fn read_selected_text_from_element(element: &IUIAutomationElement) -> Result<String> {
+    let unk = unsafe { element.GetCurrentPattern(UIA_TextPatternId) }
+        .context("UIA GetCurrentPattern(UIA_TextPatternId) 失败")?;
+
+    let pattern: IUIAutomationTextPattern = unk
+        .cast()
+        .context("UIA 转换为 IUIAutomationTextPattern 失败")?;
+
+    let selection = unsafe { pattern.GetSelection() }.context("UIA GetSelection 失败")?;
+    let length = unsafe { selection.Length() }.context("UIA Selection.Length 失败")?;
+    if length <= 0 {
+        return Err(anyhow!("UIA: 未返回选区范围"));
+    }
+
+    let mut chunks = Vec::new();
+    for index in 0..length {
+        let range =
+            unsafe { selection.GetElement(index) }.context("UIA Selection.GetElement 失败")?;
+        let text = unsafe { range.GetText(-1) }.context("UIA Selection.GetText(-1) 失败")?;
+        if let Some(text) = normalize_selected_text(text.to_string()) {
+            chunks.push(text);
+        }
+    }
+
+    normalize_selected_text(chunks.join("\n")).ok_or_else(|| anyhow!("UIA: 选区文本为空"))
 }
 
 /// 通过 TextPattern 读取文本
@@ -442,5 +555,18 @@ mod tests {
         assert_eq!(normalize_text("hello\r\nworld".to_string()), "hello\nworld");
         assert_eq!(normalize_text("hello\rworld".to_string()), "hello\nworld");
         assert_eq!(normalize_text("hello\nworld".to_string()), "hello\nworld");
+    }
+
+    #[test]
+    fn test_normalize_selected_text_rejects_blank_selection() {
+        assert!(normalize_selected_text(" \r\n\t ".to_string()).is_none());
+    }
+
+    #[test]
+    fn test_normalize_selected_text_keeps_non_empty_selection() {
+        assert_eq!(
+            normalize_selected_text("class Solution {\r\n}".to_string()),
+            Some("class Solution {\n}".to_string())
+        );
     }
 }

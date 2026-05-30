@@ -68,6 +68,41 @@ impl Drop for ClipboardGuard {
 /// 调用此函数前，请确保用户已松开所有热键（如 Alt+Space）。
 /// 建议在 on_stop 回调中等待 100ms 后再调用，以避免物理按键与模拟按键冲突。
 pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
+    get_selected_text_inner()
+}
+
+/// 从指定目标窗口捕获当前选中文本。
+///
+/// 录音期间 overlay 或系统焦点变化可能导致 Ctrl+C 发送到错误窗口。
+/// 因此在复制前先把焦点恢复到热键按下时保存的目标窗口，再走剪贴板捕获路径。
+pub fn get_selected_text_from_window(
+    target_hwnd: Option<isize>,
+) -> Result<(ClipboardGuard, Option<String>)> {
+    if should_restore_focus_for_selection(target_hwnd, win32_input::get_foreground_window()) {
+        if let Some(hwnd) = target_hwnd {
+            tracing::info!(
+                "clipboard_manager: 复制前恢复目标窗口焦点 hwnd=0x{:X}",
+                hwnd
+            );
+            if win32_input::restore_focus_with_verify(hwnd, 3) {
+                thread::sleep(Duration::from_millis(80));
+            } else {
+                tracing::warn!("clipboard_manager: 目标窗口焦点恢复失败，继续尝试当前焦点复制");
+            }
+        }
+    }
+
+    get_selected_text()
+}
+
+fn should_restore_focus_for_selection(
+    target_hwnd: Option<isize>,
+    current_hwnd: Option<isize>,
+) -> bool {
+    matches!(target_hwnd, Some(hwnd) if hwnd != 0 && current_hwnd != Some(hwnd))
+}
+
+fn get_selected_text_inner() -> Result<(ClipboardGuard, Option<String>)> {
     // 1. 保存当前剪贴板
     let guard = ClipboardGuard::new()?;
 
@@ -257,5 +292,14 @@ mod tests {
         // 空字符串也应成功
         let result = copy_to_clipboard("");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_should_restore_focus_for_selection() {
+        assert!(!should_restore_focus_for_selection(None, Some(100)));
+        assert!(!should_restore_focus_for_selection(Some(0), Some(100)));
+        assert!(!should_restore_focus_for_selection(Some(100), Some(100)));
+        assert!(should_restore_focus_for_selection(Some(100), Some(200)));
+        assert!(should_restore_focus_for_selection(Some(100), None));
     }
 }
