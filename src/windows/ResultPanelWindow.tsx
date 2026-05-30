@@ -893,23 +893,88 @@ function UserBubble({
 
       {/* 选中文本摘要 */}
       {hasSelection && selectedText && (
-        <div className="flex items-start gap-2 mt-2">
-          <FileText
-            size={14}
-            className="shrink-0 mt-0.5"
-            style={{ color: isDark ? "#888" : "var(--stone-dark)" }}
-          />
-          <span
-            style={{
-              color: isDark ? "#999" : "var(--stone-dark)",
-              lineHeight: 1.5,
-              fontSize: "12px",
-            }}
-          >
-            原文: {truncateText(selectedText, SELECTED_TEXT_MAX_LENGTH)}
-          </span>
-        </div>
+        <SelectedTextPreview selectedText={selectedText} isDark={isDark} />
       )}
+    </div>
+  );
+}
+
+/** 用户本轮选中文本预览 */
+function SelectedTextPreview({
+  selectedText,
+  isDark,
+}: {
+  selectedText: string;
+  isDark: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const canExpand = selectedText.length > SELECTED_TEXT_MAX_LENGTH;
+  const displayText = expanded
+    ? selectedText
+    : truncateText(selectedText, SELECTED_TEXT_MAX_LENGTH);
+
+  return (
+    <div
+      className="mt-2 rounded-lg px-3 py-2"
+      style={{
+        background: isDark ? "rgba(255,255,255,0.035)" : "rgba(120,140,93,0.055)",
+        border: isDark
+          ? "1px solid rgba(232,230,220,0.08)"
+          : "1px solid rgba(120,140,93,0.16)",
+      }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div
+          className="flex min-w-0 items-center gap-1.5"
+          style={{
+            color: isDark ? "#c8d2aa" : "var(--sage)",
+            fontSize: "11px",
+            fontWeight: 700,
+          }}
+        >
+          <FileText size={12} className="shrink-0" />
+          <span>选中文本</span>
+        </div>
+        {canExpand && (
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            aria-expanded={expanded}
+            className="flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-0.5 transition-colors"
+            style={{
+              color: isDark ? "#aaa" : "var(--stone-dark)",
+              background: isDark ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.65)",
+              border: isDark
+                ? "1px solid rgba(255,255,255,0.06)"
+                : "1px solid rgba(176,174,165,0.28)",
+              fontSize: "11px",
+            }}
+            title={expanded ? "收起选中文本" : "展开完整选中文本"}
+          >
+            <ChevronDown
+              size={12}
+              style={{
+                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 150ms ease",
+              }}
+            />
+            {expanded ? "收起" : "展开"}
+          </button>
+        )}
+      </div>
+      <div
+        className="mt-1.5 overflow-y-auto"
+        style={{
+          maxHeight: expanded ? "168px" : "42px",
+          color: isDark ? "#aaa" : "var(--stone-dark)",
+          fontSize: "12px",
+          lineHeight: 1.5,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {displayText}
+      </div>
     </div>
   );
 }

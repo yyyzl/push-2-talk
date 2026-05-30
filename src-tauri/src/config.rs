@@ -1219,7 +1219,16 @@ pub const DEFAULT_ASSISTANT_QA_PROMPT: &str = r#"你是一个智能语音助手�
 - 如果是代码相关问题，直接给出代码"#;
 
 /// AI 助手默认系统提示词 - 文本处理模式（有选中文本）
-pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理专家。用户选中了一段文本，并给出了处理指令，你需要：
+pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个选区上下文助手。用户会选中一段文本，然后用语音或文字提出问题/指令。你需要：
+1. 始终先阅读【本轮选中文本（主要上下文）】，把它作为本轮回答的主要依据。
+2. 判断用户意图：是编辑类任务，还是基于选中文本回答问题、解释、分析、提建议。
+3. 编辑类任务（润色、翻译、总结、改写、扩写、修复语法等）：直接输出处理后的文本，不要添加“这是修改后的版本”等前缀。
+4. 问答/解释/分析类任务：围绕选中文本给出清晰回答，可以引用关键点，但不要脱离选区泛泛回答。
+5. 保持原文格式和结构，除非用户明确要求改变。
+
+如果指令不明确，优先根据选中文本给出最可能有用的处理结果；确实无法判断时，只提出一个简短澄清问题。"#;
+
+const LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理专家。用户选中了一段文本，并给出了处理指令，你需要：
 1. 根据用户的指令对文本进行相应处理（润色、翻译、解释、修改等）
 2. 直接输出处理后的结果，不要添加多余的解释
 3. 保持原文的格式和结构（除非用户要求改变）
@@ -1232,6 +1241,16 @@ pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本
 - "总结" → 提炼核心要点
 
 注意：直接输出处理结果，不要添加"这是修改后的版本"之类的前缀。"#;
+
+const LEGACY_FRONTEND_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理助手。用户会选中一段文本，然后通过语音告诉你要如何处理这段文本。
+你的任务：
+1. 理解用户的语音指令
+2. 对选中的文本执行相应操作（润色、翻译、总结、改写等）
+3. 直接输出处理后的文本
+注意：
+- 只输出处理后的结果，不要输出任何解释
+- 保持原文的格式和结构（除非用户要求改变）
+- 如果指令不明确，按最合理的方式处理"#;
 
 /// Smart Command 独立配置（保留向后兼容）
 ///
@@ -1355,6 +1374,29 @@ fn default_assistant_qa_prompt() -> String {
 
 fn default_assistant_text_processing_prompt() -> String {
     DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string()
+}
+
+fn normalize_prompt_for_migration(prompt: &str) -> String {
+    prompt.trim().replace("\r\n", "\n")
+}
+
+fn is_legacy_assistant_text_processing_prompt(prompt: &str) -> bool {
+    let normalized = normalize_prompt_for_migration(prompt);
+    normalized == normalize_prompt_for_migration(LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT)
+        || normalized
+            == normalize_prompt_for_migration(LEGACY_FRONTEND_ASSISTANT_TEXT_PROCESSING_PROMPT)
+}
+
+fn migrate_legacy_assistant_context_prompt(config: &mut AppConfig) -> bool {
+    if !is_legacy_assistant_text_processing_prompt(
+        &config.assistant_config.text_processing_system_prompt,
+    ) {
+        return false;
+    }
+
+    config.assistant_config.text_processing_system_prompt =
+        default_assistant_text_processing_prompt();
+    true
 }
 
 fn default_web_search_max_loops() -> u32 {
@@ -1999,6 +2041,11 @@ impl AppConfig {
                 migrated = true;
             }
 
+            if migrate_legacy_assistant_context_prompt(&mut config) {
+                tracing::info!("迁移 AI 助手文本处理提示词到选区上下文提示词");
+                migrated = true;
+            }
+
             if config.backfill_dictionary_categories() {
                 tracing::info!("迁移个人词典 category metadata");
                 migrated = true;
@@ -2082,8 +2129,10 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, AsrConfig, AsrLanguageMode, AssistantConfig, LlmConfig, LlmFeatureConfig,
-        LlmPreset, LlmReasoningConfig, ReasoningEffort, SearchConfig, SharedLlmConfig, TnlConfig,
+        migrate_legacy_assistant_context_prompt, AppConfig, AsrConfig, AsrLanguageMode,
+        AssistantConfig, LlmConfig, LlmFeatureConfig, LlmPreset, LlmReasoningConfig,
+        ReasoningEffort, SearchConfig, SharedLlmConfig, TnlConfig,
+        DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT, LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT,
     };
 
     #[test]
@@ -2201,6 +2250,32 @@ mod tests {
         assert!(!cfg.assistant_config.enable_web_search);
         assert_eq!(cfg.assistant_config.web_search_max_loops, 3);
         assert_eq!(cfg.search_config.max_results, 5);
+    }
+
+    #[test]
+    fn legacy_assistant_text_prompt_migrates_to_context_prompt() {
+        let mut config = AppConfig::new();
+        config.assistant_config.text_processing_system_prompt =
+            LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string();
+
+        assert!(migrate_legacy_assistant_context_prompt(&mut config));
+        assert_eq!(
+            config.assistant_config.text_processing_system_prompt,
+            DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT
+        );
+    }
+
+    #[test]
+    fn custom_assistant_text_prompt_is_not_migrated() {
+        let mut config = AppConfig::new();
+        config.assistant_config.text_processing_system_prompt =
+            "我自定义的文本处理提示词".to_string();
+
+        assert!(!migrate_legacy_assistant_context_prompt(&mut config));
+        assert_eq!(
+            config.assistant_config.text_processing_system_prompt,
+            "我自定义的文本处理提示词"
+        );
     }
 
     #[test]

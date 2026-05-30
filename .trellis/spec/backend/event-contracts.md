@@ -143,6 +143,58 @@ let context = text.to_string();
 
 ---
 
+## Scenario: AI Assistant Selected Text Context
+
+### 1. Scope / Trigger
+
+- Trigger: any change to AI assistant selected-text capture, `assistant_turn_pending`, conversation payloads, assistant prompt construction, or `ResultPanelWindow` user-card rendering.
+- `selected_text` is not only an edit target. When present, it is the primary context for this assistant turn, including question answering, explanation, analysis, and rewriting tasks.
+
+### 2. Signatures
+
+Backend pending/result payloads must keep both fields:
+
+```rust
+struct TurnPendingPayload {
+    user_instruction: String,
+    selected_text: Option<String>,
+    has_selection: bool,
+}
+
+struct ConversationTurnPayload {
+    user_instruction: String,
+    selected_text: Option<String>,
+    has_selection: bool,
+    assistant_response: String,
+}
+```
+
+Frontend result-panel cards receive the same data:
+
+```typescript
+type AssistantTurn = {
+  user_instruction: string;
+  selected_text?: string;
+  has_selection: boolean;
+};
+```
+
+### 3. Contracts
+
+- If `selected_text` is non-empty, backend LLM messages must label it as `【本轮选中文本（主要上下文）】` and label the voice/text command as `【用户问题或指令】`.
+- The default text-processing system prompt must support both edit tasks and "answer based on selected text" tasks. Do not assume selected text always means replacement.
+- Every AI assistant user card that has `has_selection && selected_text` must render a visible selected-text preview, including pending/generating turns emitted by `assistant_turn_pending`.
+- Long selected text should be collapsed by default with an accessible expand/collapse control. Preserve line breaks and wrap long words.
+- Copy/export formats may use a compact quote line (`> 选中文本: ...`), but on-screen cards must show the selected text before the assistant answer arrives.
+
+### 4. Tests Required
+
+- Backend unit test for selected text being marked as the primary context in `format_user_content` / turn message construction.
+- Backend or config test proving the default assistant text-processing prompt supports contextual Q&A as well as editing.
+- Frontend runtime/static test proving `ResultPanelWindow` renders an expandable selected-text preview for user cards.
+
+---
+
 ## Scenario: `add_learned_word` Optional Personalization Pair
 
 ### 1. Scope / Trigger

@@ -265,6 +265,30 @@ test("MarkdownRenderer: 搜索引用应预处理为内部标记，避免渲染�
   assert.doesNotMatch(source, />\s*\{index\}\s*\n\s*\{/);
 });
 
+test("ResultPanelWindow: 用户卡片应提供可展开的选中文本展示", async () => {
+  const source = await readFile("src/windows/ResultPanelWindow.tsx", "utf8");
+
+  assert.match(source, /function SelectedTextPreview/);
+  assert.match(source, /选中文本/);
+  assert.match(source, /aria-expanded=\{expanded\}/);
+  assert.match(source, /setExpanded/);
+  assert.match(source, /maxHeight:\s*expanded\s*\?/);
+  assert.match(source, /whiteSpace:\s*"pre-wrap"/);
+  assert.match(source, /wordBreak:\s*"break-word"/);
+});
+
+test("DEFAULT_ASSISTANT_CONFIG: 文本处理提示词应支持基于选区提问", async () => {
+  const { DEFAULT_ASSISTANT_CONFIG } = await import("../src/constants");
+
+  assert.match(
+    DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt,
+    /基于选中文本回答问题/,
+  );
+  assert.match(DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt, /编辑类任务/);
+  assert.match(DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt, /解释/);
+  assert.match(DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt, /分析/);
+});
+
 test("resolveInitialWebSearchEnabled: 配置启用且默认搜索引擎可用时默认开启", async () => {
   const { resolveInitialWebSearchEnabled } = await import(
     "../src/utils/searchRuntime"

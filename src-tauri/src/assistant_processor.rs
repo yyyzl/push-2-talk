@@ -520,12 +520,15 @@ const MAX_CONVERSATION_TURNS: usize = 20;
 
 /// 将用户指令和选中文本组合为 user message 内容
 ///
-/// - 有选中文本: `"【选中的文本】\n{selected}\n\n【用户指令】\n{instruction}"`
+/// - 有选中文本: `"【本轮选中文本（主要上下文）】\n{selected}\n\n【用户问题或指令】\n{instruction}"`
 /// - 无选中文本: 直接返回 instruction
 pub(crate) fn format_user_content(instruction: &str, selected_text: Option<&str>) -> String {
     match selected_text {
         Some(text) if !text.is_empty() => {
-            format!("【选中的文本】\n{}\n\n【用户指令】\n{}", text, instruction)
+            format!(
+                "【本轮选中文本（主要上下文）】\n{}\n\n【用户问题或指令】\n{}",
+                text, instruction
+            )
         }
         _ => instruction.to_string(),
     }
@@ -1034,6 +1037,24 @@ mod tests {
         assert!(!processor.text_processing_system_prompt.is_empty());
     }
 
+    #[test]
+    fn test_format_user_content_marks_selected_text_as_primary_context() {
+        let content = format_user_content("这里有什么问题", Some("fn main() {}"));
+
+        assert!(content.contains("【本轮选中文本（主要上下文）】"));
+        assert!(content.contains("fn main() {}"));
+        assert!(content.contains("【用户问题或指令】"));
+        assert!(content.contains("这里有什么问题"));
+    }
+
+    #[test]
+    fn test_default_text_processing_prompt_supports_contextual_questions() {
+        assert!(DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.contains("基于选中文本回答问题"));
+        assert!(DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.contains("解释"));
+        assert!(DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.contains("分析"));
+        assert!(DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.contains("编辑类任务"));
+    }
+
     // === 多轮消息构建测试 ===
 
     fn make_turn(instruction: &str, selected: Option<&str>, response: &str) -> ConversationTurn {
@@ -1224,8 +1245,10 @@ mod tests {
         // 新追问 user₂ 应包含新选中文本
         assert!(messages[3].content.contains("这是新选中的文本"));
         assert!(messages[3].content.contains("改成正式语气"));
-        assert!(messages[3].content.contains("【选中的文本】"));
-        assert!(messages[3].content.contains("【用户指令】"));
+        assert!(messages[3]
+            .content
+            .contains("【本轮选中文本（主要上下文）】"));
+        assert!(messages[3].content.contains("【用户问题或指令】"));
     }
 
     #[test]
