@@ -182,7 +182,7 @@ type AssistantTurn = {
 ### 3. Contracts
 
 - If `selected_text` is non-empty, backend LLM messages must label it as `【本轮选中文本（主要上下文）】` and label the voice/text command as `【用户问题或指令】`.
-- Assistant selected-text capture must target the window saved when the hotkey was pressed. Before sending synthetic `Ctrl+C`, restore/verify that target window focus; if clipboard capture returns empty or fails, attempt a UI Automation selected-range fallback before treating the turn as no-selection.
+- Assistant selected-text capture must target the window saved when the hotkey was pressed. For browser/page selections, try a UI Automation selected-range pre-capture before recording starts, while the target window is still foreground. On stop, prefer that snapshot; if missing, restore/verify target focus before synthetic `Ctrl+C`; if clipboard capture returns empty or fails, attempt a UI Automation selected-range fallback before treating the turn as no-selection.
 - The default text-processing system prompt must support both edit tasks and "answer based on selected text" tasks. Do not assume selected text always means replacement.
 - Every AI assistant user card that has `has_selection && selected_text` must render a visible selected-text preview, including pending/generating turns emitted by `assistant_turn_pending`.
 - Long selected text should be collapsed by default with an accessible expand/collapse control. Preserve line breaks and wrap long words.

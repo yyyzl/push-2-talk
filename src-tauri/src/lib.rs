@@ -2985,21 +2985,45 @@ async fn handle_qwen_realtime_start(
     }
 }
 
+fn non_empty_selected_text(text: Option<String>) -> Option<String> {
+    text.filter(|value| !value.trim().is_empty())
+}
+
 fn capture_selected_text_via_uia(target_hwnd: Option<isize>) -> Option<String> {
     let hwnd = target_hwnd?;
     match uia_text_reader::get_selected_text(hwnd) {
-        Ok(text) if !text.trim().is_empty() => {
-            tracing::info!("UIA 兜底捕获选中文本: {} 字符", text.len());
-            Some(text)
-        }
-        Ok(_) => {
-            tracing::debug!("UIA 兜底未检测到选中文本");
-            None
+        Ok(text) => {
+            let text = non_empty_selected_text(Some(text));
+            if let Some(ref text) = text {
+                tracing::info!("UIA 兜底捕获选中文本: {} 字符", text.len());
+            } else {
+                tracing::debug!("UIA 兜底未检测到选中文本");
+            }
+            text
         }
         Err(e) => {
             tracing::debug!("UIA 兜底捕获选中文本失败: {}", e);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod selected_text_capture_tests {
+    use super::non_empty_selected_text;
+
+    #[test]
+    fn non_empty_selected_text_rejects_blank_text() {
+        assert_eq!(non_empty_selected_text(None), None);
+        assert_eq!(non_empty_selected_text(Some(" \r\n\t ".to_string())), None);
+    }
+
+    #[test]
+    fn non_empty_selected_text_keeps_original_content() {
+        assert_eq!(
+            non_empty_selected_text(Some("  class Solution {}\n".to_string())),
+            Some("  class Solution {}\n".to_string())
+        );
     }
 }
 
@@ -3375,6 +3399,9 @@ async fn start_app(
     // 目标窗口句柄（用于焦点恢复）
     let target_window_start = Arc::clone(&state.target_window);
     let target_window_stop = Arc::clone(&state.target_window);
+    let assistant_selected_text_snapshot = Arc::new(Mutex::new(None::<String>));
+    let assistant_selected_text_snapshot_start = Arc::clone(&assistant_selected_text_snapshot);
+    let assistant_selected_text_snapshot_stop = Arc::clone(&assistant_selected_text_snapshot);
 
     // 统计数据相关（用于 on_stop）
     let usage_stats_stop = Arc::clone(&state.usage_stats);
@@ -3406,6 +3433,7 @@ async fn start_app(
         // 这是用户触发热键时的前台窗口，用于后续焦点恢复
         let target_hwnd = win32_input::get_foreground_window();
         *target_window_start.lock().unwrap() = target_hwnd;
+        *assistant_selected_text_snapshot_start.lock().unwrap() = None;
         if let Some(hwnd) = target_hwnd {
             tracing::info!("已保存目标窗口句柄: 0x{:X}", hwnd);
         } else {
@@ -3445,11 +3473,42 @@ async fn start_app(
         let dictionary_state = Arc::clone(&dictionary_state_start);
         let asr_correction_pairs = Arc::clone(&asr_correction_pairs_start);
         let recording_start_instant_spawn = Arc::clone(&recording_start_instant_start);
+        let selected_text_snapshot = Arc::clone(&assistant_selected_text_snapshot_start);
 
         tauri::async_runtime::spawn(async move {
             // 记录录音开始时间（包含录音准备时间：静音、显示窗口等）
             // 注意：这个时间略早于实际音频采集开始，但包含了用户感知到的准备时间
             *recording_start_instant_spawn.lock().unwrap() = Some(std::time::Instant::now());
+
+            if trigger_mode == config::TriggerMode::AiAssistant {
+                if let Some(hwnd) = target_hwnd {
+                    let selection_read_start = std::time::Instant::now();
+                    match tokio::task::spawn_blocking(move || {
+                        uia_text_reader::get_selected_text(hwnd)
+                    })
+                    .await
+                    {
+                        Ok(Ok(text)) => {
+                            if let Some(text) = non_empty_selected_text(Some(text)) {
+                                tracing::info!(
+                                    "AI 助手预捕获选中文本: {} 字符（UIA {}ms）",
+                                    text.len(),
+                                    selection_read_start.elapsed().as_millis()
+                                );
+                                *selected_text_snapshot.lock().unwrap() = Some(text);
+                            } else {
+                                tracing::debug!("AI 助手预捕获未检测到选中文本");
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            tracing::debug!("AI 助手预捕获选中文本失败: {}", e);
+                        }
+                        Err(e) => {
+                            tracing::warn!("AI 助手预捕获选中文本任务异常: {}", e);
+                        }
+                    }
+                }
+            }
 
             // 从 state 获取最新词库（支持热更新），并为本次录音追加临时上下文热词。
             let mut dictionary = dictionary_state.lock().unwrap().clone();
@@ -3590,6 +3649,8 @@ async fn start_app(
 
         // 获取目标窗口句柄（用于焦点恢复）
         let target_hwnd = *target_window_stop.lock().unwrap();
+        let pre_captured_selected_text =
+            non_empty_selected_text(assistant_selected_text_snapshot_stop.lock().unwrap().take());
 
         // 统计数据相关
         let usage_stats = Arc::clone(&usage_stats_stop);
@@ -3652,8 +3713,11 @@ async fn start_app(
 
                     // 捕获选中文本（此时用户已松开热键，Ctrl+C 模拟安全）
                     // 剪贴板即时释放：ClipboardGuard 在此 scope 结束时 drop，立即恢复用户剪贴板
-                    tracing::info!("AI 助手模式：开始捕获选中文本...");
-                    let selected_text =
+                    let selected_text = if let Some(text) = pre_captured_selected_text {
+                        tracing::info!("使用 AI 助手预捕获选中文本: {} 字符", text.len());
+                        Some(text)
+                    } else {
+                        tracing::info!("AI 助手模式：开始捕获选中文本...");
                         match clipboard_manager::get_selected_text_from_window(target_hwnd) {
                             Ok((guard, text)) => {
                                 if let Some(ref t) = text {
@@ -3669,7 +3733,8 @@ async fn start_app(
                                 tracing::warn!("剪贴板捕获选中文本失败: {}，尝试 UIA 兜底", e);
                                 capture_selected_text_via_uia(target_hwnd)
                             }
-                        };
+                        }
+                    };
                     if selected_text.is_none() {
                         tracing::info!("无选中文本，将使用问答模式");
                     }
