@@ -1476,3 +1476,36 @@ Added disfluency mode support to ASR eval, case-level mode overrides, diagnostic
 ### Next Steps
 
 - None - task complete
+
+
+## Session 42: 升级千问 ASR 到 Audio 3.0
+
+**Date**: 2026-08-28
+**Task**: 升级千问 ASR 到 Audio 3.0
+**Branch**: `main`
+
+### Summary
+
+将默认千问 ASR 升级为 qwen-audio-3.0-asr-flash，保留旧版兼容选项；修复 qwen_audio_3 IPC 枚举序列化兼容问题，补充回归测试、规范文档并重新生成 Windows EXE 与 NSIS 安装包。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `92a2621` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

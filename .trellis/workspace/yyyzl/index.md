@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 41
-- **Last Active**: 2026-05-18
+- **Total Sessions**: 42
+- **Last Active**: 2026-08-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1478 | Active |
+| `journal-1.md` | ~1511 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 42 | 2026-08-28 | 升级千问 ASR 到 Audio 3.0 | `92a2621` | `main` |
 | 41 | 2026-05-18 | Phase 4 disfluency eval coverage | `6558da9` | `main` |
 | 40 | 2026-05-18 | Phase 0B readiness report output | `b448072` | `main` |
 | 39 | 2026-05-18 | Phase 0B ASR eval readiness gate | `8dbb8e8` | `main` |
