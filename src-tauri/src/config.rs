@@ -535,10 +535,21 @@ pub enum AsrLanguageMode {
     Auto,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QwenAsrProfile {
+    #[default]
+    #[serde(rename = "qwen_audio_3", alias = "qwen_audio3")]
+    QwenAudio3,
+    Qwen3Legacy,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
     pub credentials: AsrCredentials,
     pub selection: AsrSelection,
+    #[serde(default)]
+    pub qwen_profile: QwenAsrProfile,
     #[serde(default)]
     pub language_mode: AsrLanguageMode,
 }
@@ -548,6 +559,7 @@ impl Default for AsrConfig {
         Self {
             credentials: AsrCredentials::default(),
             selection: AsrSelection::default(),
+            qwen_profile: QwenAsrProfile::default(),
             language_mode: AsrLanguageMode::Auto,
         }
     }
@@ -2131,13 +2143,62 @@ mod tests {
     use super::{
         migrate_legacy_assistant_context_prompt, AppConfig, AsrConfig, AsrLanguageMode,
         AssistantConfig, LlmConfig, LlmFeatureConfig, LlmPreset, LlmReasoningConfig,
-        ReasoningEffort, SearchConfig, SharedLlmConfig, TnlConfig,
+        QwenAsrProfile, ReasoningEffort, SearchConfig, SharedLlmConfig, TnlConfig,
         DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT, LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT,
     };
 
     #[test]
     fn asr_config_defaults_to_auto_language_mode() {
         assert_eq!(AsrConfig::default().language_mode, AsrLanguageMode::Auto);
+    }
+
+    #[test]
+    fn asr_config_defaults_legacy_payloads_to_qwen_audio_3() {
+        let config: AsrConfig = serde_json::from_value(serde_json::json!({
+            "credentials": {},
+            "selection": {}
+        }))
+        .expect("旧版 ASR 配置应能迁移");
+
+        assert_eq!(config.qwen_profile, QwenAsrProfile::QwenAudio3);
+    }
+
+    #[test]
+    fn asr_config_round_trips_qwen_audio_3_ipc_value() {
+        let config: AsrConfig = serde_json::from_value(serde_json::json!({
+            "credentials": {},
+            "selection": {},
+            "qwen_profile": "qwen_audio_3"
+        }))
+        .expect("前端 qwen_audio_3 应能通过 Tauri IPC 反序列化");
+
+        assert_eq!(config.qwen_profile, QwenAsrProfile::QwenAudio3);
+
+        let value = serde_json::to_value(config).expect("ASR 配置应能序列化");
+        assert_eq!(value["qwen_profile"], "qwen_audio_3");
+    }
+
+    #[test]
+    fn asr_config_migrates_previous_qwen_audio3_wire_value() {
+        let profile: QwenAsrProfile = serde_json::from_str("\"qwen_audio3\"")
+            .expect("修复前可能落盘的 qwen_audio3 应继续可读");
+
+        assert_eq!(profile, QwenAsrProfile::QwenAudio3);
+        assert_eq!(
+            serde_json::to_string(&profile).expect("Qwen profile 应能序列化"),
+            "\"qwen_audio_3\""
+        );
+    }
+
+    #[test]
+    fn asr_config_serializes_legacy_qwen_profile_explicitly() {
+        let config = AsrConfig {
+            qwen_profile: QwenAsrProfile::Qwen3Legacy,
+            ..AsrConfig::default()
+        };
+
+        let value = serde_json::to_value(config).expect("ASR 配置应能序列化");
+        assert_eq!(value["qwen_profile"], "qwen3_legacy");
     }
 
     #[test]

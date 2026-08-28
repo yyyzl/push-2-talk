@@ -2335,6 +2335,7 @@ mod save_config_merge_tests {
                 enable_fallback: true,
                 fallback_provider: Some(config::AsrProvider::Qwen),
             },
+            qwen_profile: config::QwenAsrProfile::Qwen3Legacy,
             language_mode: config::AsrLanguageMode::Zh,
         }
     }
@@ -2477,6 +2478,7 @@ async fn handle_recording_start(
     dictionary: Vec<String>,
     correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
+    qwen_profile: config::QwenAsrProfile,
 ) {
     tracing::info!("检测到快捷键按下");
 
@@ -2549,6 +2551,7 @@ async fn handle_recording_start(
                     dictionary,
                     correction_pairs,
                     language_mode,
+                    qwen_profile,
                 )
                 .await;
             }
@@ -2885,6 +2888,7 @@ async fn handle_qwen_realtime_start(
     dictionary: Vec<String>,
     correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
+    qwen_profile: config::QwenAsrProfile,
 ) {
     tracing::info!("启动千问实时流式转录...");
 
@@ -2903,11 +2907,12 @@ async fn handle_qwen_realtime_start(
         }
     }
 
-    let realtime_client = QwenRealtimeClient::new_with_correction_pairs(
+    let realtime_client = QwenRealtimeClient::new_with_profile_and_correction_pairs(
         api_key,
         dictionary,
         correction_pairs,
         language_mode,
+        qwen_profile,
     );
     match realtime_client.start_session().await {
         Ok(session) => {
@@ -3139,11 +3144,12 @@ async fn start_app(
             // 初始化所有有凭证的客户端
             if !cfg.credentials.qwen_api_key.is_empty() {
                 *state.qwen_client.lock().unwrap() =
-                    Some(QwenASRClient::new_with_correction_pairs(
+                    Some(QwenASRClient::new_with_profile_and_correction_pairs(
                         cfg.credentials.qwen_api_key.clone(),
                         dict.clone(),
                         correction_pairs.clone(),
                         cfg.language_mode,
+                        cfg.qwen_profile,
                     ));
             }
             if !cfg.credentials.sensevoice_api_key.is_empty() {
@@ -3358,6 +3364,10 @@ async fn start_app(
         .as_ref()
         .map(|cfg| cfg.language_mode)
         .unwrap_or(config::AsrLanguageMode::Auto);
+    let qwen_profile_start = asr_config
+        .as_ref()
+        .map(|cfg| cfg.qwen_profile)
+        .unwrap_or_default();
 
     let app_handle_stop = app_handle.clone();
     let audio_recorder_stop = Arc::clone(&state.audio_recorder);
@@ -3468,6 +3478,7 @@ async fn start_app(
         let doubao_app_id = doubao_app_id_start.clone();
         let doubao_access_token = doubao_access_token_start.clone();
         let language_mode = asr_language_mode_start;
+        let qwen_profile = qwen_profile_start;
         let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
         let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
         let dictionary_state = Arc::clone(&dictionary_state_start);
@@ -3565,6 +3576,7 @@ async fn start_app(
                 dictionary,
                 correction_pairs,
                 language_mode,
+                qwen_profile,
             )
             .await;
 

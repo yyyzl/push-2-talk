@@ -85,6 +85,7 @@ function App() {
       enable_fallback: false,
       fallback_provider: null,
     },
+    qwen_profile: 'qwen_audio_3',
     language_mode: 'auto',
   });
 

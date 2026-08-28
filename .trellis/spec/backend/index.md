@@ -19,6 +19,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
 | [Event Contracts](./event-contracts.md) | Tauri event payload contracts shared with the frontend | Active |
 | [ASR Hotword Compilation](./asr-hotword-compilation.md) | Provider hotword pack compilation and payload compatibility | Active |
+| [Qwen ASR Profiles](./qwen-asr-profiles.md) | Latest Qwen Audio 3.0 default and Qwen3 legacy protocol pairing | Active |
 | [TNL Normalization](./tnl-normalization.md) | Technical normalization contracts for dictionary, phonetic, and candidate behavior | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |

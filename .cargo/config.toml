@@ -1,0 +1,5 @@
+[env]
+# 兼容 CMake 4.x：audiopus_sys vendored opus 的 CMakeLists.txt 仍声明 <3.5，
+# 会在配置阶段报错。通过 wrapper 注入 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`。
+CMAKE = { value = "scripts/cmake-policy-wrapper.cmd", relative = true }
+

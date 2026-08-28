@@ -130,7 +130,8 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 - If a manual dictionary word and a correction pair produce the same pure word, the manual dictionary source wins.
 - Output order is by descending weight, then first-seen order for equal weights.
 - The pack must be truncated to the provider-specific `max_count`.
-- Qwen HTTP and Qwen Realtime render `input_audio_transcription.corpus.text` / system corpus text as a `、`-joined string.
+- Qwen3 legacy HTTP and realtime render `input_audio_transcription.corpus.text` / system corpus text as a `、`-joined string.
+- Qwen Audio 3.0 HTTP and realtime render the same compiled pure words as an inline `vocabulary` object with provider weight `4`; metadata and aliases must not enter the object keys.
 - Doubao HTTP and Doubao Realtime render hotwords as the existing legacy-compatible array shape: `{"word": "<pure word>"}`.
 - `AsrHotword.weight` is retained for future provider formats, but this slice must not add `weight` to Doubao outbound JSON until provider compatibility is verified separately.
 - Runtime provider paths must consume an already-loaded correction-pair snapshot; they must not synchronously read `correction_pairs.json` while building request payloads or sending realtime audio chunks.
@@ -159,7 +160,7 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 | User accepts `winds surf -> Windsurf` through `add_learned_word` | The runtime ASR correction-pair cache refreshes so the next recording can send `Windsurf` upstream. |
 | Qwen Realtime receives more than 50 compiled words | Corpus contains exactly 50 words. |
 | Doubao HTTP/Realtme receives more than 100 compiled words | Hotwords array contains exactly 100 objects. |
-| Dictionary is empty | Qwen omits corpus text; Doubao omits the `hotwords` field while preserving dialog context. |
+| Dictionary is empty | Qwen3 realtime omits corpus text, Qwen Audio 3.0 omits `vocabulary`, and Doubao omits the `hotwords` field while preserving dialog context. |
 | Code-symbol term contains hyphen | Alias may be retained in the pack for future formats, but aliases do not enter current provider payloads. |
 
 ### 5. Good/Base/Bad Cases
@@ -190,7 +191,7 @@ fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair>
 - HotwordCompiler unit test proving disabled/blank correction pairs are skipped.
 - TNL/LLM pack test proving correction pairs and correction hints are preserved for future consumers.
 - Runtime cache tests proving missing correction-pair files load as an empty ASR hotword source and valid stores hydrate correction pairs.
-- Provider tests proving Qwen HTTP/Realtme corpus includes correction-pair corrected text without original text or metadata.
+- Provider tests proving Qwen3 HTTP/Realtime corpus and Qwen Audio 3.0 HTTP/Realtime vocabulary include correction-pair corrected text without original text or metadata.
 - Provider tests proving Doubao HTTP/Realtme hotwords include correction-pair corrected text while preserving the legacy `{"word": ...}` shape.
 - Qwen HTTP/Realtme tests proving corpus size is limited by provider constants.
 - Doubao HTTP/Realtme tests proving hotwords size is limited and contains no `weight`.

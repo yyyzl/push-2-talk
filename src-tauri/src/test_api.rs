@@ -55,26 +55,25 @@ async fn run_qwen(file: &PathBuf) -> Result<()> {
     let audio_base64 = general_purpose::STANDARD.encode(&audio_data);
 
     let request_body = serde_json::json!({
-        "model": "qwen3-asr-flash",
+        "model": "qwen-audio-3.0-asr-flash",
         "input": {
             "messages": [
-                {
-                    "role": "system",
-                    "content": [{"text": ""}]
-                },
                 {
                     "role": "user",
                     "content": [
                         {
-                            "audio": format!("data:audio/wav;base64,{}", audio_base64)
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": format!("data:audio/wav;base64,{}", audio_base64)
+                            }
                         }
                     ]
                 }
             ]
         },
         "parameters": {
-            "result_format": "message",
-            "enable_itn": true
+            "format": "wav",
+            "sample_rate": "16000"
         }
     });
 
@@ -85,6 +84,7 @@ async fn run_qwen(file: &PathBuf) -> Result<()> {
         .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
+        .header("X-DashScope-SSE", "disable")
         .json(&request_body)
         .send()
         .await?;
@@ -96,12 +96,8 @@ async fn run_qwen(file: &PathBuf) -> Result<()> {
     }
 
     let result: serde_json::Value = response.json().await?;
-    let text = result["output"]["choices"]
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|choice| choice["message"]["content"].as_array())
-        .and_then(|content| content.first())
-        .and_then(|item| item["text"].as_str())
+    let text = result["output"]["text"]
+        .as_str()
         .ok_or_else(|| anyhow!("failed to parse qwen transcription result"))?;
 
     println!("[qwen] transcription result:");

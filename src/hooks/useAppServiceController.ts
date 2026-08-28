@@ -20,6 +20,7 @@ import {
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_QWEN_ASR_PROFILE,
   DEFAULT_SEARCH_CONFIG,
   FALLBACK_ASR_PROVIDER,
   VALID_ASR_PROVIDERS,
@@ -479,6 +480,10 @@ export function useAppServiceController({
                 enable_fallback: false,
                 fallback_provider: null,
               },
+              qwen_profile:
+                parsedCache.qwen?.profile === "qwen3_legacy"
+                  ? "qwen3_legacy"
+                  : DEFAULT_QWEN_ASR_PROFILE,
               language_mode: parsedCache.language_mode === 'zh' ? 'zh' : 'auto',
             };
 

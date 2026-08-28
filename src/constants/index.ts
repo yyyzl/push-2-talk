@@ -2,6 +2,7 @@ import type {
   AssistantConfig,
   AsrProvider,
   AsrProviderMeta,
+  QwenAsrProfile,
   DisfluencyMode,
   HotkeyKey,
   LearningConfig,
@@ -169,11 +170,36 @@ export function normalizeTnlConfig(
 }
 
 // ASR 服务商元数据
+export const DEFAULT_QWEN_ASR_PROFILE: QwenAsrProfile = 'qwen_audio_3';
+
+export const QWEN_ASR_PROFILES: Record<
+  QwenAsrProfile,
+  {
+    name: string;
+    httpModel: string;
+    realtimeModel: string;
+    description: string;
+  }
+> = {
+  qwen_audio_3: {
+    name: 'Qwen Audio 3.0 ASR（最新版，推荐）',
+    httpModel: 'qwen-audio-3.0-asr-flash',
+    realtimeModel: 'qwen-audio-3.0-asr-flash-streaming',
+    description: '多语种与中文方言能力更强，支持新版即时热词协议',
+  },
+  qwen3_legacy: {
+    name: 'Qwen3 ASR Flash（旧版兼容）',
+    httpModel: 'qwen3-asr-flash',
+    realtimeModel: 'qwen3-asr-flash-realtime',
+    description: '保留原有 HTTP 与 Realtime 协议，便于兼容旧环境',
+  },
+};
+
 export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {
   qwen: {
     name: '阿里千问',
-    model: 'qwen3-asr-flash',
-    docsUrl: 'https://help.aliyun.com/zh/dashscope/developer-reference/quick-start',
+    model: QWEN_ASR_PROFILES[DEFAULT_QWEN_ASR_PROFILE].httpModel,
+    docsUrl: 'https://help.aliyun.com/zh/model-studio/asr-model',
   },
   doubao: {
     name: '豆包',
@@ -210,7 +236,7 @@ export const VALID_ASR_PROVIDERS: AsrProvider[] = ['qwen', 'doubao', 'doubao_ime
 // 默认 ASR 缓存
 export const DEFAULT_ASR_CACHE = {
   active_provider: 'doubao_ime' as AsrProvider,
-  qwen: { api_key: '' },
+  qwen: { api_key: '', profile: DEFAULT_QWEN_ASR_PROFILE },
   doubao: { app_id: '', access_token: '' },
   doubao_ime: { device_id: '', token: '', cdid: '' },
   siliconflow: { api_key: '' }

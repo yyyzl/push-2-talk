@@ -1,5 +1,5 @@
 use crate::asr::utils;
-use crate::config::AsrLanguageMode;
+use crate::config::{AsrLanguageMode, QwenAsrProfile};
 use crate::personalization::hotword_compiler::{
     compile_asr_pack_with_correction_pairs, render_qwen_corpus_text, QWEN_HTTP_MAX_HOTWORDS,
 };
@@ -10,7 +10,8 @@ use std::time::Duration;
 
 const QWEN_API_URL: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-const MODEL: &str = "qwen3-asr-flash";
+const QWEN_AUDIO_3_MODEL: &str = "qwen-audio-3.0-asr-flash";
+const QWEN3_LEGACY_MODEL: &str = "qwen3-asr-flash";
 const MAX_RETRIES: u32 = 2;
 
 fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
@@ -21,35 +22,88 @@ fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
 }
 
 fn build_request_body(
+    profile: QwenAsrProfile,
     language_mode: AsrLanguageMode,
-    corpus_text: &str,
+    hotwords: &[String],
     audio_base64: &str,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "model": MODEL,
-        "input": {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": [{"text": corpus_text}]
-                },
-                {
-                    "role": "user",
-                    "content": [{"audio": format!("data:audio/wav;base64,{}", audio_base64)}]
-                }
-            ]
-        },
-        "parameters": {
-            // NOTE: 疑似无效参数，暂时注释掉
-            // "result_format": "message",
-            // "enable_itn": true,
-            // "disfluency_removal": true,
-            "language": asr_language_code(language_mode),
-            "asr_options": {
-                "enable_itn": true
+    match profile {
+        QwenAsrProfile::QwenAudio3 => {
+            let mut parameters = serde_json::json!({
+                "format": "wav",
+                "sample_rate": "16000"
+            });
+
+            if !hotwords.is_empty() {
+                let vocabulary = hotwords
+                    .iter()
+                    .map(|word| (word.clone(), serde_json::json!(4)))
+                    .collect::<serde_json::Map<String, serde_json::Value>>();
+                parameters["vocabulary"] = serde_json::Value::Object(vocabulary);
             }
+
+            if language_mode == AsrLanguageMode::Zh {
+                parameters["language_hints"] = serde_json::json!(["zh"]);
+            }
+
+            serde_json::json!({
+                "model": QWEN_AUDIO_3_MODEL,
+                "input": {
+                    "messages": [{
+                        "role": "user",
+                        "content": [{
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": format!("data:audio/wav;base64,{}", audio_base64)
+                            }
+                        }]
+                    }]
+                },
+                "parameters": parameters
+            })
         }
-    })
+        QwenAsrProfile::Qwen3Legacy => {
+            let corpus_text = hotwords.join("、");
+            serde_json::json!({
+                "model": QWEN3_LEGACY_MODEL,
+                "input": {
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": [{"text": corpus_text}]
+                        },
+                        {
+                            "role": "user",
+                            "content": [{
+                                "audio": format!("data:audio/wav;base64,{}", audio_base64)
+                            }]
+                        }
+                    ]
+                },
+                "parameters": {
+                    "language": asr_language_code(language_mode),
+                    "asr_options": {
+                        "enable_itn": true
+                    }
+                }
+            })
+        }
+    }
+}
+
+fn parse_transcription_text(profile: QwenAsrProfile, result: &serde_json::Value) -> Result<String> {
+    let text = match profile {
+        QwenAsrProfile::QwenAudio3 => result["output"]["text"].as_str(),
+        QwenAsrProfile::Qwen3Legacy => result["output"]["choices"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|choice| choice["message"]["content"].as_array())
+            .and_then(|content| content.first())
+            .and_then(|item| item["text"].as_str()),
+    };
+
+    text.map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("无法解析转录结果，响应格式: {:?}", result))
 }
 
 #[cfg(test)]
@@ -57,6 +111,7 @@ fn build_qwen_http_corpus_text(dictionary: &[String]) -> (usize, String) {
     build_qwen_http_corpus_text_with_pairs(dictionary, &[])
 }
 
+#[cfg(test)]
 fn build_qwen_http_corpus_text_with_pairs(
     dictionary: &[String],
     correction_pairs: &[CorrectionPair],
@@ -80,6 +135,7 @@ pub struct QwenASRClient {
     dictionary: Vec<String>,
     correction_pairs: Vec<CorrectionPair>,
     language_mode: AsrLanguageMode,
+    profile: QwenAsrProfile,
 }
 
 impl QwenASRClient {
@@ -93,6 +149,22 @@ impl QwenASRClient {
         correction_pairs: Vec<CorrectionPair>,
         language_mode: AsrLanguageMode,
     ) -> Self {
+        Self::new_with_profile_and_correction_pairs(
+            api_key,
+            dictionary,
+            correction_pairs,
+            language_mode,
+            QwenAsrProfile::default(),
+        )
+    }
+
+    pub fn new_with_profile_and_correction_pairs(
+        api_key: String,
+        dictionary: Vec<String>,
+        correction_pairs: Vec<CorrectionPair>,
+        language_mode: AsrLanguageMode,
+        profile: QwenAsrProfile,
+    ) -> Self {
         Self {
             api_key,
             client: utils::create_http_client(),
@@ -100,6 +172,7 @@ impl QwenASRClient {
             dictionary,
             correction_pairs,
             language_mode,
+            profile,
         }
     }
 
@@ -145,20 +218,26 @@ impl QwenASRClient {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("音频数据大小: {} bytes", audio_data.len());
 
-        // 词库编译（提纯、去重、排序、截断）后用顿号分隔
-        let (hotword_count, corpus_text) =
-            build_qwen_http_corpus_text_with_pairs(&self.dictionary, &self.correction_pairs);
+        let hotword_pack = compile_asr_pack_with_correction_pairs(
+            &self.dictionary,
+            &self.correction_pairs,
+            QWEN_HTTP_MAX_HOTWORDS,
+        );
+        let hotwords = hotword_pack
+            .words
+            .iter()
+            .map(|hotword| hotword.text.clone())
+            .collect::<Vec<_>>();
+        let hotword_count = hotwords.len();
+        let corpus_text = render_qwen_corpus_text(&hotword_pack);
         if !corpus_text.is_empty() {
-            tracing::info!(
-                "Qwen HTTP ASR 词库: {} 个词（已编译）, corpus={}",
-                hotword_count,
-                corpus_text
-            );
+            tracing::info!("Qwen HTTP ASR 词库: {} 个词（已编译）", hotword_count);
         } else {
             tracing::info!("Qwen HTTP ASR 词库: 未配置");
         }
 
-        let request_body = build_request_body(self.language_mode, &corpus_text, &audio_base64);
+        let request_body =
+            build_request_body(self.profile, self.language_mode, &hotwords, &audio_base64);
 
         tracing::info!("发送请求到: {}", QWEN_API_URL);
 
@@ -167,6 +246,7 @@ impl QwenASRClient {
             .post(QWEN_API_URL)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
+            .header("X-DashScope-SSE", "disable")
             .json(&request_body)
             .send()
             .await?;
@@ -183,14 +263,7 @@ impl QwenASRClient {
         let result: serde_json::Value = response.json().await?;
         tracing::info!("API 响应: {}", serde_json::to_string_pretty(&result)?);
 
-        let mut text = result["output"]["choices"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|choice| choice["message"]["content"].as_array())
-            .and_then(|content| content.first())
-            .and_then(|item| item["text"].as_str())
-            .ok_or_else(|| anyhow::anyhow!("无法解析转录结果，响应格式: {:?}", result))?
-            .to_string();
+        let mut text = parse_transcription_text(self.profile, &result)?;
 
         utils::strip_trailing_punctuation(&mut text);
 
@@ -209,14 +282,20 @@ impl QwenASRClient {
 mod tests {
     use super::{
         build_qwen_http_corpus_text, build_qwen_http_corpus_text_with_pairs, build_request_body,
+        parse_transcription_text,
     };
-    use crate::config::AsrLanguageMode;
+    use crate::config::{AsrLanguageMode, QwenAsrProfile};
     use crate::personalization::hotword_compiler::QWEN_HTTP_MAX_HOTWORDS;
     use crate::personalization::CorrectionPair;
 
     #[test]
     fn build_request_body_sets_auto_language() {
-        let request = build_request_body(AsrLanguageMode::Auto, "", "abc");
+        let request = build_request_body(
+            QwenAsrProfile::Qwen3Legacy,
+            AsrLanguageMode::Auto,
+            &[],
+            "abc",
+        );
         assert_eq!(request["parameters"]["language"], "auto");
     }
 
@@ -246,7 +325,90 @@ mod tests {
 
     #[test]
     fn build_request_body_sets_zh_language() {
-        let request = build_request_body(AsrLanguageMode::Zh, "", "abc");
+        let request =
+            build_request_body(QwenAsrProfile::Qwen3Legacy, AsrLanguageMode::Zh, &[], "abc");
         assert_eq!(request["parameters"]["language"], "zh");
+    }
+
+    #[test]
+    fn builds_qwen_audio_3_http_request_by_default_contract() {
+        let request = build_request_body(
+            QwenAsrProfile::QwenAudio3,
+            AsrLanguageMode::Auto,
+            &["Windsurf".to_string(), "Rust".to_string()],
+            "abc",
+        );
+
+        assert_eq!(request["model"], "qwen-audio-3.0-asr-flash");
+        assert_eq!(request["input"]["messages"][0]["role"], "user");
+        assert_eq!(
+            request["input"]["messages"][0]["content"][0]["type"],
+            "input_audio"
+        );
+        assert_eq!(
+            request["input"]["messages"][0]["content"][0]["input_audio"]["data"],
+            "data:audio/wav;base64,abc"
+        );
+        assert_eq!(request["parameters"]["format"], "wav");
+        assert_eq!(request["parameters"]["sample_rate"], "16000");
+        assert_eq!(request["parameters"]["vocabulary"]["Windsurf"], 4);
+        assert_eq!(request["parameters"]["vocabulary"]["Rust"], 4);
+        assert!(request["parameters"].get("language_hints").is_none());
+    }
+
+    #[test]
+    fn builds_qwen_audio_3_zh_language_hint() {
+        let request =
+            build_request_body(QwenAsrProfile::QwenAudio3, AsrLanguageMode::Zh, &[], "abc");
+
+        assert_eq!(
+            request["parameters"]["language_hints"],
+            serde_json::json!(["zh"])
+        );
+    }
+
+    #[test]
+    fn keeps_qwen3_legacy_http_request_shape() {
+        let request = build_request_body(
+            QwenAsrProfile::Qwen3Legacy,
+            AsrLanguageMode::Auto,
+            &["Windsurf".to_string(), "Rust".to_string()],
+            "abc",
+        );
+
+        assert_eq!(request["model"], "qwen3-asr-flash");
+        assert_eq!(
+            request["input"]["messages"][0]["content"][0]["text"],
+            "Windsurf、Rust"
+        );
+        assert_eq!(request["parameters"]["language"], "auto");
+    }
+
+    #[test]
+    fn parses_qwen_audio_3_http_response() {
+        let response = serde_json::json!({
+            "output": { "text": "最新版识别结果。" }
+        });
+
+        assert_eq!(
+            parse_transcription_text(QwenAsrProfile::QwenAudio3, &response).unwrap(),
+            "最新版识别结果。"
+        );
+    }
+
+    #[test]
+    fn parses_qwen3_legacy_http_response() {
+        let response = serde_json::json!({
+            "output": {
+                "choices": [{
+                    "message": { "content": [{ "text": "旧版识别结果。" }] }
+                }]
+            }
+        });
+
+        assert_eq!(
+            parse_transcription_text(QwenAsrProfile::Qwen3Legacy, &response).unwrap(),
+            "旧版识别结果。"
+        );
     }
 }

@@ -9,7 +9,11 @@ import type {
   LlmConfig,
 } from "../../types";
 import type { AppPage } from "../../pages/types";
-import { ASR_PROVIDERS } from "../../constants";
+import {
+  ASR_PROVIDERS,
+  DEFAULT_QWEN_ASR_PROFILE,
+  QWEN_ASR_PROFILES,
+} from "../../constants";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../../utils";
 import { ConfigSelect, ConfigToggle, Tooltip } from "../common";
 import { useConfigSave } from "../../contexts/ConfigSaveContext";
@@ -71,6 +75,7 @@ export function RightPanel({
   const externalOnlySyncStatus = isExternalSyncing
     ? ("syncing" as const)
     : undefined;
+  const qwenProfile = asrConfig.qwen_profile ?? DEFAULT_QWEN_ASR_PROFILE;
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
@@ -102,7 +107,7 @@ export function RightPanel({
           options={[
             {
               value: "qwen" as AsrProvider,
-              label: `${ASR_PROVIDERS.qwen.name} · ${ASR_PROVIDERS.qwen.model}`,
+              label: `${ASR_PROVIDERS.qwen.name} · ${QWEN_ASR_PROFILES[qwenProfile].httpModel}`,
             },
             {
               value: "doubao" as AsrProvider,
