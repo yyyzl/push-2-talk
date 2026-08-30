@@ -29,10 +29,15 @@ project_doc_fallback_filenames = ["AGENTS.md"]
 # - min_wait_timeout_ms: 480000 ms = 8 min. Codex default is 10 s, too
 #   short for Trellis subagents that routinely take 2-10 min. Hard
 #   ceiling is 3,600,000 (1 h).
+# - default_wait_timeout_ms: MUST be >= min_wait_timeout_ms, otherwise
+#   Codex aborts at startup with "failed to resolve feature override
+#   precedence". The built-in default (~10 s) is smaller than the raised
+#   min above, so it has to be set explicitly here.
 [features.multi_agent_v2]
 enabled = true
 max_concurrent_threads_per_session = 6
 min_wait_timeout_ms = 480000
+default_wait_timeout_ms = 480000
 
 # === Local MCP servers (project-scoped) ===
 # TODO(security): CONTEXT7_API_KEY is committed in plaintext. Consider
