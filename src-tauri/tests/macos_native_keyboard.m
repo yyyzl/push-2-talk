@@ -237,6 +237,25 @@ int main(void) { @autoreleasepool {
     testSelectionReadDelay=0;
     puts("PASS ATDD verifies asynchronous selection without posting duplicate selection writes");
 
+    // A probe must expose the native hierarchy without reading document contents.
+    TestAXNode *diagnosticTab=node(@{@"AXRole":@"AXRadioButton",@"AXSubrole":@"AXTabButton",@"AXTitle":@"PRIVATE_TITLE",@"AXValue":@YES});
+    TestAXNode *diagnosticWeb=node(@{@"AXRole":@"AXWebArea",@"AXValue":@"PRIVATE_BODY",@"AXChildren":@[node(@{@"AXRole":@"AXPrivatePageChild"})]});
+    TestAXNode *diagnosticGroup=node(@{@"AXRole":@"AXTabGroup",@"AXChildren":@[diagnosticTab]});
+    selectionWindow.attributes=@{@"AXChildren":@[diagnosticWeb,diagnosticGroup]};
+    initializeTargets(); targets[@9999]=selectionTarget;
+    char *diagnostic=ptt_atdd_target_description(9999);
+    NSString *diagnosticText=[NSString stringWithUTF8String:diagnostic];
+    ptt_free_string(diagnostic);
+    assert([diagnosticText containsString:@"AXTabGroup"] && [diagnosticText containsString:@"AXTabButton"]);
+    assert(![diagnosticText containsString:@"PRIVATE"] && ![diagnosticText containsString:@"AXPrivatePageChild"]);
+    puts("PASS ATDD exposes native tab roles but excludes titles, values and web descendants");
+    cycle.attributes=@{@"AXRole":@"AXGroup",@"AXChildren":@[cycle]};
+    selectionWindow.attributes=@{@"AXChildren":@[cycle]};
+    diagnostic=ptt_atdd_target_description(9999);
+    assert(strlen(diagnostic)<4096);
+    ptt_free_string(diagnostic); cycle.attributes=@{}; [targets removeObjectForKey:@9999];
+    puts("PASS ATDD hierarchy diagnostics terminate on cyclic trees with bounded output");
+
     assert(!ptt_send_shortcut(9));
     assert(testPostedEvents==0);
     puts("PASS denied event posting cannot be reported as a successful paste");

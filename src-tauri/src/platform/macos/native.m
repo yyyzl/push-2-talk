@@ -432,6 +432,35 @@ bool ptt_atdd_select_fixture(uint64_t token, const char *path, const char *expec
     }});
     return selected;
 }
+// Opt-in diagnostics: role metadata only, with no descent into document content.
+static NSString *atddRoleName(id value) {
+    if (![value isKindOfClass:NSString.class] || [value length]>48 || ![value hasPrefix:@"AX"]) return @"-";
+    NSCharacterSet *letters=NSCharacterSet.letterCharacterSet;
+    return [value rangeOfCharacterFromSet:letters.invertedSet].location==NSNotFound ? value : @"-";
+}
+static void atddDescribeNode(id node, NSUInteger depth, NSUInteger *remaining,
+                             CFAbsoluteTime deadline, NSMutableArray *lines) {
+    if (!node || depth>12 || *remaining==0 || CFAbsoluteTimeGetCurrent()>deadline) return;
+    (*remaining)--;
+    AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)node,0.05);
+    NSString *role=atddRoleName(attribute(node,kAXRoleAttribute));
+    NSString *subrole=atddRoleName(attribute(node,kAXSubroleAttribute));
+    if ([@[@"AXWebArea",@"AXTextArea",@"AXTextField",@"AXStaticText"] containsObject:role] ||
+        [subrole isEqualToString:@"AXSecureTextField"]) {
+        [lines addObject:[NSString stringWithFormat:@"%lu:%@/%@ skip",(unsigned long)depth,role,subrole]];
+        return;
+    }
+    id children=attribute(node,kAXChildrenAttribute);
+    id tabs=[role isEqualToString:@"AXTabGroup"] ? attribute(node,kAXTabsAttribute) : nil;
+    [lines addObject:[NSString stringWithFormat:@"%lu:%@/%@ children=%ld tabs=%ld",(unsigned long)depth,role,subrole,
+        [children isKindOfClass:NSArray.class] ? (long)[children count] : -1L,
+        [tabs isKindOfClass:NSArray.class] ? (long)[tabs count] : -1L]];
+    if (![children isKindOfClass:NSArray.class]) return;
+    for (id child in [children subarrayWithRange:NSMakeRange(0,MIN([children count],80))]) {
+        if (*remaining==0 || CFAbsoluteTimeGetCurrent()>deadline) break;
+        atddDescribeNode(child,depth+1,remaining,deadline,lines);
+    }
+}
 char *ptt_atdd_target_description(uint64_t token) {
     initializeTargets(); __block NSString *description=@"未捕获目标";
     dispatch_sync(targetQueue, ^{ @autoreleasepool {
@@ -448,6 +477,10 @@ char *ptt_atdd_target_description(uint64_t token) {
                      target.activationResult?:@"未请求",target.tab!=nil,target.tabError,
                      target.frontmostError,target.raiseError,target.mainError,target.focusError];
         if (target.fixtureSelectionStatus) description=[description stringByAppendingFormat:@"；选区准备=%@",target.fixtureSelectionStatus];
+        NSMutableArray *tree=[NSMutableArray new];
+        NSUInteger remaining=80;
+        atddDescribeNode(target.window,0,&remaining,CFAbsoluteTimeGetCurrent()+0.5,tree);
+        description=[description stringByAppendingFormat:@"；原生结构：\n%@",[tree componentsJoinedByString:@"\n"]];
     }});
     return strdup([[NSString stringWithFormat:@"%@；PostEvent=%@",description,CGPreflightPostEventAccess()?@"允许":@"拒绝"] UTF8String]);
 }

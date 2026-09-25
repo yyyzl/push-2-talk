@@ -116,9 +116,11 @@ pub(crate) async fn run(
     app: tauri::AppHandle,
     scenario: Option<Scenario>,
     application: Option<Application>,
+    inspect_only: Option<bool>,
 ) -> Result<String, String> {
     let scenario = scenario.unwrap_or_default();
     let application = application.unwrap_or_default();
+    let inspect_only = inspect_only.unwrap_or(false);
     let (cancel, mut cancelled) = watch::channel(false);
     {
         let mut session = SESSION.lock().unwrap();
@@ -140,13 +142,36 @@ pub(crate) async fn run(
     };
     let state = app.state::<crate::AppState>();
     let service = state.hotkey_service.clone();
-    if !service.is_service_active() || !crate::platform::desktop().status().ready() {
+    if inspect_only && service.is_service_active() {
+        return Err("目标检查不使用麦克风；请先暂停服务，避免快捷键启动录音".into());
+    }
+    if !inspect_only
+        && (!service.is_service_active() || !crate::platform::desktop().status().ready())
+    {
         return Err("需要正常启动服务并授予全部权限".into());
     }
     if state.conversation_session.lock().unwrap().is_some()
         || state.is_assistant_processing.load(Ordering::SeqCst)
     {
         return Err("请先结束现有助手会话，再开始独立验收".into());
+    }
+    if inspect_only
+        && (state.current_trigger_mode.lock().unwrap().is_some()
+            || state.is_processing_stop.load(Ordering::SeqCst)
+            || state
+                .streaming_recorder
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|r| r.is_recording())
+            || state
+                .audio_recorder
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|r| r.is_recording()))
+    {
+        return Err("请等待现有录音与处理结束，再检查目标".into());
     }
     let llm_ready = state.assistant_processor.lock().unwrap().is_some();
     if !lifecycle::wait_delay(Duration::from_secs(5), &mut cancelled).await {
@@ -188,7 +213,7 @@ pub(crate) async fn run(
     };
     std::fs::write(&fixture, document).map_err(|e| e.to_string())?;
     let setup_path = fixture.clone();
-    tokio::task::spawn_blocking(move || {
+    let prepared_target = tokio::task::spawn_blocking(move || {
         crate::platform::atdd_prepare_fixture(&setup_path, &contents, start, length)
     })
     .await
@@ -196,6 +221,13 @@ pub(crate) async fn run(
     .map_err(|e| e.to_string())?;
     if *cancelled.borrow() {
         return Ok("已取消准备，没有启动录音".into());
+    }
+    if inspect_only {
+        let description = crate::platform::atdd_target_description(Some(prepared_target));
+        return Ok(format!(
+            "目标检查完成；未启动录音。{description}。文档：{}",
+            fixture.display()
+        ));
     }
 
     let outcome = Arc::new(AtomicU8::new(0));

@@ -21,6 +21,13 @@ export function AtddHarness() {
       </select>
     </label>
     <p role="status" className="max-h-40 overflow-y-auto whitespace-pre-wrap">{result}</p>
+    <button disabled={running} className="mt-2 block rounded border border-slate-500 px-3 py-2 disabled:opacity-50" onClick={async () => {
+      setRunning(true);
+      setResult("准备独立文档与选区并检查原生目标；不录音、不调用 ASR 或 LLM。");
+      try { setResult(await invoke<string>("run", { scenario, application, inspectOnly: true })); }
+      catch (error) { setResult(String(error)); }
+      finally { setRunning(false); }
+    }}>准备并检查目标（不录音）</button>
     <button disabled={running} className="mt-2 rounded bg-slate-900 px-3 py-2 text-white disabled:opacity-50" onClick={async () => {
       setRunning(true);
       setResult("验收运行中：准备独立文档与选区，初始化成功后录音 18 秒，再等待真实处理结果。");
