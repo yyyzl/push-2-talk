@@ -238,3 +238,9 @@ CI 不包含 Windows 交互式桌面验收，也不包含正式 Developer ID 签
 角色映射另核对了 [Chromium 官方 AX 回归示例](https://chromium.googlesource.com/chromium/src/+/6136f8637ff1fe2c12291d35b51ee7cf97e74f26%5E%21/)；该示例也说明网页本身会暴露相同的标签角色，因此不能无边界搜索整棵辅助功能树。
 
 跨标签修复包 CDHash：`ce073bb241b874cca26ebf3e54c7e5dd52a89de0`。本地 TypeScript 86 项、Rust library 210 项（4 ignored）、独立入口 4+12+6+3+6（含复用用例）、原生 27 项、默认 Cargo 编译、ATDD 构建和严格签名检查均通过。恢复辅助功能授权时，系统要求 Touch ID／密码重新解锁“隐私与安全性”；尚未完成该系统验证，因此新包跨标签、关闭及 TextEdit 回归尚未执行，不能记为实机通过。
+
+### `9704b85` 双平台 CI 复核
+
+[Platform checks #36167115218](https://github.com/yyyzl/push-2-talk/actions/runs/36167115218) 全部通过。已核对两端测试和构建步骤，并确认 macOS 原生测试执行了新增的浏览器标签身份、切换和关闭用例；Windows NSIS 与 macOS `.app` 原型均成功生成。
+
+原型附件：[Windows](https://github.com/yyyzl/push-2-talk/actions/runs/36167115218/artifacts/10878615081) / [macOS](https://github.com/yyyzl/push-2-talk/actions/runs/36167115218/artifacts/10878072800)，保存 7 天，不包含本地配置或 ATDD 驱动。此 CI 结论不代替 Chrome 跨标签的本机验收。再次检查桌面时，系统仍停留在 Touch ID／密码验证框，新包实机复验尚未开始。
