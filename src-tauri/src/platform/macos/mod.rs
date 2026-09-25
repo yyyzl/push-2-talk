@@ -69,7 +69,8 @@ pub fn atdd_prepare_fixture(
                             length,
                         )
                     },
-                    "验收文档内容或选区不匹配，已停止本轮验收"
+                    "验收文档内容或选区不匹配，已停止本轮验收；{}",
+                    atdd_target_description(Some(target))
                 );
                 return Ok(target);
             }

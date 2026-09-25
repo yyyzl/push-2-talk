@@ -11,6 +11,8 @@ static TestAXNode *node(NSDictionary *attributes) {
     TestAXNode *result=[TestAXNode new]; result.attributes=attributes; return result;
 }
 static TestAXNode *testSystem;
+static unsigned testSelectionReadDelay;
+static id testPendingSelection;
 static AXUIElementRef testSystemWide(void) { return (AXUIElementRef)CFBridgingRetain(testSystem); }
 static AXError testMessagingTimeout(AXUIElementRef element,float timeout) {
     (void)element; (void)timeout; return kAXErrorSuccess;
@@ -18,6 +20,12 @@ static AXError testMessagingTimeout(AXUIElementRef element,float timeout) {
 static AXError testCopyAttribute(AXUIElementRef element,CFStringRef key,CFTypeRef *value) {
     id object=(__bridge id)element;
     if (![object isKindOfClass:TestAXNode.class]) return kAXErrorInvalidUIElement;
+    if (CFEqual(key,kAXSelectedTextRangeAttribute) && testPendingSelection && testSelectionReadDelay--==0) {
+        NSMutableDictionary *attributes=((TestAXNode *)object).attributes.mutableCopy;
+        attributes[(__bridge NSString *)key]=testPendingSelection;
+        ((TestAXNode *)object).attributes=attributes;
+        testPendingSelection=nil;
+    }
     id result=((TestAXNode *)object).attributes[(__bridge NSString *)key];
     if (!result) return kAXErrorAttributeUnsupported;
     *value=CFBridgingRetain(result); return kAXErrorSuccess;
@@ -38,6 +46,10 @@ static AXError testSetAttribute(AXUIElementRef element, CFStringRef key, CFTypeR
         testSelectionWrites++;
         if (testSelectionError!=kAXErrorSuccess) return testSelectionError;
         if (testSelectionApplied) {
+            if (testSelectionReadDelay) {
+                testPendingSelection=(__bridge id)value;
+                return kAXErrorSuccess;
+            }
             TestAXNode *object=(__bridge TestAXNode *)element;
             NSMutableDictionary *attributes=object.attributes.mutableCopy;
             attributes[(__bridge NSString *)key]=(__bridge id)value;
@@ -185,6 +197,13 @@ int main(void) { @autoreleasepool {
     assert(!selectFixtureText(selectionTarget,fixtureText,CFRangeMake(4,4)));
     testSelectionApplied=true;
     puts("PASS ATDD rejects denied or unapplied selection updates");
+
+    testSelectionReadDelay=2;
+    writesBefore=testSelectionWrites;
+    assert(selectFixtureText(selectionTarget,fixtureText,CFRangeMake(4,4)));
+    assert(testPendingSelection==nil && testSelectionWrites==writesBefore+1);
+    testSelectionReadDelay=0;
+    puts("PASS ATDD verifies asynchronous selection without posting duplicate selection writes");
 
     assert(!ptt_send_shortcut(9));
     assert(testPostedEvents==0);

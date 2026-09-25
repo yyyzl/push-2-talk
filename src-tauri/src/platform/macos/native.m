@@ -18,6 +18,7 @@
 @property(nonatomic) AXError raiseError;
 @property(nonatomic) AXError mainError;
 @property(nonatomic) AXError focusError;
+@property(nonatomic, copy) NSString *fixtureSelectionStatus;
 @end
 @implementation PTTTarget
 @end
@@ -325,19 +326,35 @@ static bool atddFixtureMatches(NSString *bundle, NSString *document, NSString *r
 }
 // Test setup only: open a file created by the opt-in driver, with explicit activation.
 static bool selectFixtureText(PTTTarget *target, NSString *expected, CFRange range) {
+    target.fixtureSelectionStatus=@"焦点或内容不匹配";
     if (!focused(target) || ![expected isKindOfClass:NSString.class] ||
         ![attribute(target.element,kAXValueAttribute) isEqual:expected]) return false;
+    target.fixtureSelectionStatus=@"选区范围无效";
     if (range.location<0 || range.length<0 || (NSUInteger)range.location>expected.length ||
         (NSUInteger)range.length>expected.length-(NSUInteger)range.location) return false;
     AXValueRef value=AXValueCreate(kAXValueCFRangeType,&range);
     AXError error=AXUIElementSetAttributeValue((__bridge AXUIElementRef)target.element,kAXSelectedTextRangeAttribute,value);
     CFRelease(value);
-    if (error!=kAXErrorSuccess || !focused(target)) return false;
-    id selected=attribute(target.element,kAXSelectedTextRangeAttribute);
-    CFRange actual;
-    return selected && CFGetTypeID((__bridge CFTypeRef)selected)==AXValueGetTypeID() &&
-           AXValueGetValue((__bridge AXValueRef)selected,kAXValueCFRangeType,&actual) &&
-           actual.location==range.location && actual.length==range.length;
+    target.fixtureSelectionStatus=[NSString stringWithFormat:@"选区设置 AX=%d",error];
+    if (error!=kAXErrorSuccess) return false;
+    // Browser renderers may acknowledge AX writes before their read cache updates.
+    // Write once, then verify for a bounded interval; never proceed on a stale range.
+    CFAbsoluteTime deadline=CFAbsoluteTimeGetCurrent()+0.3;
+    do {
+        target.fixtureSelectionStatus=@"等待期间焦点或内容改变";
+        if (!focused(target) || ![attribute(target.element,kAXValueAttribute) isEqual:expected]) return false;
+        target.fixtureSelectionStatus=@"选区读回不匹配或不支持";
+        id selected=attribute(target.element,kAXSelectedTextRangeAttribute);
+        CFRange actual;
+        if (selected && CFGetTypeID((__bridge CFTypeRef)selected)==AXValueGetTypeID() &&
+            AXValueGetValue((__bridge AXValueRef)selected,kAXValueCFRangeType,&actual) &&
+            actual.location==range.location && actual.length==range.length) {
+            target.fixtureSelectionStatus=@"匹配";
+            return focused(target);
+        }
+        usleep(15000);
+    } while (CFAbsoluteTimeGetCurrent()<deadline);
+    return false;
 }
 // Recording still captures the foreground target through the ordinary production callback.
 bool ptt_atdd_open_fixture(const char *path) {
@@ -398,6 +415,7 @@ char *ptt_atdd_target_description(uint64_t token) {
                      same(attribute(active,kAXFocusedUIElementAttribute),target.element),target.restoreRequested,
                      target.activationResult?:@"未请求",target.tab!=nil,target.tabError,
                      target.frontmostError,target.raiseError,target.mainError,target.focusError];
+        if (target.fixtureSelectionStatus) description=[description stringByAppendingFormat:@"；选区准备=%@",target.fixtureSelectionStatus];
     }});
     return strdup([[NSString stringWithFormat:@"%@；PostEvent=%@",description,CGPreflightPostEventAccess()?@"允许":@"拒绝"] UTF8String]);
 }
