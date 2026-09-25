@@ -29,6 +29,10 @@ jobs:
           brew install opus
           echo "OPUS_LIB_DIR=$(brew --prefix opus)" >> "$GITHUB_ENV"
           echo "OPUS_STATIC=1" >> "$GITHUB_ENV"
+      - name: Configure Windows Opus compatibility
+        if: runner.os == 'Windows'
+        # audiopus_sys bundles an older Opus CMake project; keep the default ASR enabled.
+        run: '"CMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV'
       - run: npm ci
       - run: npm run test:ts
       - run: npm run build
