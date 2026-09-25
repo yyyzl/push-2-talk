@@ -42,19 +42,51 @@ static id attribute(id object, CFStringRef key) {
 }
 static BOOL same(id left,id right) { return left && right && CFEqual((__bridge CFTypeRef)left,(__bridge CFTypeRef)right); }
 static BOOL secure(id element) { return [attribute(element,kAXSubroleAttribute) isEqualToString:@"AXSecureTextField"]; }
+// Chrome's window chrome nests its tab strip and may expose tab buttons through
+// AXChildren instead of AXTabs. Walk native containers only: never AXWebArea or
+// the descendants of arbitrary controls, even if a page exposes similar tabs.
+static void collectWindowTabs(id node, NSUInteger depth, NSUInteger *remaining,
+                              CFAbsoluteTime deadline, BOOL insideTabGroup, NSMutableArray *result) {
+    if (!node || depth>8 || *remaining==0 || result.count>=128 || CFAbsoluteTimeGetCurrent()>deadline) return;
+    (*remaining)--;
+    AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)node,0.05);
+    NSString *role=attribute(node,kAXRoleAttribute);
+    if (insideTabGroup && [role isEqualToString:(__bridge NSString *)kAXRadioButtonRole] &&
+        [attribute(node,kAXSubroleAttribute) isEqualToString:@"AXTabButton"]) {
+        [result addObject:node];
+        return;
+    }
+    if ([role isEqualToString:(__bridge NSString *)kAXTabGroupRole]) {
+        id tabs=attribute(node,kAXTabsAttribute);
+        if ([tabs isKindOfClass:NSArray.class] && [tabs count]>0) {
+            [result addObjectsFromArray:[tabs subarrayWithRange:NSMakeRange(0,MIN([tabs count],128-result.count))]];
+            return;
+        }
+        insideTabGroup=YES;
+    } else if (![role isEqualToString:(__bridge NSString *)kAXGroupRole] &&
+               ![role isEqualToString:(__bridge NSString *)kAXSplitGroupRole] &&
+               ![role isEqualToString:(__bridge NSString *)kAXScrollAreaRole]) {
+        return;
+    }
+    id children=attribute(node,kAXChildrenAttribute);
+    if (![children isKindOfClass:NSArray.class]) return;
+    for (id child in [children subarrayWithRange:NSMakeRange(0,MIN([children count],128))]) {
+        if (*remaining==0 || result.count>=128 || CFAbsoluteTimeGetCurrent()>deadline) break;
+        collectWindowTabs(child,depth+1,remaining,deadline,insideTabGroup,result);
+    }
+}
 // Track native window tabs by AX identity, never by a document title or position.
-// Restrict lookup to the window's own tab group; do not search arbitrary page contents.
 static NSArray *windowTabs(id window) {
     id children=attribute(window,kAXChildrenAttribute);
     if (![children isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray *result=[NSMutableArray new];
+    NSUInteger remaining=256;
     CFAbsoluteTime deadline=CFAbsoluteTimeGetCurrent()+0.25;
     for (id child in [children subarrayWithRange:NSMakeRange(0,MIN([children count],32))]) {
-        if (CFAbsoluteTimeGetCurrent()>deadline) break;
-        if (![attribute(child,kAXRoleAttribute) isEqualToString:(__bridge NSString *)kAXTabGroupRole]) continue;
-        id tabs=attribute(child,kAXTabsAttribute);
-        if ([tabs isKindOfClass:NSArray.class]) return tabs;
+        if (remaining==0 || result.count>=128 || CFAbsoluteTimeGetCurrent()>deadline) break;
+        collectWindowTabs(child,0,&remaining,deadline,NO,result);
     }
-    return @[];
+    return result;
 }
 static id selectedWindowTab(id window) {
     NSArray *tabs=windowTabs(window);
