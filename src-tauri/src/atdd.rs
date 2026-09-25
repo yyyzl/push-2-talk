@@ -23,6 +23,14 @@ pub(crate) enum Scenario {
     AssistantSelection,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Application {
+    #[default]
+    TextEdit,
+    Chrome,
+}
+
 struct Session {
     scenario: Scenario,
     cancel: watch::Sender<bool>,
@@ -107,8 +115,10 @@ async fn cancel_owned_recording(app: &tauri::AppHandle, id: u64) -> Result<(), S
 pub(crate) async fn run(
     app: tauri::AppHandle,
     scenario: Option<Scenario>,
+    application: Option<Application>,
 ) -> Result<String, String> {
     let scenario = scenario.unwrap_or_default();
+    let application = application.unwrap_or_default();
     let (cancel, mut cancelled) = watch::channel(false);
     {
         let mut session = SESSION.lock().unwrap();
@@ -146,7 +156,12 @@ pub(crate) async fn run(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let fixture = std::env::temp_dir().join(format!("PushToTalk-ATDD-{timestamp}.txt"));
+    let extension = if application == Application::Chrome {
+        "html"
+    } else {
+        "txt"
+    };
+    let fixture = std::env::temp_dir().join(format!("PushToTalk-ATDD-{timestamp}.{extension}"));
     let contents = if scenario == Scenario::AssistantSelection {
         format!("{HEADER}{SELECTED}\n")
     } else {
@@ -160,7 +175,18 @@ pub(crate) async fn run(
     } else {
         (contents.encode_utf16().count() as u64, 0)
     };
-    std::fs::write(&fixture, &contents).map_err(|e| e.to_string())?;
+    let document = if application == Application::Chrome {
+        // Only the fixed non-sensitive fixture above is interpolated here.
+        format!(
+            r#"<!doctype html><meta charset="utf-8"><title>PushToTalk ATDD {timestamp}</title>
+<style>body{{font:18px sans-serif;margin:40px}}textarea{{display:block;width:80vw;height:50vh;font:18px sans-serif}}</style>
+<h1>PushToTalk ATDD</h1><label for="input">PushToTalk ATDD 输入框</label>
+<textarea id="input" autofocus>{contents}</textarea>"#
+        )
+    } else {
+        contents.clone()
+    };
+    std::fs::write(&fixture, document).map_err(|e| e.to_string())?;
     let setup_path = fixture.clone();
     tokio::task::spawn_blocking(move || {
         crate::platform::atdd_prepare_fixture(&setup_path, &contents, start, length)

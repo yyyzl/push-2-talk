@@ -311,9 +311,16 @@ bool ptt_send_shortcut(uint16_t code) {
     return true;
 }
 // Only exposed by the opt-in ATDD Rust module. No text, titles or clipboard data.
+static NSString *atddFixtureApplication(NSString *path) {
+    if ([path.pathExtension isEqualToString:@"txt"]) return @"com.apple.TextEdit";
+    if ([path.pathExtension isEqualToString:@"html"]) return @"com.google.Chrome";
+    return nil;
+}
 static bool atddFixtureMatches(NSString *bundle, NSString *document, NSString *role, NSString *path) {
-    if (![bundle isEqualToString:@"com.apple.TextEdit"] || ![role isEqualToString:@"AXTextArea"] || !document) return false;
-    NSString *actual=[[[NSURL URLWithString:document] path] stringByResolvingSymlinksInPath];
+    if (![bundle isEqualToString:atddFixtureApplication(path)] || ![role isEqualToString:@"AXTextArea"]) return false;
+    NSURL *url=document ? [NSURL URLWithString:document] : nil;
+    if (!url.isFileURL || (url.host.length && ![url.host isEqualToString:@"localhost"])) return false;
+    NSString *actual=[url.path stringByResolvingSymlinksInPath];
     return [actual isEqualToString:[path stringByResolvingSymlinksInPath]];
 }
 // Test setup only: open a file created by the opt-in driver, with explicit activation.
@@ -339,7 +346,8 @@ bool ptt_atdd_open_fixture(const char *path) {
     dispatch_semaphore_t done=dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWorkspace *workspace=NSWorkspace.sharedWorkspace;
-        NSURL *application=[workspace URLForApplicationWithBundleIdentifier:@"com.apple.TextEdit"];
+        NSString *bundle=atddFixtureApplication(filename);
+        NSURL *application=bundle ? [workspace URLForApplicationWithBundleIdentifier:bundle] : nil;
         if (!application) { dispatch_semaphore_signal(done); return; }
         NSWorkspaceOpenConfiguration *configuration=NSWorkspaceOpenConfiguration.configuration;
         configuration.activates=YES; configuration.addsToRecentItems=NO;

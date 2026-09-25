@@ -52,7 +52,7 @@ pub fn atdd_prepare_fixture(
     let expected = std::ffi::CString::new(expected)?;
     anyhow::ensure!(
         unsafe { ptt_atdd_open_fixture(path.as_ptr()) },
-        "无法打开 TextEdit 验收文档"
+        "无法打开验收文档，请确认所选测试应用已安装"
     );
     let mut observed = None;
     for _ in 0..30 {
@@ -77,7 +77,7 @@ pub fn atdd_prepare_fixture(
         thread::sleep(Duration::from_millis(100));
     }
     anyhow::bail!(
-        "TextEdit 验收文档未获得系统输入焦点，已停止本轮验收；当前目标：{}",
+        "验收文档未获得系统输入焦点，已停止本轮验收；当前目标：{}",
         atdd_target_description(observed)
     )
 }

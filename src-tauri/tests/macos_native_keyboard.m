@@ -141,6 +141,17 @@ int main(void) { @autoreleasepool {
     assert(!atddFixtureMatches(@"com.apple.TextEdit",@"file:///tmp/user-document.txt",@"AXTextArea",fixture));
     assert(!atddFixtureMatches(@"com.apple.TextEdit",document,@"AXMenu",fixture));
     assert(!atddFixtureMatches(@"com.apple.TextEdit",nil,@"AXTextArea",fixture));
+    NSString *browserFixture=[fixture stringByAppendingString:@".html"];
+    NSString *browserDocument=[NSURL fileURLWithPath:browserFixture].absoluteString;
+    assert(atddFixtureMatches(@"com.google.Chrome",browserDocument,@"AXTextArea",browserFixture));
+    assert(!atddFixtureMatches(@"com.apple.TextEdit",browserDocument,@"AXTextArea",browserFixture));
+    assert(!atddFixtureMatches(@"com.google.Chrome",document,@"AXTextArea",fixture));
+    assert(!atddFixtureMatches(@"com.google.Chrome",browserDocument,@"AXTextField",browserFixture));
+    NSString *remote=[browserDocument stringByReplacingOccurrencesOfString:@"file://" withString:@"https://example.com"];
+    assert(!atddFixtureMatches(@"com.google.Chrome",remote,@"AXTextArea",browserFixture));
+    assert(!atddFixtureMatches(@"com.apple.TextEdit",[document stringByReplacingOccurrencesOfString:@"file://" withString:@"https://example.com"],@"AXTextArea",fixture));
+    assert(!atddFixtureMatches(@"com.google.Chrome",[browserDocument stringByReplacingOccurrencesOfString:@"file://" withString:@"file://other-host"],@"AXTextArea",browserFixture));
+    puts("PASS browser ATDD is restricted to the exact local HTML textarea and known application");
     assert([NSFileManager.defaultManager removeItemAtPath:fixture error:nil]);
     puts("PASS ATDD only accepts its own TextEdit fixture, never another app, document or menu");
 

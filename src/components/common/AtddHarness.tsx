@@ -4,8 +4,15 @@ import { invoke } from "@tauri-apps/api/core";
 export function AtddHarness() {
   const [running, setRunning] = useState(false);
   const [scenario, setScenario] = useState("dictation");
-  const [result, setResult] = useState("仅限本地 ATDD：5 秒后打开独立 TextEdit 文档，初始化成功后真实录音 18 秒。助手结果需通过结果面板插入。");
+  const [application, setApplication] = useState("text_edit");
+  const [result, setResult] = useState("仅限本地 ATDD：5 秒后打开独立测试文档，初始化成功后真实录音 18 秒。助手结果需通过结果面板插入。");
   return <aside aria-label="ATDD 测试驱动" className="fixed bottom-4 right-4 z-[200] max-w-md rounded-xl border border-amber-400 bg-amber-50 p-4 text-sm text-slate-900 shadow-lg">
+    <label className="mb-2 block">测试应用
+      <select disabled={running} value={application} onChange={(event) => setApplication(event.target.value)} className="ml-2 rounded border bg-white p-1">
+        <option value="text_edit">TextEdit</option>
+        <option value="chrome">Chrome 网页输入框</option>
+      </select>
+    </label>
     <label className="mb-2 block">验收场景
       <select disabled={running} value={scenario} onChange={(event) => setScenario(event.target.value)} className="ml-2 rounded border bg-white p-1">
         <option value="dictation">真实听写</option>
@@ -17,7 +24,7 @@ export function AtddHarness() {
     <button disabled={running} className="mt-2 rounded bg-slate-900 px-3 py-2 text-white disabled:opacity-50" onClick={async () => {
       setRunning(true);
       setResult("验收运行中：准备独立文档与选区，初始化成功后录音 18 秒，再等待真实处理结果。");
-      try { setResult(await invoke<string>("run", { scenario })); }
+      try { setResult(await invoke<string>("run", { scenario, application })); }
       catch (error) { setResult(String(error)); }
       finally { setRunning(false); }
     }}>执行真实录音验收</button>
