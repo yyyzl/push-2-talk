@@ -41,3 +41,31 @@ jobs:
       - name: Mac native keyboard acceptance
         if: runner.os == 'macOS'
         run: sh scripts/test-macos-hotkey-native.sh
+      - name: Build Windows NSIS prototype
+        if: runner.os == 'Windows'
+        run: npm run tauri build -- --debug --ci --bundles nsis --config .github/tauri.prototype.conf.json
+      - name: Build Mac app prototype
+        if: runner.os == 'macOS'
+        run: npm run tauri build -- --debug --ci --bundles app --config .github/tauri.prototype.conf.json
+      - name: Verify and archive Mac prototype
+        if: runner.os == 'macOS'
+        run: |
+          app="src-tauri/target/debug/bundle/macos/PushToTalk.app"
+          codesign --verify --deep --strict "$app"
+          for binary in "$app/Contents/MacOS/"*; do
+            otool -L "$binary"
+          done > "$RUNNER_TEMP/ptt-linked-libraries.txt"
+          if grep -E '/opt/homebrew/|/usr/local/(opt|Cellar)/' "$RUNNER_TEMP/ptt-linked-libraries.txt"; then
+            echo "The prototype must not depend on Homebrew dynamic libraries."
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/PushToTalk-macOS-prototype.zip"
+      - name: Upload prototype for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: prototype-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            src-tauri/target/debug/bundle/nsis/*.exe
+            ${{ runner.temp }}/PushToTalk-macOS-prototype.zip
+          if-no-files-found: error
+          retention-days: 7

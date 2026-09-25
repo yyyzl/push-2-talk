@@ -80,6 +80,8 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 
 `.github/workflows/platform-check.yml` 提供 Windows/macOS 编译与测试矩阵，不发布版本。原 release workflow 仍只发布 Windows。正式 Mac 发布还需要 Developer ID 签名、公证、更新产物、Intel/Apple Silicon 架构策略和升级验证；本轮不修改正式发布渠道。
 
+该矩阵也验证默认功能的 debug 原型打包：Windows 生成 NSIS 安装包，macOS 生成 ad-hoc 签名的 `.app`，检查签名及 Homebrew 动态库依赖后压缩保存。构建只合并 `.github/tauri.prototype.conf.json`，不启用 ATDD，也不生成更新产物。Actions 附件保留 7 天，供验收使用，不属于正式发布；打包成功不等于安装、升级或 Gatekeeper 验收通过。
+
 ## 验收清单
 
 - 两平台：按住松开、切换、锁定结束/取消、热键配置过程中暂停监听、快速重复操作。
