@@ -68,7 +68,9 @@ impl Drop for ClipboardGuard {
 /// 调用此函数前，请确保用户已松开所有热键（如 Alt+Space）。
 /// 建议在 on_stop 回调中等待 100ms 后再调用，以避免物理按键与模拟按键冲突。
 pub fn get_selected_text(target: Option<InputTarget>) -> Result<(ClipboardGuard, Option<String>)> {
-    platform::verify_insertion_target(target)?;
+    // Recording may outlive a window/tab switch. Restore only the saved target;
+    // a missing or closed target must fail before touching the clipboard.
+    platform::prepare_target(platform::desktop(), target)?;
     // 1. 保存当前剪贴板
     let guard = ClipboardGuard::new()?;
 

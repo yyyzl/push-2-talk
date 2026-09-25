@@ -2405,6 +2405,7 @@ async fn handle_assistant_mode(
         hide_overlay_window(&app).await;
         let _ = recording_start_instant.lock().unwrap().take();
         tracing::info!("AI 助手: ASR 返回空文本，跳过处理");
+        let _ = app.emit("error", "未识别到语音，请检查麦克风输入后重试");
         return;
     }
 
