@@ -148,7 +148,7 @@ export function useUpdater({ onToast, onError }: UseUpdaterParams) {
       } else if (errorStr.includes("space") || errorStr.includes("disk")) {
         errorMsg = "磁盘空间不足，请清理后重试";
       } else if (errorStr.includes("permission") || errorStr.includes("access")) {
-        errorMsg = "没有写入权限，请以管理员身份运行";
+        errorMsg = "没有安装权限，请检查应用目录的写入权限后重试";
       } else if (errorStr.includes("signature") || errorStr.includes("verify")) {
         errorMsg = "安装包签名验证失败，请从官方渠道下载";
       }

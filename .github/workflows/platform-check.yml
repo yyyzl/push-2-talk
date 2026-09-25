@@ -1,0 +1,39 @@
+name: Platform checks
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Mac audio dependency
+        if: runner.os == 'macOS'
+        run: |
+          brew install opus
+          echo "OPUS_LIB_DIR=$(brew --prefix opus)" >> "$GITHUB_ENV"
+          echo "OPUS_STATIC=1" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run test:ts
+      - run: npm run build
+      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Mac native keyboard acceptance
+        if: runner.os == 'macOS'
+        run: sh scripts/test-macos-hotkey-native.sh

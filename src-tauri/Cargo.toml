@@ -24,10 +24,11 @@ path = "src/test_api.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
+cc = "1"
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.0", features = ["tray-icon"] }
+tauri = { version = "~2.11", features = ["tray-icon", "macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -69,7 +70,7 @@ opus = { version = "0.3", optional = true }
 tauri-plugin-autostart = "2"
 
 # 自动更新
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "~2.12"
 tauri-plugin-process = "2"
 
 # 打开外部链接
@@ -93,6 +94,8 @@ windows = { version = "0.58", features = [
 ] }
 
 [features]
+# Explicit local acceptance harness. Never enabled by default or allowed in release builds.
+atdd = []
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
 # 豆包输入法 ASR 支持（需要 CMake 编译 Opus）

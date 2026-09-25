@@ -265,7 +265,7 @@ where
 /// - 成功读取后自动清除黑名单
 pub fn get_focused_window_text(hwnd: isize) -> Result<String> {
     // 校验窗口句柄有效性
-    if hwnd == 0 || !crate::win32_input::is_window_valid(hwnd) {
+    if hwnd == 0 || !super::win32_input::is_window_valid(hwnd) {
         return Err(anyhow!("无效的窗口句柄（hwnd={}）", hwnd));
     }
 

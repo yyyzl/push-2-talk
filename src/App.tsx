@@ -347,6 +347,7 @@ function App() {
     handleSaveConfig,
     immediatelySaveConfig,
     handleAutostartToggle,
+    handleStartStop,
     handleCloseAction,
     applyRuntimeConfig,
     patchConfigFields,
@@ -835,6 +836,7 @@ function App() {
         return (
           <PreferencesPage
             status={status}
+            onStartService={handleStartStop}
             theme={theme}
             learningConfig={learningConfig}
             setLearningConfig={setLearningConfig}

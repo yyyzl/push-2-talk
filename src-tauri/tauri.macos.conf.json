@@ -1,0 +1,11 @@
+{
+  "app": { "macOSPrivateApi": true },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist"
+    }
+  }
+}

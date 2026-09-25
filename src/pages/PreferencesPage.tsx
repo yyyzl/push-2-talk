@@ -1,5 +1,7 @@
 import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle } from "lucide-react";
 import { useState } from "react";
+import { usePlatformStatus } from "../hooks/usePlatformStatus";
+import { PlatformPermissions } from "../components/common/PlatformPermissions";
 import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
 import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../components/common";
 import { RedDot } from "../components/common/RedDot";
@@ -8,6 +10,7 @@ import { normalizeLearningConfig } from "../constants";
 
 export type PreferencesPageProps = {
   status: AppStatus;
+  onStartService: () => Promise<void>;
 
   enableAutostart: boolean;
   onToggleAutostart: () => void;
@@ -33,6 +36,7 @@ export type PreferencesPageProps = {
 
 export function PreferencesPage({
   status,
+  onStartService,
   enableAutostart,
   onToggleAutostart,
   enableMuteOtherApps,
@@ -50,6 +54,17 @@ export function PreferencesPage({
   onSetLearningEnabled,
   onNavigateToModels,
 }: PreferencesPageProps) {
+  const platformState = usePlatformStatus();
+  const [startingService, setStartingService] = useState(false);
+  const startService = async () => {
+    setStartingService(true);
+    try {
+      await onStartService();
+    } finally {
+      setStartingService(false);
+    }
+  };
+  const muteSupported = platformState.platform?.other_app_mute === true;
   const canInstallUpdate = updateStatus === "available" || updateStatus === "downloading";
 
   // 自动学习配置状态
@@ -82,6 +97,8 @@ export function PreferencesPage({
           <span>偏好设置</span>
         </div>
 
+        <PlatformPermissions {...platformState} onRequest={platformState.request} onRefresh={platformState.refresh}
+          serviceIdle={status === "idle"} startingService={startingService} onStartService={startService} />
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
           <div className="flex items-center gap-3">
             <div
@@ -117,16 +134,16 @@ export function PreferencesPage({
             <div>
               <div className="text-sm font-bold text-[var(--ink)]">录音时静音其他应用</div>
               <div className="text-[11px] text-stone-400 font-semibold">
-                {enableMuteOtherApps ? "录音期间自动静音" : "不干预音频"}
+                {!muteSupported ? "当前平台暂不支持此功能" : enableMuteOtherApps ? "录音期间自动静音" : "不干预音频"}
               </div>
             </div>
           </div>
           <Toggle
-            checked={enableMuteOtherApps}
+            checked={muteSupported && enableMuteOtherApps}
             onCheckedChange={(next) => {
               void onSetEnableMuteOtherApps(next);
             }}
-            disabled={status === "recording" || status === "transcribing"}
+            disabled={!muteSupported || status === "recording" || status === "transcribing"}
             size="sm"
             variant="orange"
           />

@@ -14,7 +14,8 @@
 - `tnl/` - Technical Normalization Layer between ASR and LLM (pinyin/phonetic matching, letter merge, hyphen rewrite)
 - `learning/` - Auto vocabulary learning (coordinator, diff_analyzer, llm_judge, validator, store)
 - `builtin_dictionary_updater.rs` - Remote builtin hotwords fetch + atomic cache persistence + runtime refresh events
-- `uia_text_reader.rs` - Windows UI Automation text capture
+- `platform/` - Native capability factory, Windows and macOS implementations
+- `platform/windows/uia_text_reader.rs` - Windows UI Automation text capture
 - `openai_client.rs` - Shared LLM client with connection testing
 - `config.rs` - Configuration management with automatic migration
 
@@ -51,15 +52,15 @@
 - Frontend: run `npm run test:ts`; additionally smoke-test via `npm run dev` and `npm run build`.
 - Final quality gate: ensure overall Cargo compilation passes in `src-tauri/` (at least `cargo check`; prefer `cargo build` for release readiness).
 
-## Windows-Only & Architecture Notes
-- This repo targets Windows 10/11 only; avoid cross-platform abstractions and `#[cfg(target_os = ...)]` branches unless required.
-- All compile/build/package steps are Windows-only; always use Windows tooling/commands (PowerShell, `npm run tauri ...`, `cargo` on Windows) and avoid Linux/macOS build paths.
-- Prefer Win32 APIs for hotkeys/input (GetAsyncKeyState, SendInput) and registry for auto-start.
-- Global hotkeys require admin rights; preserve ghost-key detection and the 500ms watchdog when editing hotkey logic.
+## Platform Architecture Notes
+- Windows 10/11 remains supported; macOS is an experimental native adapter. Follow `PLATFORM_ARCHITECTURE.md`. Shared business logic calls `platform` capabilities; keep native APIs and conditional compilation inside that boundary.
+- Build and test each OS with its native toolchain. Windows regression validation must run on Windows; macOS validation must run on macOS. Do not claim one platform was tested from a build on the other.
+- Preserve Windows-native hotkeys/input (GetAsyncKeyState, SendInput), UIA and audio session behavior in `platform/windows/`. macOS may use different native APIs.
+- Follow the existing administrator workflow for Windows hotkeys; preserve ghost-key detection and the 500ms watchdog. macOS uses explicit system privacy permissions.
 - Keep clipboard/focus timing safeguards (100ms delay before capture, 150ms delay before insert) in assistant/overlay flows.
 - Config lives at `%APPDATA%\PushToTalk\config.json`; migration logic is in `src-tauri/src/config.rs`.
 - UIA text reader uses Windows UI Automation API; maintain COM initialization guards and timeout protection.
-- Learning module uses async observation tasks; respect the deduplication mechanism per window handle.
+- Learning module uses async observation tasks; respect deduplication per opaque `InputTarget`.
 
 ## Commit & Pull Request Guidelines
 - Follow Conventional Commit-style prefixes seen in history: `feat:`, `fix:`, `perf:`, `refactor:`, `chore:`; short summaries can be Chinese or English.
@@ -68,7 +69,7 @@
 
 ## Security & Configuration Tips
 - Do not commit API keys or local config files.
-- Auto-update uses NSIS; avoid reintroducing MSI or multi-instance installers.
+- Windows auto-update uses NSIS; avoid reintroducing MSI or multi-instance installers. macOS packaging uses its platform config; signing, notarization and release updates require separate validation.
 - LLM provider credentials are stored in config.json; ensure proper migration when changing schema.
 - For deeper architecture details, see `CLAUDE.md`.
 

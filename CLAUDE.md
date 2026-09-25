@@ -2,42 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## ⚠️ Windows 专属设计理念（重要）
+## 平台实现原则
 
-**本项目是专门为 Windows 用户设计的桌面应用，不考虑跨平台兼容性。**
+本项目保持 Windows 原生体验，并通过平台适配器开发 macOS 支持。详见 `PLATFORM_ARCHITECTURE.md`。
 
-### 核心原则
-
-1. **Windows Only** — 所有设计决策优先考虑 Windows 平台的最佳实践
-2. **直接使用 Win32 API** — 不需要跨平台抽象层，可直接调用 Windows 原生 API
-3. **Windows 特有功能优先** — 充分利用 Windows 独有的系统特性（如 `GetAsyncKeyState`、注册表、NSIS 安装器等）
-4. **简化实现** — 不需要为 macOS/Linux 兼容性增加额外的条件编译或抽象
-
-### 设计决策指南
-
-| 场景 | 正确做法 | 错误做法 |
-|------|---------|---------|
-| 全局热键检测 | 直接用 Win32 `GetAsyncKeyState` | 用跨平台库的通用抽象 |
-| 配置文件路径 | 直接用 `%APPDATA%` | 用 `dirs` crate 的跨平台路径 |
-| 安装器 | 只构建 NSIS (.exe) | 同时构建 MSI/DMG/DEB |
-| 系统托盘 | 使用 Windows 原生托盘 API | 考虑 macOS 菜单栏兼容 |
-| 键盘模拟 | 直接用 Win32 `SendInput` | 用跨平台键盘模拟库 |
-| 音频静音 | 直接用 Windows Audio Session API | 考虑 PulseAudio/CoreAudio |
-
-### 已采用的 Windows 专属方案
-
-- **Ghost Key Detection**: 使用 `GetAsyncKeyState` Win32 API 检测按键真实状态
-- **Auto-Start**: 直接操作 Windows 注册表 `HKEY_CURRENT_USER\...\Run`
-- **Installer**: 仅使用 NSIS 安装器，已移除 MSI 支持
-- **Admin Rights**: 要求管理员权限运行（全局键盘钩子需要）
-
-### 后续开发注意事项
-
-- **不要**为了"以防万一"添加 `#[cfg(target_os = "...")]` 条件编译
-- **不要**选择"跨平台兼容"的库而放弃更好的 Windows 原生方案
-- **不要**在代码注释中提及"未来可能支持其他平台"
-- **可以**直接使用 `windows` crate 调用 Win32 API
-- **可以**假设用户环境是 Windows 10/11
+- 共用 ASR、LLM、TNL 和业务流程；系统能力通过 `platform` 接口调用。
+- Windows 实现继续使用 GetAsyncKeyState、SendInput、UIA、Audio Session，不要求两平台共用底层 API。
+- macOS 原生对象、线程约束和权限处理封装在 `platform/macos/`。
+- 业务层只持有不透明 InputTarget，恢复目标失败时禁止继续粘贴。
+- 编译与实机测试分别在对应系统执行。macOS 当前为原型，不宣称完整兼容。
 
 ### 版本兼容性原则
 

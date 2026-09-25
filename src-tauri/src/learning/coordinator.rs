@@ -3,6 +3,7 @@
 // 功能：整合观察流程的入口点
 // 流程：Pipeline 触发 → 等待观察期 → 验证 → Diff 分析 → LLM 判断 → 发送建议
 
+use crate::platform::{self, InputTarget};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +24,7 @@ use crate::learning::validator::is_asr_text_present;
 // - 旧任务收到取消信号后，立即结束观察期，但继续执行 diff/LLM 流程
 // - 避免直接 abort 导致学习丢失
 lazy_static::lazy_static! {
-    static ref ACTIVE_OBSERVATIONS: Arc<Mutex<HashMap<isize, Arc<AtomicBool>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref ACTIVE_OBSERVATIONS: Arc<Mutex<HashMap<InputTarget, Arc<AtomicBool>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 /// 扩展上下文的最大字符数（防止 CJK 文本导致上下文膨胀）
@@ -57,7 +58,7 @@ pub struct LearningSuggestion {
 pub fn start_learning_observation(
     app: AppHandle,
     asr_text: String,
-    target_hwnd: isize,
+    target_hwnd: InputTarget,
     config: LearningConfig,
 ) -> JoinHandle<()> {
     // 生成唯一的观察ID
@@ -106,7 +107,7 @@ pub fn start_learning_observation(
     let handle = tokio::spawn(async move {
         // RAII 清理守卫：确保任务结束时从 ACTIVE_OBSERVATIONS 中移除
         struct CleanupGuard {
-            hwnd: isize,
+            hwnd: InputTarget,
         }
         impl Drop for CleanupGuard {
             fn drop(&mut self) {
@@ -421,7 +422,7 @@ pub fn start_learning_observation(
 async fn observe_correction_text(
     observation_id: &str,
     duration: Duration,
-    target_hwnd: isize,
+    target_hwnd: InputTarget,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<String> {
     // 降低轮询频率：100ms → 500ms，减少线程风暴
@@ -458,8 +459,7 @@ async fn observe_correction_text(
         check_count += 1;
 
         // 焦点检查：如果目标窗口已失去焦点，跳过本次读取
-        let current_fg = crate::win32_input::get_foreground_window();
-        if current_fg != Some(target_hwnd) {
+        if !platform::desktop().is_focused(target_hwnd) {
             focus_lost_count += 1;
             tracing::debug!(
                 "Learning [{}]: 第{}次检测跳过（目标窗口已失焦，连续{}次）",
@@ -486,7 +486,7 @@ async fn observe_correction_text(
 
         // 在同步上下文中调用 UIA 读取（带超时保护）
         let uia_start = Instant::now();
-        let text = tokio::task::spawn_blocking(move || get_text_via_uia(target_hwnd))
+        let text = tokio::task::spawn_blocking(move || read_observed_text(target_hwnd))
             .await
             .ok()
             .flatten();
@@ -529,7 +529,7 @@ async fn observe_correction_text(
                 "Learning [{}]: 优雅取消时尚未读取到文本，尝试立即读取",
                 &observation_id[..8]
             );
-            let text = tokio::task::spawn_blocking(move || get_text_via_uia(target_hwnd))
+            let text = tokio::task::spawn_blocking(move || read_observed_text(target_hwnd))
                 .await
                 .ok()
                 .flatten();
@@ -658,9 +658,9 @@ fn is_single_letter_noise(original: &str, corrected: &str) -> bool {
     false
 }
 
-/// 通过 UI Automation 获取目标窗口文本
+/// 通过平台文本观察接口读取目标文本
 ///
-/// 仅使用 UIA 方案，不会抢占焦点
+/// Windows 使用 UIA；macOS 使用 AX。读取不会抢占焦点。
 ///
 /// # 参数
 /// * `target_hwnd` - 目标窗口句柄
@@ -668,15 +668,15 @@ fn is_single_letter_noise(original: &str, corrected: &str) -> bool {
 /// # 返回值
 /// * `Some(String)` - 成功读取的文本
 /// * `None` - 读取失败（窗口无效、UIA 不支持等）
-fn get_text_via_uia(target_hwnd: isize) -> Option<String> {
+fn read_observed_text(target_hwnd: InputTarget) -> Option<String> {
     // 检查窗口是否有效
-    if !crate::win32_input::is_window_valid(target_hwnd) {
+    if !platform::desktop().is_valid(target_hwnd) {
         tracing::debug!("Learning: 目标窗口已无效");
         return None;
     }
 
-    // 使用 UI Automation 读取文本（无干扰方案）
-    match crate::uia_text_reader::get_focused_window_text(target_hwnd) {
+    // 使用平台文本观察接口读取（无干扰方案）
+    match platform::desktop().read_text(target_hwnd) {
         Ok(text) if !text.trim().is_empty() => {
             tracing::debug!("Learning: UIA 成功读取文本（长度: {}）", text.len());
             Some(text)

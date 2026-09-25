@@ -6,6 +6,7 @@
 //
 // 设计原则：Pipeline 不持有锁，所有依赖通过参数传入
 
+use crate::platform::InputTarget;
 use anyhow::Result;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -18,6 +19,15 @@ use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 
 const CANDIDATE_ARBITRATION_TIMEOUT_MS: u64 = 800;
+
+fn require_transcript(result: Result<String>) -> Result<String> {
+    let text = result?;
+    anyhow::ensure!(
+        !text.trim().is_empty(),
+        "未识别到语音，请检查麦克风输入后重试"
+    );
+    Ok(text)
+}
 
 /// 普通模式处理管道
 ///
@@ -58,11 +68,12 @@ impl NormalPipeline {
         text_inserter: &mut Option<TextInserter>,
         asr_result: Result<String>,
         asr_time_ms: u64,
-        _context: TranscriptionContext, // 普通模式不使用上下文
-        target_hwnd: Option<isize>,     // 目标窗口句柄（用于焦点恢复）
+        _context: TranscriptionContext,   // 普通模式不使用上下文
+        target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果
-        let asr_text = asr_result?;
+        // Empty provider responses must not reach focus restoration, paste, learning or history.
+        let asr_text = require_transcript(asr_result)?;
         tracing::info!(
             "NormalPipeline: 收到 ASR 结果: {} (耗时: {}ms)",
             asr_text,
@@ -121,10 +132,16 @@ impl NormalPipeline {
 
         // 5. 插入前隐藏窗口并主动恢复焦点到目标应用
         // 使用新的焦点恢复机制，确保文本插入到正确的窗口
-        super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
+        let focus_ready = super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
 
         // 6. 插入文本
-        let inserted = Self::insert_text(text_inserter, &final_text);
+        let inserted = focus_ready && Self::insert_text(text_inserter, &final_text, target_hwnd);
+        if !inserted {
+            let _ = app.emit(
+                "error",
+                "无法自动粘贴到原输入位置，识别结果已保留在历史记录中，请手动复制",
+            );
+        }
 
         // 7. 触发学习观察（如果启用且插入成功）
         if inserted {
@@ -322,9 +339,13 @@ impl NormalPipeline {
     /// 插入文本到当前活动窗口
     ///
     /// 返回是否成功插入
-    fn insert_text(text_inserter: &mut Option<TextInserter>, text: &str) -> bool {
+    fn insert_text(
+        text_inserter: &mut Option<TextInserter>,
+        text: &str,
+        target: Option<InputTarget>,
+    ) -> bool {
         if let Some(ref mut inserter) = text_inserter {
-            match inserter.insert_text(text) {
+            match inserter.insert_text(text, target) {
                 Ok(()) => {
                     tracing::info!("NormalPipeline: 文本插入成功");
                     true
@@ -350,6 +371,26 @@ impl Default for NormalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_transcript_is_rejected_before_processing_or_insertion() {
+        for text in ["", " \t\n", "\u{3000}"] {
+            let error = require_transcript(Ok(text.to_string())).unwrap_err();
+            assert!(error.to_string().contains("未识别到语音"));
+        }
+    }
+
+    #[test]
+    fn nonempty_transcript_preserves_content_and_spacing() {
+        let text = "  测试语音，123。\n";
+        assert_eq!(require_transcript(Ok(text.to_string())).unwrap(), text);
+    }
+
+    #[test]
+    fn transcript_provider_error_is_preserved() {
+        let error = require_transcript(Err(anyhow::anyhow!("provider unavailable"))).unwrap_err();
+        assert_eq!(error.to_string(), "provider unavailable");
+    }
 
     #[test]
     fn test_pipeline_creation() {

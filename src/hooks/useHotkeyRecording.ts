@@ -96,7 +96,7 @@ export function useHotkeyRecording({
       const isFunctionKey = keysArray.every((key) => /^f([1-9]|1[0-2])$/.test(key));
 
       if (!(hasModifier || isFunctionKey)) {
-        setHotkeyError("必须包含修饰键 Ctrl/Alt/Shift/Win 或功能键 F1-F12");
+        setHotkeyError("必须包含修饰键（Ctrl、Shift、Alt/Option、Win/Cmd）或功能键 F1-F12");
         window.setTimeout(() => setHotkeyError(null), 3000);
         setIsRecordingHotkey(false);
         setRecordingKeys([]);

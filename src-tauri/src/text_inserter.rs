@@ -5,7 +5,7 @@ use arboard::Clipboard;
 use std::thread;
 use std::time::Duration;
 
-use crate::win32_input;
+use crate::platform::{self, InputTarget};
 
 pub struct TextInserter {
     clipboard: Clipboard,
@@ -18,7 +18,7 @@ impl TextInserter {
         })
     }
 
-    pub fn insert_text(&mut self, text: &str) -> Result<()> {
+    pub fn insert_text(&mut self, text: &str, target: Option<InputTarget>) -> Result<()> {
         tracing::info!("准备插入文本: {}", text);
 
         // 1. 保存当前剪贴板内容
@@ -31,7 +31,14 @@ impl TextInserter {
         thread::sleep(Duration::from_millis(50));
 
         // 4. 使用 Win32 SendInput 模拟 Ctrl+V 粘贴
-        win32_input::send_ctrl_v()?;
+        let result =
+            platform::verify_insertion_target(target).and_then(|()| platform::desktop().paste());
+        if let Err(error) = result {
+            if let Some(original) = original_clipboard {
+                self.clipboard.set_text(original)?;
+            }
+            return Err(error);
+        }
 
         // 5. 等待粘贴完成
         thread::sleep(Duration::from_millis(150));

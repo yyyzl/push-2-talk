@@ -3,7 +3,6 @@
 
 pub mod asr;
 mod assistant_processor;
-mod audio_mute_manager;
 mod audio_recorder;
 mod audio_utils;
 mod beep_player;
@@ -11,17 +10,20 @@ mod builtin_dictionary_updater;
 mod clipboard_manager;
 mod config;
 mod dictionary_utils;
-mod hotkey_service;
 mod learning;
 mod llm_post_processor;
 mod openai_client;
 mod pipeline;
+mod platform;
+#[cfg(all(feature = "atdd", not(debug_assertions)))]
+compile_error!("The ATDD harness must not be included in a release build");
+#[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
+mod atdd;
+use platform::InputTarget;
 mod streaming_recorder;
 mod text_inserter;
 mod tnl;
-mod uia_text_reader;
 mod usage_stats;
-mod win32_input;
 
 use asr::{
     DoubaoASRClient, DoubaoImeCredentials, DoubaoImeRealtimeClient, DoubaoImeRealtimeSession,
@@ -29,14 +31,14 @@ use asr::{
     RealtimeSession, SenseVoiceClient,
 };
 use assistant_processor::AssistantProcessor;
-use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
 use config::{AppConfig, CONFIG_LOCK};
 use futures_util::FutureExt;
-use hotkey_service::HotkeyService;
 use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
 use pipeline::{NormalPipeline, TranscriptionContext};
+use platform::AudioMuteManager;
+use platform::HotkeyService;
 use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
@@ -49,34 +51,9 @@ use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
 };
 
-// ================== Windows 鼠标位置检测 ==================
-#[cfg(target_os = "windows")]
-#[link(name = "user32")]
-extern "system" {
-    fn GetCursorPos(lpPoint: *mut POINT) -> i32;
-}
-
-#[cfg(target_os = "windows")]
-#[repr(C)]
-struct POINT {
-    x: i32,
-    y: i32,
-}
-
-#[cfg(target_os = "windows")]
-fn get_cursor_position() -> Option<(i32, i32)> {
-    let mut point = POINT { x: 0, y: 0 };
-    unsafe {
-        if GetCursorPos(&mut point) != 0 {
-            Some((point.x, point.y))
-        } else {
-            None
-        }
-    }
-}
-
 fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
-    let (cursor_x, cursor_y) = get_cursor_position()?;
+    let cursor = window.cursor_position().ok()?;
+    let (cursor_x, cursor_y) = (cursor.x as i32, cursor.y as i32);
     let monitors = window.available_monitors().ok()?;
 
     for monitor in monitors {
@@ -133,7 +110,7 @@ struct AppState {
     /// 录音时静音其他应用的管理器
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
     /// 目标窗口句柄（热键按下时保存，用于焦点恢复）
-    target_window: Arc<Mutex<Option<isize>>>,
+    target_window: Arc<Mutex<Option<InputTarget>>>,
     /// 词库（用于 Realtime 模式热更新）
     dictionary: Arc<Mutex<Vec<String>>>,
     /// 豆包输入法凭据（自动注册获取，跨会话复用）
@@ -181,7 +158,7 @@ pub(crate) struct ConversationSession {
     /// 首轮锁定的提示词模式
     pub system_prompt_mode: PromptMode,
     /// 首轮触发时的目标窗口句柄
-    pub target_hwnd: Option<isize>,
+    pub target_hwnd: Option<InputTarget>,
     pub created_at: std::time::Instant,
 }
 
@@ -759,6 +736,17 @@ struct ConfigFieldPatch {
 }
 
 // Tauri Commands
+#[tauri::command]
+fn get_platform_status() -> platform::PlatformStatus {
+    platform::desktop().status()
+}
+
+#[tauri::command]
+fn request_platform_permission(permission: String) -> Result<(), String> {
+    platform::desktop()
+        .request_permission(&permission)
+        .map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 async fn save_config(
@@ -1543,6 +1531,9 @@ async fn start_app(
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
 ) -> Result<String, String> {
+    if !platform::desktop().status().ready() {
+        return Err("请在偏好设置中授权麦克风、辅助功能和输入监控，再启动服务".into());
+    }
     tracing::info!("启动应用...");
 
     // 获取应用状态
@@ -1918,10 +1909,10 @@ async fn start_app(
 
         // === 保存目标窗口句柄（通过防重入检查后才保存） ===
         // 这是用户触发热键时的前台窗口，用于后续焦点恢复
-        let target_hwnd = win32_input::get_foreground_window();
+        let target_hwnd = platform::desktop().capture_target();
         *target_window_start.lock().unwrap() = target_hwnd;
         if let Some(hwnd) = target_hwnd {
-            tracing::info!("已保存目标窗口句柄: 0x{:X}", hwnd);
+            tracing::info!("已保存目标输入位置: {}", hwnd);
         } else {
             tracing::warn!("未能获取目标窗口句柄");
         }
@@ -2131,7 +2122,7 @@ async fn start_app(
                     // 捕获选中文本（此时用户已松开热键，Ctrl+C 模拟安全）
                     // 剪贴板即时释放：ClipboardGuard 在此 scope 结束时 drop，立即恢复用户剪贴板
                     tracing::info!("AI 助手模式：开始捕获选中文本...");
-                    let selected_text = match clipboard_manager::get_selected_text() {
+                    let selected_text = match clipboard_manager::get_selected_text(target_hwnd) {
                         Ok((guard, text)) => {
                             if let Some(ref t) = text {
                                 tracing::info!("已捕获选中文本: {} 字符", t.len());
@@ -2217,7 +2208,7 @@ async fn handle_assistant_mode(
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
     use_realtime: bool,
-    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -2800,7 +2791,7 @@ async fn handle_http_transcription(
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
-    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -2888,7 +2879,7 @@ async fn handle_realtime_stop(
     sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     enable_fallback_state: Arc<Mutex<bool>>,
-    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -3238,7 +3229,7 @@ async fn fallback_transcription(
     doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
     audio_data: Vec<u8>,
     enable_fallback: bool,
-    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -3350,7 +3341,7 @@ async fn handle_transcription_result(
     text_inserter: Arc<Mutex<Option<TextInserter>>>,
     result: anyhow::Result<String>,
     asr_time_ms: u64,
-    target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
+    target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     usage_stats: Arc<Mutex<UsageStats>>,
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
 ) {
@@ -4178,18 +4169,30 @@ async fn paste_latest_reply(
 
     // 检查目标窗口是否仍有效
     if let Some(hwnd) = session.target_hwnd {
-        if win32_input::is_window_valid(hwnd) {
+        if platform::desktop().is_valid(hwnd) {
             // 先隐藏面板窗口，等窗口管理器处理完毕
             hide_result_panel_window(&app).await;
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
             // 恢复焦点到目标窗口
-            win32_input::restore_focus_with_verify(hwnd, 3);
+            if let Err(error) = platform::prepare_target(platform::desktop(), Some(hwnd)) {
+                clipboard_manager::copy_to_clipboard(&result_text).map_err(|e| e.to_string())?;
+                emit_conversation_history(&app, &session, false);
+                return Ok(format!("{}；结果已复制到剪贴板", error));
+            }
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
             // 粘贴文本
-            clipboard_manager::insert_text_with_context(&result_text, has_selection, None)
-                .map_err(|e| format!("粘贴失败: {}", e))?;
+            if let Err(error) = clipboard_manager::insert_text_with_context(
+                &result_text,
+                has_selection,
+                None,
+                Some(hwnd),
+            ) {
+                clipboard_manager::copy_to_clipboard(&result_text).map_err(|e| e.to_string())?;
+                emit_conversation_history(&app, &session, false);
+                return Ok(format!("{}；结果已复制到剪贴板", error));
+            }
 
             // 触发学习观察
             if let Ok((config, _)) = config::AppConfig::load() {
@@ -4573,6 +4576,7 @@ pub fn run() {
             Some(vec!["--minimized"]),
         ))
         .setup(move |app| {
+            platform::configure_windows(app, start_minimized);
             // 如果是静默启动，隐藏主窗口
             if start_minimized {
                 if let Some(window) = app.get_webview_window("main") {
@@ -4868,6 +4872,10 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
+            atdd::run,
+            get_platform_status,
+            request_platform_permission,
             save_config,
             patch_config_fields,
             load_config,
@@ -4903,6 +4911,7 @@ pub fn run() {
             show_notification_window,
             test_llm_provider,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| platform::handle_run_event(app, &event));
 }
