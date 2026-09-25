@@ -317,6 +317,21 @@ static bool atddFixtureMatches(NSString *bundle, NSString *document, NSString *r
     return [actual isEqualToString:[path stringByResolvingSymlinksInPath]];
 }
 // Test setup only: open a file created by the opt-in driver, with explicit activation.
+static bool selectFixtureText(PTTTarget *target, NSString *expected, CFRange range) {
+    if (!focused(target) || ![expected isKindOfClass:NSString.class] ||
+        ![attribute(target.element,kAXValueAttribute) isEqual:expected]) return false;
+    if (range.location<0 || range.length<0 || (NSUInteger)range.location>expected.length ||
+        (NSUInteger)range.length>expected.length-(NSUInteger)range.location) return false;
+    AXValueRef value=AXValueCreate(kAXValueCFRangeType,&range);
+    AXError error=AXUIElementSetAttributeValue((__bridge AXUIElementRef)target.element,kAXSelectedTextRangeAttribute,value);
+    CFRelease(value);
+    if (error!=kAXErrorSuccess || !focused(target)) return false;
+    id selected=attribute(target.element,kAXSelectedTextRangeAttribute);
+    CFRange actual;
+    return selected && CFGetTypeID((__bridge CFTypeRef)selected)==AXValueGetTypeID() &&
+           AXValueGetValue((__bridge AXValueRef)selected,kAXValueCFRangeType,&actual) &&
+           actual.location==range.location && actual.length==range.length;
+}
 // Recording still captures the foreground target through the ordinary production callback.
 bool ptt_atdd_open_fixture(const char *path) {
     NSString *filename=[NSString stringWithUTF8String:path];
@@ -346,6 +361,19 @@ bool ptt_atdd_fixture_focused(uint64_t token, const char *path) {
                                   attribute(target.window,kAXDocumentAttribute),attribute(target.element,kAXRoleAttribute),filename);
     }});
     return matches;
+}
+bool ptt_atdd_select_fixture(uint64_t token, const char *path, const char *expected, uint64_t start, uint64_t length) {
+    initializeTargets(); __block bool selected=false;
+    NSString *filename=[NSString stringWithUTF8String:path];
+    NSString *text=[NSString stringWithUTF8String:expected];
+    if (start>LONG_MAX || length>LONG_MAX) return false;
+    dispatch_sync(targetQueue, ^{ @autoreleasepool {
+        PTTTarget *target=targets[@(token)];
+        if (!target || !atddFixtureMatches([NSRunningApplication runningApplicationWithProcessIdentifier:target.pid].bundleIdentifier,
+            attribute(target.window,kAXDocumentAttribute),attribute(target.element,kAXRoleAttribute),filename)) return;
+        selected=selectFixtureText(target,text,CFRangeMake((CFIndex)start,(CFIndex)length));
+    }});
+    return selected;
 }
 char *ptt_atdd_target_description(uint64_t token) {
     initializeTargets(); __block NSString *description=@"未捕获目标";

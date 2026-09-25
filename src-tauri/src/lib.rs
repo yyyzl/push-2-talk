@@ -1950,7 +1950,7 @@ async fn start_app(
         let dictionary_state = Arc::clone(&dictionary_state_start);
         let recording_start_instant_spawn = Arc::clone(&recording_start_instant_start);
 
-        tauri::async_runtime::spawn(async move {
+        let _start_task = tauri::async_runtime::spawn(async move {
             // 记录录音开始时间（包含录音准备时间：静音、显示窗口等）
             // 注意：这个时间略早于实际音频采集开始，但包含了用户感知到的准备时间
             *recording_start_instant_spawn.lock().unwrap() = Some(std::time::Instant::now());
@@ -1986,6 +1986,8 @@ async fn start_app(
                 tracing::info!("通过松手模式快捷键启动，直接进入锁定状态");
             }
         });
+        #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
+        atdd::track_start_task(_start_task);
     };
 
     // 按键释放回调（支持双模式）
@@ -2138,6 +2140,9 @@ async fn start_app(
                             None
                         }
                     };
+
+                    #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
+                    atdd::observe_selection(selected_text.as_deref());
 
                     handle_assistant_mode(
                         app,
@@ -4874,6 +4879,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
             atdd::run,
+            #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
+            atdd::atdd_cancel,
             get_platform_status,
             request_platform_permission,
             save_config,

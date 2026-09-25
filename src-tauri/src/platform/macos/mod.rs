@@ -4,6 +4,8 @@ use std::{
     thread,
     time::Duration,
 };
+#[cfg(all(feature = "atdd", debug_assertions))]
+mod atdd_control;
 pub mod audio_mute;
 mod hotkey_state;
 pub mod hotkeys;
@@ -29,12 +31,25 @@ extern "C" {
 pub struct MacDesktop;
 
 #[cfg(all(feature = "atdd", debug_assertions))]
-pub fn atdd_prepare_fixture(path: &std::path::Path) -> Result<()> {
+pub fn atdd_prepare_fixture(
+    path: &std::path::Path,
+    expected: &str,
+    start: u64,
+    length: u64,
+) -> Result<InputTarget> {
     extern "C" {
         fn ptt_atdd_open_fixture(path: *const c_char) -> bool;
         fn ptt_atdd_fixture_focused(token: u64, path: *const c_char) -> bool;
+        fn ptt_atdd_select_fixture(
+            token: u64,
+            path: *const c_char,
+            expected: *const c_char,
+            start: u64,
+            length: u64,
+        ) -> bool;
     }
     let path = std::ffi::CString::new(path.to_string_lossy().as_bytes())?;
+    let expected = std::ffi::CString::new(expected)?;
     anyhow::ensure!(
         unsafe { ptt_atdd_open_fixture(path.as_ptr()) },
         "无法打开 TextEdit 验收文档"
@@ -44,7 +59,19 @@ pub fn atdd_prepare_fixture(path: &std::path::Path) -> Result<()> {
         observed = desktop().capture_target();
         if let Some(target) = observed {
             if unsafe { ptt_atdd_fixture_focused(target.0, path.as_ptr()) } {
-                return Ok(());
+                anyhow::ensure!(
+                    unsafe {
+                        ptt_atdd_select_fixture(
+                            target.0,
+                            path.as_ptr(),
+                            expected.as_ptr(),
+                            start,
+                            length,
+                        )
+                    },
+                    "验收文档内容或选区不匹配，已停止本轮验收"
+                );
+                return Ok(target);
             }
         }
         thread::sleep(Duration::from_millis(100));

@@ -30,8 +30,21 @@ static void testPost(CGEventTapLocation location, CGEventRef event) {
     (void)location; (void)event; testPostedEvents++;
 }
 static bool testApplicationActive, testElementFocused;
+static AXError testSelectionError=kAXErrorSuccess;
+static bool testSelectionApplied=true;
+static unsigned testSelectionWrites=0;
 static AXError testSetAttribute(AXUIElementRef element, CFStringRef key, CFTypeRef value) {
-    (void)element; (void)value;
+    if (CFEqual(key,kAXSelectedTextRangeAttribute)) {
+        testSelectionWrites++;
+        if (testSelectionError!=kAXErrorSuccess) return testSelectionError;
+        if (testSelectionApplied) {
+            TestAXNode *object=(__bridge TestAXNode *)element;
+            NSMutableDictionary *attributes=object.attributes.mutableCopy;
+            attributes[(__bridge NSString *)key]=(__bridge id)value;
+            object.attributes=attributes;
+        }
+        return kAXErrorSuccess;
+    }
     if (CFEqual(key,kAXFrontmostAttribute)) testApplicationActive=true;
     if (CFEqual(key,kAXFocusedAttribute)) {
         testElementFocused=testApplicationActive;
@@ -130,6 +143,37 @@ int main(void) { @autoreleasepool {
     assert(!atddFixtureMatches(@"com.apple.TextEdit",nil,@"AXTextArea",fixture));
     assert([NSFileManager.defaultManager removeItemAtPath:fixture error:nil]);
     puts("PASS ATDD only accepts its own TextEdit fixture, never another app, document or menu");
+
+    NSString *fixtureText=@"PTT\n你好😀\n";
+    TestAXNode *selectionElement=node(@{@"AXValue":fixtureText});
+    TestAXNode *selectionWindow=node(@{});
+    TestAXNode *selectionApp=node(@{@"AXWindows":@[selectionWindow],@"AXFocusedWindow":selectionWindow,@"AXFocusedUIElement":selectionElement});
+    PTTTarget *selectionTarget=[PTTTarget new];
+    selectionTarget.pid=getpid(); selectionTarget.application=selectionApp;
+    selectionTarget.window=selectionWindow; selectionTarget.element=selectionElement;
+    testSystem=node(@{@"AXFocusedApplication":selectionApp});
+    assert(selectFixtureText(selectionTarget,fixtureText,CFRangeMake(4,4)));
+    CFRange selected;
+    assert(AXValueGetValue((__bridge AXValueRef)attribute(selectionElement,kAXSelectedTextRangeAttribute),kAXValueCFRangeType,&selected));
+    assert(selected.location==4 && selected.length==4);
+    puts("PASS ATDD selects the exact fixture range using UTF-16 offsets");
+    assert(selectFixtureText(selectionTarget,fixtureText,CFRangeMake(fixtureText.length,0)));
+    puts("PASS ATDD question mode clears selection at the fixture caret");
+    unsigned writesBefore=testSelectionWrites;
+    assert(!selectFixtureText(selectionTarget,@"some other document",CFRangeMake(0,1)));
+    assert(!selectFixtureText(selectionTarget,fixtureText,CFRangeMake(-1,1)));
+    assert(!selectFixtureText(selectionTarget,fixtureText,CFRangeMake(0,fixtureText.length+1)));
+    testSystem.attributes=@{@"AXFocusedApplication":node(@{})};
+    assert(!selectFixtureText(selectionTarget,fixtureText,CFRangeMake(0,1)));
+    assert(testSelectionWrites==writesBefore);
+    puts("PASS ATDD never selects unrelated, unfocused or out-of-range text");
+    testSystem.attributes=@{@"AXFocusedApplication":selectionApp};
+    testSelectionError=kAXErrorCannotComplete;
+    assert(!selectFixtureText(selectionTarget,fixtureText,CFRangeMake(4,4)));
+    testSelectionError=kAXErrorSuccess; testSelectionApplied=false;
+    assert(!selectFixtureText(selectionTarget,fixtureText,CFRangeMake(4,4)));
+    testSelectionApplied=true;
+    puts("PASS ATDD rejects denied or unapplied selection updates");
 
     assert(!ptt_send_shortcut(9));
     assert(testPostedEvents==0);

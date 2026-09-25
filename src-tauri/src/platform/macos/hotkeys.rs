@@ -15,6 +15,8 @@ struct Inner {
     started: AtomicBool,
     config: RwLock<DualHotkeyConfig>,
     machine: Mutex<Machine>,
+    #[cfg(all(feature = "atdd", debug_assertions))]
+    atdd: Mutex<super::atdd_control::AtddControl>,
     on_start: RwLock<Option<Callback>>,
     on_stop: RwLock<Option<Callback>>,
 }
@@ -23,41 +25,73 @@ pub struct HotkeyService {
 }
 impl HotkeyService {
     #[cfg(all(feature = "atdd", debug_assertions))]
-    pub fn atdd_recording(&self, start: bool) -> Result<()> {
+    pub fn atdd_recording(&self, mode: TriggerMode) -> Result<u64> {
         anyhow::ensure!(
             self.is_service_active() && crate::platform::desktop().status().ready(),
             "录音服务或系统权限不可用"
         );
-        let callback = {
-            let mut machine = self.inner.machine.lock().unwrap();
-            if start {
-                anyhow::ensure!(machine.recording.is_none(), "已有录音进行中");
-                machine.tick(Snapshot::default(), true, false, false);
-                machine.tick(
-                    Snapshot {
-                        release: true,
-                        ..Snapshot::default()
-                    },
-                    true,
-                    false,
-                    false,
-                );
-                machine.tick(Snapshot::default(), true, false, false);
-                self.inner.on_start.read().unwrap().clone()
-            } else {
-                // A user cancellation/reset must not accidentally start another recording.
-                if machine.recording != Some(Mode::Release) {
-                    return Ok(());
-                }
-                machine.reset();
-                self.inner.on_stop.read().unwrap().clone()
-            }
+        let callback = self
+            .inner
+            .on_start
+            .read()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("录音回调尚未初始化"))?;
+        let mode = if mode == TriggerMode::AiAssistant {
+            Mode::Assistant
+        } else {
+            Mode::Release
         };
-        callback.ok_or_else(|| anyhow::anyhow!("录音回调尚未初始化"))?(
-            TriggerMode::Dictation,
-            true,
+        let (id, _) = {
+            let mut machine = self.inner.machine.lock().unwrap();
+            self.inner
+                .atdd
+                .lock()
+                .unwrap()
+                .begin(&mut machine, mode)
+                .map_err(anyhow::Error::msg)?
+        };
+        callback(
+            if mode == Mode::Assistant {
+                TriggerMode::AiAssistant
+            } else {
+                TriggerMode::Dictation
+            },
+            mode == Mode::Release,
         );
-        Ok(())
+        Ok(id)
+    }
+    #[cfg(all(feature = "atdd", debug_assertions))]
+    pub fn atdd_owns(&self, id: u64) -> bool {
+        self.inner.atdd.lock().unwrap().owns(id)
+    }
+    #[cfg(all(feature = "atdd", debug_assertions))]
+    pub fn atdd_abort(&self, id: u64) {
+        let mut machine = self.inner.machine.lock().unwrap();
+        let mut driver = self.inner.atdd.lock().unwrap();
+        if driver.owns(id) {
+            driver.reset();
+            machine.reset();
+        }
+    }
+    #[cfg(all(feature = "atdd", debug_assertions))]
+    pub fn atdd_finish(&self, id: u64) {
+        let action = {
+            let mut machine = self.inner.machine.lock().unwrap();
+            self.inner.atdd.lock().unwrap().finish(&mut machine, id)
+        };
+        if let Some(Action::Stop(mode)) = action {
+            if let Some(callback) = self.inner.on_stop.read().unwrap().clone() {
+                callback(
+                    if mode == Mode::Assistant {
+                        TriggerMode::AiAssistant
+                    } else {
+                        TriggerMode::Dictation
+                    },
+                    mode == Mode::Release,
+                );
+            }
+        }
     }
     pub fn new() -> Self {
         Self {
@@ -66,6 +100,8 @@ impl HotkeyService {
                 started: AtomicBool::new(false),
                 config: RwLock::new(DualHotkeyConfig::default()),
                 machine: Mutex::new(Machine::default()),
+                #[cfg(all(feature = "atdd", debug_assertions))]
+                atdd: Mutex::new(super::atdd_control::AtddControl::default()),
                 on_start: RwLock::new(None),
                 on_stop: RwLock::new(None),
             }),
@@ -83,7 +119,10 @@ impl HotkeyService {
         self.reset_state();
     }
     pub fn reset_state(&self) {
-        self.inner.machine.lock().unwrap().reset();
+        let mut machine = self.inner.machine.lock().unwrap();
+        machine.reset();
+        #[cfg(all(feature = "atdd", debug_assertions))]
+        self.inner.atdd.lock().unwrap().reset();
     }
     pub fn get_debug_info(&self) -> String {
         format!(
@@ -157,12 +196,17 @@ impl HotkeyService {
                     let active =
                         inner.active.load(Ordering::SeqCst) && allowed && !first && sample != 2;
                     first = false;
-                    let action = inner.machine.lock().unwrap().tick(
-                        snapshot,
-                        active,
-                        matches!(config.dictation.mode, HotkeyMode::Toggle),
-                        matches!(config.assistant.mode, HotkeyMode::Toggle),
-                    );
+                    let action = {
+                        let mut machine = inner.machine.lock().unwrap();
+                        #[cfg(all(feature = "atdd", debug_assertions))]
+                        let snapshot = inner.atdd.lock().unwrap().snapshot(snapshot, active);
+                        machine.tick(
+                            snapshot,
+                            active,
+                            matches!(config.dictation.mode, HotkeyMode::Toggle),
+                            matches!(config.assistant.mode, HotkeyMode::Toggle),
+                        )
+                    };
                     let Some(action) = action else {
                         continue;
                     };
