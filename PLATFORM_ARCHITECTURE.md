@@ -56,7 +56,7 @@ Windows 按原流程构建。macOS 需要 Xcode Command Line Tools、Rust、Node
 
 ```sh
 npm ci
-# 使用兼容 audiopus_sys 内置 Opus 源码的 CMake 3.x，或预装静态 Opus。
+# 使用 CMake 3.x；CMake 4 可设置下文的兼容变量，或预装静态 Opus。
 npm run test:ts
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -65,6 +65,8 @@ npm run tauri dev
 ```
 
 已有 Homebrew Opus 时，可为本机同架构验证设置 `OPUS_LIB_DIR=$(brew --prefix opus)` 和 `OPUS_STATIC=1`。发行构建应从源码构建 Opus，确保最低系统版本/架构一致；不得把开发机 Homebrew dylib 当作用户运行时依赖。
+
+Windows CI 使用 CMake 4 时，为旧版 `audiopus_sys` 内置 Opus 项目设置环境变量 `CMAKE_POLICY_VERSION_MINIMUM=3.5`（PowerShell：`$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"`）。这是 CMake 提供的旧项目策略兼容设置，不关闭豆包输入法或 Opus；该设置下 Windows 编译及测试已在 CI 通过。
 
 本机原型打包命令（ad-hoc 签名，关闭更新产物；不用于正式分发）：
 
@@ -91,10 +93,10 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 ## 本轮验证记录（2026-09-25）
 
 - 基于远端 main 的 `725aab0`，在独立 `codex/macos-platform` worktree 开发。
-- TypeScript 85 项通过，前端 production build 通过。
+- TypeScript 最新 86 项在 Windows/macOS CI 均通过，前端 production build 均通过；新增 LF/CRLF 参数化用例覆盖 Windows checkout 换行。
 - Apple Silicon Mac 默认功能（含豆包输入法 Opus）`cargo check` 通过；Rust library 210 项通过、4 项桌面剪贴板测试忽略，另有 6 + 6 + 3 项独立纯逻辑测试入口通过（与 library 中测试重复），16 项原生验收通过。
 - debug .app 打包及本机 ad-hoc 签名验证通过；检查动态链接列表，无 Homebrew 动态库依赖。
-- Windows 原生四个模块逐字对比保留（UIA 仅调整模块引用路径）；Windows 编译与行为回归尚未执行。
+- Windows 原生四个模块逐字对比保留（UIA 仅调整模块引用路径）；`9d70b71` 的 Windows/macOS CI 均通过 Rust 编译与自动测试，见 [Platform checks #36144098644](https://github.com/yyyzl/push-2-talk/actions/runs/36144098644)。Windows 桌面行为回归仍未执行。
 - 解锁后实机启动成功；修复了首次启动仅隐藏窗口、没有 Mac Dock reopen 处理的问题。原生 WebView 的权限页、Mac 键名和不支持功能的禁用状态已确认。关闭到后台后自动化重新访问时，主窗口恢复、服务继续运行且进程未重复；未单独验收鼠标点击 Dock。
 - 麦克风、辅助功能、输入监控三项授权正确读取并进入运行中，真实录音和豆包输入法识别多轮成功。最新完成实机验证的 `d4079775` 包连续三轮分别回填 80、85、83 字，其中隐藏应用、切换原生标签都正确恢复；独立窗口切换另回填 79 字，旁路文档未改变。关闭目标防误写再次通过。辅助功能撤销后停止录音并保留结果，恢复后再回填 78 字；系统剪贴板纯文本前后相等。取消录音、无语音错误反馈此前已通过。全屏新缺陷及修复状态详见 `MACOS_ATDD.md`，物理全局热键仍未获实机证据。
 - 空识别被错误记为成功的问题已通过测试复现并修正：普通听写入口拒绝空白，阻止空粘贴和成功历史；正常文本及原始错误保持不变。另补充 Mac PostEvent 权限校验，拒绝时不误报按键已发送。两项修复均已打入测试包；无语音实测通过，PostEvent 实测为允许。不能把旧验收的目标准备问题归因于发送权限。
@@ -105,3 +107,5 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 这是中等偏大的系统集成改造，共用的 ASR、LLM、TNL 与业务规则可以保留。当前新增的平台边界、Mac 原生实现、原生测试及权限/平台前端约 1,600 行（含纯逻辑测试，另有验收驱动与构建配置），同时搬迁四个 Windows 原生模块并调整听写、助手、学习等调用点。行数仅说明本轮规模，不代表正式适配已完成。
 
 下一阶段的主要工作是跨应用输入与 AX 兼容性验证、全屏/Spaces 窗口体验、音频设备与权限生命周期、Windows 实机回归；“静音其他应用”及签名、公证、双架构分发应作为独立事项推进。具体工期取决于目标应用矩阵和首轮实机发现的问题，不宜仅凭编译通过承诺完成时间。
+
+当前助手实机验收还缺少有效 LLM 配置与助手模式的测试驱动；已有听写驱动不能覆盖选中文本复制、LLM 处理与替换链路。下一轮应分别验收有选中文本和无选中文本两条路径，并保留原目标恢复、关闭保护及取消场景。
