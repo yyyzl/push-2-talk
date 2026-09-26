@@ -14,12 +14,20 @@ mod filesystem;
 #[cfg(target_os = "windows")]
 #[path = "windows/filesystem.rs"]
 mod filesystem;
-/// Publish a closed, prepared file to a distinct target path on the same filesystem.
+/// Publish a closed, prepared regular file to a distinct target path on the same filesystem.
 /// Success replaces or creates the target and consumes the source. A failed native
 /// rename preserves the previous target; the caller owns source cleanup. Never
 /// pre-delete the target or fall back to copy/delete. Crash durability is outside
 /// this operation's contract; callers own validation and flushing prepared data.
-pub(crate) use filesystem::replace_file;
+pub(crate) fn replace_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> anyhow::Result<()> {
+    // Windows can move a directory over an existing file; both native APIs can
+    // move one to a missing target. Keep the shared capability file-only.
+    anyhow::ensure!(std::fs::metadata(source)?.is_file(), "源路径必须是普通文件");
+    filesystem::replace_file(source, target)
+}
 #[cfg(test)]
 mod file_replacement_tests;
 

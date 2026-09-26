@@ -58,6 +58,19 @@ fn directory_source_cannot_replace_an_existing_file() {
 }
 
 #[test]
+fn directory_source_cannot_be_published_to_a_missing_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("directory.tmp");
+    let target = directory.path().join("missing.txt");
+    fs::create_dir(&source).unwrap();
+
+    assert!(replace_file(&source, &target).is_err());
+
+    assert!(source.is_dir());
+    assert!(!target.exists());
+}
+
+#[test]
 fn target_directory_is_preserved_and_failed_source_remains_for_caller_cleanup() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("prepared.tmp");
