@@ -13,6 +13,7 @@ React / Tauri commands → 听写、助手、学习流程 → platform 能力接
 - ASR、LLM、TNL、词库规则、历史记录与音频编码保持共用。
 - 学习观察以 `InputTarget` 去重：启动前原子替换取消标志，RAII 守卫只清理自身注册，旧任务完成不删除新任务。被替换后只保留此前取得的样本，不再把新录音插入的内容当作旧文本修正。
 - `platform::ClipboardSession` 按平台选择剪贴板实现；共享 `ClipboardGuard` 管理临时事务，听写与助手调用同一条粘贴路径。显式复制结果不恢复原剪贴板。
+- `platform::replace_file` 按编译目标选择文件替换实现。词库更新仍共用内容校验、临时文件写入/刷盘、替换失败后的清理和刷新事件；平台层只负责把已关闭的准备文件替换到同一文件系统中的目标路径。Windows 保留 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`，Mac 使用原生 rename，禁止先删除旧缓存或回退到复制后删除。调用失败保留旧目标，准备文件由调用方清理；不额外承诺断电后的目录持久性。该能力没有可变运行时状态，沿用剪贴板模块的编译期选择，不额外创建运行时工厂。
 
 ## 原生实现
 
@@ -49,7 +50,7 @@ macOS 首次使用需要麦克风、辅助功能、输入监控权限。系统�
 
 Tauri 的 `macos-private-api` feature 与 `app.macOSPrivateApi` 同时在公共配置声明（构建脚本校验公共 dependency 的 features），仅 macOS 使用其透明窗口能力。Mac 打包配置在 `tauri.macos.conf.json`，Windows 继续 NSIS。
 
-Tauri JS API / Rust runtime 固定在 2.11.x，updater 两端固定在 2.12.x，避免 Cargo 自动升级 minor 后与 npm lockfile 不匹配。升级时应同步更新两端并重新验证两个平台。
+Tauri JS API / Rust 主 crate 限定在 2.11.x，updater 两端限定在 2.12.x。仅限制直接依赖不足以固定传递依赖：`41865bd` 的 CI 曾解析到 Tauri 2.11.6 与 runtime 2.12.0，导致依赖内部编译失败。提交 `src-tauri/Cargo.lock` 保留已验证的完整依赖图，平台 CI 的检查、测试与打包使用 `--locked`；升级时显式更新锁文件，并重新验证两个平台。
 
 现有快捷键数据仍使用 `meta_left/right`、`alt_left/right` 等平台中立键名；显示名称在前端适配为 Win/Alt 或 Cmd/Option。现有用户配置不重置。默认 Ctrl+Meta 和 Alt/Option+Space 可以修改，Fn/Globe 暂未增加。
 
@@ -62,8 +63,8 @@ npm ci
 # 使用 CMake 3.x；CMake 4 可设置下文的兼容变量，或预装静态 Opus。
 npm run test:ts
 npm run build
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo check --locked --manifest-path src-tauri/Cargo.toml
 npm run tauri dev
 ```
 
@@ -119,3 +120,10 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 2026-09-26 补充：用户确认 F2 物理实测通过。独立功能验收新增 Chrome 助手录音中关闭目标、防误写、录音中新复制文字保留、并发验收拒绝及后台/退出重启通过证据。另实测发现完整剪贴板保护缺失（富文本退化为纯文本，图片被识别文字覆盖），以及学习请求的 256 token 预算与当前 DeepSeek 模型不兼容。学习事件、其他应用、悬浮窗操作等矩阵仍未完成，不能将这些问题视为已经修复；详细条件与对照见 `MACOS_ATDD.md` 的“本轮独立功能验收”。
 
 2026-09-26 修复补充：`ba81da5` 的完整剪贴板事务已通过真实富文本与图片复验；学习判断预算从 256 调为 1024，真实听写纠词触发 3 次建议，并验证正式入库命令及词库页面同步。通知按钮在倒计时内的点击仍未取得通过证据。双平台 CI [#36227679375](https://github.com/yyyzl/push-2-talk/actions/runs/36227679375) 通过。详细测试层级、并发限制与未完成项见 `MACOS_ATDD.md` 最新复验节。
+
+## 文件替换边界验证（2026-09-27）
+
+- 先为原实现增加 5 个真实临时文件系统用例及 2 个共享缓存流程用例。在 Mac 上先复现 2 项失败：源文件不存在时删除旧缓存，以及把目录当作源文件时先删掉旧文件再移入目录。
+- 提取平台实现并移除 Mac 的预删除后，同一组用例通过；还覆盖不存在的目标、覆盖较长旧内容、中文/空格路径、目标目录冲突、失败后的准备文件保留及缓存流程清理。
+- 本机 `cargo check --locked` 和完整 `cargo test --locked` 通过：library 230 通过 / 4 ignored，独立测试入口共 37 通过 / 1 ignored，2 个文档示例忽略。TypeScript 86 项与前端构建通过。
+- 上述是原生文件系统与共享业务回归，不涉及重新安装应用、系统隐私权限或录音。Windows 的文件替换行为由同一组测试在 Windows CI 验证；CI 状态以对应提交的 Actions 结果为准。

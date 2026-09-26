@@ -1,12 +1,28 @@
 //! Native capability boundary. Business code never interprets a window handle or AX object.
-mod contract;
 #[cfg(target_os = "macos")]
 #[path = "macos/clipboard.rs"]
 mod clipboard;
 #[cfg(target_os = "windows")]
 #[path = "windows/clipboard.rs"]
 mod clipboard;
+mod contract;
 pub use clipboard::ClipboardSession;
+
+#[cfg(target_os = "macos")]
+#[path = "macos/filesystem.rs"]
+mod filesystem;
+#[cfg(target_os = "windows")]
+#[path = "windows/filesystem.rs"]
+mod filesystem;
+/// Publish a closed, prepared file to a distinct target path on the same filesystem.
+/// Success replaces or creates the target and consumes the source. A failed native
+/// rename preserves the previous target; the caller owns source cleanup. Never
+/// pre-delete the target or fall back to copy/delete. Crash durability is outside
+/// this operation's contract; callers own validation and flushing prepared data.
+pub(crate) use filesystem::replace_file;
+#[cfg(test)]
+mod file_replacement_tests;
+
 use anyhow::Result;
 pub use contract::{prepare_target, InputTarget, TargetAccess};
 use serde::Serialize;
