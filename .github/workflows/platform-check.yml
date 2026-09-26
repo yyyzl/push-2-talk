@@ -36,17 +36,17 @@ jobs:
       - run: npm ci
       - run: npm run test:ts
       - run: npm run build
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Mac native keyboard acceptance
         if: runner.os == 'macOS'
         run: sh scripts/test-macos-hotkey-native.sh
       - name: Build Windows NSIS prototype
         if: runner.os == 'Windows'
-        run: npm run tauri build -- --debug --ci --bundles nsis --config .github/tauri.prototype.conf.json
+        run: npm run tauri build -- --debug --ci --bundles nsis --config .github/tauri.prototype.conf.json -- --locked
       - name: Build Mac app prototype
         if: runner.os == 'macOS'
-        run: npm run tauri build -- --debug --ci --bundles app --config .github/tauri.prototype.conf.json
+        run: npm run tauri build -- --debug --ci --bundles app --config .github/tauri.prototype.conf.json -- --locked
       - name: Verify and archive Mac prototype
         if: runner.os == 'macOS'
         run: |

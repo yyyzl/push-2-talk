@@ -32,7 +32,6 @@ target/
 src-tauri/target/
 # 但保留打包后的安装文件
 !src-tauri/target/release/bundle/
-src-tauri/Cargo.lock
 
 # 私钥文件（绝对不要提交！）
 .tauri/keys/
