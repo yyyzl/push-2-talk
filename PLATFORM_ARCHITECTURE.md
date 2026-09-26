@@ -11,12 +11,13 @@ React / Tauri commands → 听写、助手、学习流程 → platform 能力接
 - `InputTarget` 是不透明且可比较的会话目标。Windows 内部映射 HWND；macOS 内部映射 AX 应用、窗口及输入元素。不得持久化目标或通过前端传入任意原生 ID。
 - 热键服务和音频控制通过平台模块选择具体实现，保留现有调用外观。初期避免同时重写成熟 Windows 热键状态机。
 - ASR、LLM、TNL、词库规则、历史记录与音频编码保持共用。
+- `platform::ClipboardSession` 按平台选择剪贴板实现；共享 `ClipboardGuard` 管理临时事务，听写与助手调用同一条粘贴路径。显式复制结果不恢复原剪贴板。
 
 ## 原生实现
 
 ### Windows
 
-`platform/windows/` 保存原来的 `GetAsyncKeyState` 热键服务、`SendInput` / 焦点管理、带 COM/超时保护的 UIA 读取和 Audio Session 静音管理。除 UIA 的模块路径外，原生实现本轮不改变。
+`platform/windows/` 保存原来的 `GetAsyncKeyState` 热键服务、`SendInput` / 焦点管理、带 COM/超时保护的 UIA 读取和 Audio Session 静音管理。原有热键、输入、UIA 和静音实现保留（UIA 调整模块路径）。新增独立 `clipboard.rs` 保留纯文本恢复能力，并使用 Win32 clipboard sequence number 保护较新的复制；本次没有扩展 Windows 的富文本快照。
 
 ### macOS
 
@@ -30,6 +31,7 @@ React / Tauri commands → 听写、助手、学习流程 → platform 能力接
 - 热键使用被动 Core Graphics session event tap，按顺序保存键状态，避免轮询遗漏短按边沿；事件消费、状态机与业务回调分离。500ms 权限检查和键状态校正处理撤销授权及丢失释放；队列溢出丢弃过期事件并重置。按住、切换、锁定、优先级和恢复场景有纯逻辑测试，原生事件消费者另有不发送系统按键的独立测试。
 - 文本读取当前支持目标输入元素的 AXValue。未暴露该属性的应用跳过学习，不使用全选/复制来打断用户。
 - 复制/粘贴发送 Cmd+C / Cmd+V。等待用户释放物理修饰键，不伪造释放用户仍按住的键。
+- `clipboard.m` 用 NSPasteboard 保存完整 item/type 数据，最多 64 MiB；拒绝不完整快照。恢复前校验 changeCount，较新的复制优先，恢复只执行一次。应用内临时事务互斥；系统剪贴板没有原子 compare-and-swap，不能保证消除全部外部竞争。富文本和图片已分别经真实助手、听写复验。
 - Overlay 设置跨 Spaces / fullscreen auxiliary；尚未替换 Tauri 底层窗口为 NSPanel，跨应用全屏行为仍需实机验证。
 - 普通启动显示主窗口，`--minimized` 保持静默启动；Dock 的 reopen 事件恢复主窗口。这些窗口生命周期行为封装在 Mac 适配层。
 - 其他应用静音明确标记不可用，设置页禁用。不得用系统总静音冒充此能力。Core Audio taps 留待独立验证。
@@ -85,7 +87,7 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 ## 验收清单
 
 - 两平台：按住松开、切换、锁定结束/取消、热键配置过程中暂停监听、快速重复操作。
-- 输入：原窗口关闭、窗口切换、目标应用多个窗口、焦点恢复失败、修饰键仍按住、粘贴后剪贴板恢复、富文本/非文本剪贴板（现有文本级恢复仍有限制）。
+- 输入：原窗口关闭、窗口切换、目标应用多个窗口、焦点恢复失败、修饰键仍按住、粘贴后剪贴板恢复、富文本/非文本剪贴板（Mac 已有完整数据快照；Windows 仍是文本级恢复）。
 - Mac：首次授权、拒绝、撤销、系统要求重启；Safari/Chrome/VS Code/TextEdit/常用聊天应用；全屏/Spaces、多屏与不同缩放；设备断开和蓝牙麦克风切换。
 - 学习：同目标去重、旧任务取消、失焦停止观察、AXValue 不支持时跳过、超时后主流程仍可继续。
 - 分发：包内麦克风声明、静态 Opus、签名身份稳定、干净 Mac 安装与升级。
@@ -114,3 +116,5 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 助手模式驱动和经用户授权的本地 LLM 配置已补齐。TextEdit 的真实问答、选区翻译、标签恢复、关闭保护和静音反馈已通过。无录音诊断定位了 Chrome 垂直标签的实际深度，修复后真实录音中的跨标签恢复、回填前关闭保护和 TextEdit 回归均已通过，双平台 CI 也通过。物理快捷键、悬浮窗/全屏视觉、Windows 桌面行为及分发等矩阵仍未完成，具体证据见 `MACOS_ATDD.md`。本地配置及凭据不进入仓库或 CI 原型。
 
 2026-09-26 补充：用户确认 F2 物理实测通过。独立功能验收新增 Chrome 助手录音中关闭目标、防误写、录音中新复制文字保留、并发验收拒绝及后台/退出重启通过证据。另实测发现完整剪贴板保护缺失（富文本退化为纯文本，图片被识别文字覆盖），以及学习请求的 256 token 预算与当前 DeepSeek 模型不兼容。学习事件、其他应用、悬浮窗操作等矩阵仍未完成，不能将这些问题视为已经修复；详细条件与对照见 `MACOS_ATDD.md` 的“本轮独立功能验收”。
+
+2026-09-26 修复补充：`ba81da5` 的完整剪贴板事务已通过真实富文本与图片复验；学习判断预算从 256 调为 1024，真实听写纠词触发 3 次建议，并验证正式入库命令及词库页面同步。通知按钮在倒计时内的点击仍未取得通过证据。双平台 CI [#36227679375](https://github.com/yyyzl/push-2-talk/actions/runs/36227679375) 通过。详细测试层级、并发限制与未完成项见 `MACOS_ATDD.md` 最新复验节。
