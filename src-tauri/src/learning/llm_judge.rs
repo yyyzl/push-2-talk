@@ -142,7 +142,9 @@ impl LlmJudge {
         let messages = vec![Message::system(system_prompt), Message::user(user_prompt)];
 
         let options = ChatOptions {
-            max_tokens: 256,
+            // Reasoning providers charge internal reasoning to this same budget.
+            // 256 was exhausted before any JSON on the tested DeepSeek model.
+            max_tokens: 1024,
             temperature: 0.1,
         };
 
@@ -150,6 +152,11 @@ impl LlmJudge {
         let response = timeout(Duration::from_secs(5), self.client.chat(&messages, options))
             .await
             .map_err(|_| anyhow!("LLM 判断超时（5s）"))??;
+
+        anyhow::ensure!(
+            !response.trim().is_empty(),
+            "LLM 未返回学习判断正文，可能已耗尽推理 token 预算"
+        );
 
         parse_llm_response(&response)
     }

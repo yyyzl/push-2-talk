@@ -9,3 +9,7 @@ xcrun clang -fobjc-arc -fblocks -Wno-deprecated-declarations \
   -framework AppKit -framework ApplicationServices -framework AVFoundation -framework Carbon \
   -o "$test_dir/native-keyboard"
 "$test_dir/native-keyboard"
+xcrun clang -fobjc-arc -fblocks \
+  "$project_dir/src-tauri/tests/macos_clipboard.m" \
+  -framework AppKit -o "$test_dir/native-clipboard"
+"$test_dir/native-clipboard"

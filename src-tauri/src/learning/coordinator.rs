@@ -399,6 +399,31 @@ pub fn start_learning_observation(
     tauri::async_runtime::JoinHandle::Tokio(handle)
 }
 
+#[cfg(test)]
+mod acceptance_tests {
+    use super::*;
+
+    #[test]
+    fn real_textedit_correction_survives_validation_and_diff_filters() {
+        let baseline = "使用库伯内特斯管理容器服务运行正常。这次测试使用库伯内德斯管理容器，客户运行正常。这个测试使用库博内特斯管理的容器服务运营正常，这次的测试使用库柏内特斯管理。";
+        let corrected = format!(
+            "PushToTalk ATDD\n\n{}",
+            baseline.replacen("库伯内特斯", "Kubernetes", 1)
+        );
+        assert!(is_asr_text_present(&corrected, baseline, 0.5));
+        let window = extract_diff_window(&corrected, baseline, 120);
+        let diffs = merge_word_level_diffs(analyze_diff(baseline, &window), baseline, &window);
+        assert!(
+            diffs.iter().any(|diff| {
+                !diff.original_segment.trim().is_empty()
+                    && diff.corrected_segment.contains("Kubernetes")
+                    && !is_single_letter_noise(&diff.original_segment, &diff.corrected_segment)
+            }),
+            "a real correction must reach the learning judge"
+        );
+    }
+}
+
 /// 观察修正文本
 ///
 /// 每500ms检测一次文本变化，使用墙钟时间控制观察期时长，返回最后一次成功获取的文本

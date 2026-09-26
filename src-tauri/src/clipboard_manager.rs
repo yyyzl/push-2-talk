@@ -1,55 +1,51 @@
 // src-tauri/src/clipboard_manager.rs
 //
-// 剪贴板管理模块 - 用于 AI 助手模式
-//
-// 提供选中文本捕获和剪贴板恢复功能
-// 使用 Win32 SendInput API 替代 enigo 实现更低延迟
+// Shared dictation/assistant clipboard transactions; native formats live in platform.
 
 use anyhow::Result;
 use arboard::Clipboard;
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::platform::{self, InputTarget};
+use crate::platform::{self, ClipboardSession, InputTarget};
+
+static CLIPBOARD_TRANSACTION: Mutex<()> = Mutex::new(());
 
 /// RAII守卫：自动恢复剪贴板内容
 ///
-/// 当守卫被销毁时，自动将原始剪贴板内容恢复
+/// Restore only while the temporary content still belongs to this transaction.
 pub struct ClipboardGuard {
-    original_content: Option<String>,
-    clipboard: Clipboard,
+    session: ClipboardSession,
+    _transaction: MutexGuard<'static, ()>,
 }
 
 impl ClipboardGuard {
     /// 创建守卫并保存当前剪贴板内容
     pub fn new() -> Result<Self> {
-        let mut clipboard = Clipboard::new()?;
-        let original_content = clipboard.get_text().ok();
-
-        tracing::debug!("ClipboardGuard: 已保存原始剪贴板内容");
-
+        let transaction = CLIPBOARD_TRANSACTION
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("已有剪贴板操作正在执行"))?;
         Ok(Self {
-            original_content,
-            clipboard,
+            session: ClipboardSession::new()?,
+            _transaction: transaction,
         })
+    }
+
+    fn write_text(&mut self, text: &str) -> Result<()> {
+        self.session.write_text(text)
     }
 
     /// 手动恢复剪贴板（消费守卫）
     pub fn restore(mut self) -> Result<()> {
-        if let Some(ref content) = self.original_content {
-            self.clipboard.set_text(content.clone())?;
-            tracing::debug!("ClipboardGuard: 已手动恢复剪贴板");
-        }
-        Ok(())
+        self.session.restore()
     }
 }
 
 impl Drop for ClipboardGuard {
     fn drop(&mut self) {
-        if let Some(ref content) = self.original_content {
-            // 最大努力恢复，忽略错误
-            let _ = self.clipboard.set_text(content.clone());
-            tracing::debug!("ClipboardGuard: 已自动恢复剪贴板（Drop）");
+        if let Err(error) = self.session.restore() {
+            tracing::warn!("ClipboardGuard: 恢复剪贴板失败: {}", error);
         }
     }
 }
@@ -72,11 +68,11 @@ pub fn get_selected_text(target: Option<InputTarget>) -> Result<(ClipboardGuard,
     // a missing or closed target must fail before touching the clipboard.
     platform::prepare_target(platform::desktop(), target)?;
     // 1. 保存当前剪贴板
-    let guard = ClipboardGuard::new()?;
+    let mut guard = ClipboardGuard::new()?;
 
     // 2. 清空剪贴板（用于检测是否有选中内容）
     let mut clipboard = Clipboard::new()?;
-    clipboard.set_text("")?;
+    guard.write_text("")?;
 
     // 3. 等待剪贴板同步（比 enigo 版本更短）
     thread::sleep(Duration::from_millis(50));
@@ -87,12 +83,15 @@ pub fn get_selected_text(target: Option<InputTarget>) -> Result<(ClipboardGuard,
 
     // 5. 使用 Win32 SendInput 模拟 Ctrl+C
     platform::verify_insertion_target(target)?;
+    guard.session.ensure_owned()?;
     platform::desktop().copy_selection()?;
 
     // 6. 等待剪贴板更新（带重试机制）
     let selected_text = wait_for_clipboard_update(&mut clipboard, 3, 80)?;
 
     if let Some(ref text) = selected_text {
+        platform::verify_insertion_target(target)?;
+        guard.session.claim_copy_result(text)?;
         tracing::info!(
             "clipboard_manager: 捕获到选中文本 (长度: {} 字符)",
             text.len()
@@ -195,14 +194,12 @@ pub fn insert_text_with_context(
     clipboard_guard: Option<ClipboardGuard>,
     target: Option<InputTarget>,
 ) -> Result<()> {
-    let clipboard_guard = match clipboard_guard {
+    let mut clipboard_guard = match clipboard_guard {
         Some(guard) => guard,
         None => ClipboardGuard::new()?,
     };
-    let mut clipboard = Clipboard::new()?;
-
     // 1. 将文本写入剪贴板
-    clipboard.set_text(text)?;
+    clipboard_guard.write_text(text)?;
     thread::sleep(Duration::from_millis(50));
 
     tracing::info!(
@@ -213,6 +210,7 @@ pub fn insert_text_with_context(
 
     // 2. 使用 Win32 SendInput 模拟 Ctrl+V 粘贴
     platform::verify_insertion_target(target)?;
+    clipboard_guard.session.ensure_owned()?;
     platform::desktop().paste()?;
 
     // 3. 等待粘贴完成

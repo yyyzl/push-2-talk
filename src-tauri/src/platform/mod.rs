@@ -1,5 +1,12 @@
 //! Native capability boundary. Business code never interprets a window handle or AX object.
 mod contract;
+#[cfg(target_os = "macos")]
+#[path = "macos/clipboard.rs"]
+mod clipboard;
+#[cfg(target_os = "windows")]
+#[path = "windows/clipboard.rs"]
+mod clipboard;
+pub use clipboard::ClipboardSession;
 use anyhow::Result;
 pub use contract::{prepare_target, InputTarget, TargetAccess};
 use serde::Serialize;
