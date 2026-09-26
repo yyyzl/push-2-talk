@@ -1,3 +1,5 @@
+#[cfg(all(feature = "atdd", debug_assertions))]
+use super::hotkey_state;
 use super::*;
 use std::{
     ffi::{c_char, c_void, CStr},
@@ -7,7 +9,6 @@ use std::{
 #[cfg(all(feature = "atdd", debug_assertions))]
 mod atdd_control;
 pub mod audio_mute;
-mod hotkey_state;
 pub mod hotkeys;
 mod key_snapshot;
 mod keys;

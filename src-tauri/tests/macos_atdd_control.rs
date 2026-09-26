@@ -1,6 +1,6 @@
 #[path = "../src/platform/macos/atdd_control.rs"]
 mod atdd_control;
-#[path = "../src/platform/macos/hotkey_state.rs"]
+#[path = "../src/platform/hotkey_state.rs"]
 mod hotkey_state;
 
 use atdd_control::AtddControl;

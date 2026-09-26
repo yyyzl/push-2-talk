@@ -1,4 +1,5 @@
-//! Pure edge/state machine; the native keyboard reader owns how snapshots are obtained.
+//! Shared recording rules. Native adapters own sampling, permissions and key recovery.
+//! Reset clears recording but retains sampled edges so held keys cannot restart it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Dictation,

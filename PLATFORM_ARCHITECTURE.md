@@ -9,7 +9,7 @@ React / Tauri commands → 听写、助手、学习流程 → platform 能力接
 - `platform::desktop()` 是进程级、不可变的工厂入口，按编译目标选择 `DesktopBackend`。业务层不判断操作系统，不解释原生句柄。
 - `TargetAccess` 定义目标有效性、焦点判断和恢复契约。`prepare_target` 以失败关闭策略恢复并验证焦点；实际注入前再次检查，拒绝向未知目标发送按键。
 - `InputTarget` 是不透明且可比较的会话目标。Windows 内部映射 HWND；macOS 内部映射 AX 应用、窗口及输入元素。不得持久化目标或通过前端传入任意原生 ID。
-- 热键服务和音频控制通过平台模块选择具体实现，保留现有调用外观。初期避免同时重写成熟 Windows 热键状态机。
+- 热键服务和音频控制通过平台模块选择具体实现，保留现有调用外观。两端热键适配器使用同一个 `platform/hotkey_state.rs` 状态机：输入是听写/助手/松手模式的逻辑按键快照与启用状态，输出是带模式的开始/停止动作。采集、权限、恢复、线程和回调仍由各自适配器负责。
 - ASR、LLM、TNL、词库规则、历史记录与音频编码保持共用。
 - 学习观察以 `InputTarget` 去重：启动前原子替换取消标志，RAII 守卫只清理自身注册，旧任务完成不删除新任务。被替换后只保留此前取得的样本，不再把新录音插入的内容当作旧文本修正。
 - `platform::ClipboardSession` 按平台选择剪贴板实现；共享 `ClipboardGuard` 管理临时事务，听写与助手调用同一条粘贴路径。显式复制结果不恢复原剪贴板。
@@ -20,6 +20,8 @@ React / Tauri commands → 听写、助手、学习流程 → platform 能力接
 ### Windows
 
 `platform/windows/` 保存原来的 `GetAsyncKeyState` 热键服务、`SendInput` / 焦点管理、带 COM/超时保护的 UIA 读取和 Audio Session 静音管理。原有热键、输入、UIA 和静音实现保留（UIA 调整模块路径）。新增独立 `clipboard.rs` 保留纯文本恢复能力，并使用 Win32 clipboard sequence number 保护较新的复制；本次没有扩展 Windows 的富文本快照。
+
+2026-09-27 热键后续重构：Windows 保留 10ms 轮询、物理状态与额外修饰键匹配；仅将循环中的录音状态规则换为共享 `Machine`。启停、重配置、手动重置和调试输出使用同一个受锁保护的实例，原来的 Windows 录音状态字段仅保留给未启用的历史 rdev fallback。历史 fallback 的防卡键/看门狗代码逐字保留，当前 Windows 编译分支仍使用物理轮询。回调在释放状态与回调锁后执行。
 
 ### macOS
 
@@ -128,3 +130,11 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 - 首轮 Windows CI 的目录源用例失败：原 `MoveFileExW` 调用可用目录替换现有文件。随后在 Mac 增加“目录源、目标不存在”的用例也先复现失败；统一入口增加普通文件校验，两端继续使用原生替换 API。文件系统用例现为 6 项，缓存流程用例 2 项。
 - 本机 `cargo check --locked` 和完整 `cargo test --locked` 通过：library 230 通过 / 4 ignored，独立测试入口共 37 通过 / 1 ignored，2 个文档示例忽略。TypeScript 86 项与前端构建通过。
 - 上述是原生文件系统与共享业务回归，不涉及重新安装应用、系统隐私权限或录音。Windows 的文件替换行为由同一组测试在 Windows CI 验证；CI 状态以对应提交的 Actions 结果为准。
+
+## 共享热键状态验证（2026-09-27）
+
+- 重构前补充并执行行为序列：听写/助手按住与切换、快捷键优先级、录音中其他模式不抢占、松手模式再次按键、暂停/恢复、手动重置保留按键边沿、配置模式变化及快速连续录音。16 项先在原 Mac 状态机通过，迁移后使用同一组断言继续通过。
+- Mac 原状态机实现不变，移到共享层；原生监听、500ms 权限检查与事件恢复不变。独立 ATDD 控制测试 12 项通过，`--features atdd` 编译通过，验证验收驱动与生产适配器使用同一共享状态类型。
+- Windows 新增 3 项服务生命周期测试：真实调用 `reset_state`、`deactivate`/`resume`、`activate_dual`，验证它们操作轮询所持有的状态，并检查调试信息、清理按键及按住时不误启动。测试注入逻辑快照，不启动原生监听或录音，需在 Windows CI 执行。
+- 本机默认 `cargo check --locked` 与完整 `cargo test --locked` 通过（library 231 / 4 ignored，各独立入口通过）；前端 86 项及构建通过，Mac 原生脚本 41 项事件/目标验收和 45 个私有剪贴板断言通过。
+- 共享核心只定义状态规则，不依赖 Win32、AppKit、计时器、录音或配置持久化；系统事件恢复属于原生适配器。测试覆盖逻辑与适配接线，不替代两端物理键盘或窗口焦点的实机验收。本轮不重新构建或替换本机已授权的应用包。

@@ -1,5 +1,5 @@
-use super::hotkey_state::{Action, Machine, Mode, Snapshot};
 use crate::config::{DualHotkeyConfig, HotkeyMode, TriggerMode};
+use crate::platform::hotkey_state::{Action, Machine, Mode, Snapshot};
 use anyhow::Result;
 use std::{
     sync::{

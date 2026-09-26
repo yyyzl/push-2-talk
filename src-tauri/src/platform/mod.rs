@@ -6,6 +6,7 @@ mod clipboard;
 #[path = "windows/clipboard.rs"]
 mod clipboard;
 mod contract;
+mod hotkey_state;
 pub use clipboard::ClipboardSession;
 
 #[cfg(target_os = "macos")]
