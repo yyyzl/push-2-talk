@@ -47,7 +47,9 @@ static BOOL secure(id element) { return [attribute(element,kAXSubroleAttribute) 
 // the descendants of arbitrary controls, even if a page exposes similar tabs.
 static void collectWindowTabs(id node, NSUInteger depth, NSUInteger *remaining,
                               CFAbsoluteTime deadline, BOOL insideTabGroup, NSMutableArray *result) {
-    if (!node || depth>8 || *remaining==0 || result.count>=128 || CFAbsoluteTimeGetCurrent()>deadline) return;
+    // Chrome's vertical tabs reach depth 9 relative to the window's first child.
+    // Allow native wrapper variation while retaining independent node/time caps.
+    if (!node || depth>16 || *remaining==0 || result.count>=128 || CFAbsoluteTimeGetCurrent()>deadline) return;
     (*remaining)--;
     AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)node,0.05);
     NSString *role=attribute(node,kAXRoleAttribute);

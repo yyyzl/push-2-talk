@@ -132,6 +132,24 @@ int main(void) { @autoreleasepool {
     browserRoot.attributes=@{@"AXRole":@"AXGroup",@"AXChildren":@[webArea,node(@{@"AXRole":@"AXButton",@"AXChildren":@[browserStrip]})]};
     assert(windowTabs(browserWindow).count==0);
     puts("PASS page tabs and descendants of non-container controls never become window targets");
+    // Observed Chrome vertical strip: window / group x4 / tab group / group /
+    // scroll area / group / group / radio button (depth 10 from AXWindow).
+    TestAXNode *deepTabs=node(@{@"AXRole":@"AXGroup",@"AXChildren":@[browserOriginal,browserOther]});
+    id deepScroll=node(@{@"AXRole":@"AXScrollArea",@"AXChildren":@[node(@{@"AXRole":@"AXGroup",@"AXChildren":@[deepTabs]})]});
+    id deepStrip=node(@{@"AXRole":@"AXTabGroup",@"AXChildren":@[node(@{@"AXRole":@"AXGroup",@"AXChildren":@[deepScroll]})]});
+    id deepRoot=node(@{@"AXRole":@"AXGroup",@"AXChildren":@[webArea,deepStrip]});
+    for (unsigned i=0;i<3;i++) deepRoot=node(@{@"AXRole":@"AXGroup",@"AXChildren":@[deepRoot]});
+    TestAXNode *deepWindow=node(@{@"AXChildren":@[deepRoot]});
+    assert(same(selectedWindowTab(deepWindow),browserOther));
+    assert(windowTabs(deepWindow).count==2 && same(windowContainingTab(@[deepWindow],browserOriginal),deepWindow));
+    puts("PASS actual Chrome vertical tab depth preserves selection and original inactive identity");
+    deepTabs.attributes=@{@"AXRole":@"AXGroup",@"AXChildren":@[browserLookalike,browserOther]};
+    assert(windowContainingTab(@[deepWindow],browserOriginal)==nil);
+    puts("PASS a closed deeply nested browser tab cannot match a replacement");
+    for (unsigned i=0;i<32;i++) deepRoot=node(@{@"AXRole":@"AXGroup",@"AXChildren":@[deepRoot]});
+    deepWindow.attributes=@{@"AXChildren":@[deepRoot]};
+    assert(windowTabs(deepWindow).count==0);
+    puts("PASS pathological depth still stops without selecting a speculative target");
     TestAXNode *cycle=node(@{@"AXRole":@"AXGroup"});
     cycle.attributes=@{@"AXRole":@"AXGroup",@"AXChildren":@[cycle]};
     TestAXNode *cycleWindow=node(@{@"AXChildren":@[cycle]});
