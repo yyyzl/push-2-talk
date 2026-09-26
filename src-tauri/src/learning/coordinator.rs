@@ -5,9 +5,9 @@
 
 use crate::platform::{self, InputTarget};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter};
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::config::{AppConfig, LearningConfig};
 use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs};
 use crate::learning::llm_judge::LlmJudge;
+use crate::learning::observations::Observations;
 use crate::learning::validator::is_asr_text_present;
 
 // 全局活跃观察任务管理器（存储优雅取消标志）
@@ -24,7 +25,7 @@ use crate::learning::validator::is_asr_text_present;
 // - 旧任务收到取消信号后，立即结束观察期，但继续执行 diff/LLM 流程
 // - 避免直接 abort 导致学习丢失
 lazy_static::lazy_static! {
-    static ref ACTIVE_OBSERVATIONS: Arc<Mutex<HashMap<InputTarget, Arc<AtomicBool>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref ACTIVE_OBSERVATIONS: Observations<InputTarget> = Observations::new();
 }
 
 /// 扩展上下文的最大字符数（防止 CJK 文本导致上下文膨胀）
@@ -86,38 +87,13 @@ pub fn start_learning_observation(
         return tauri::async_runtime::JoinHandle::Tokio(tokio::spawn(async {}));
     }
 
-    // 取消同一窗口的旧观察任务（优雅取消：发送信号让旧任务提前结束观察期）
-    // 旧任务会继续执行 diff/LLM 流程，不会丢失学习机会
-    {
-        let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-        if let Some(old_cancel_flag) = active.remove(&target_hwnd) {
-            tracing::info!(
-                "Learning: 优雅取消旧观察任务 [hwnd={}]（旧任务将继续完成学习流程）",
-                target_hwnd
-            );
-            old_cancel_flag.store(true, Ordering::SeqCst);
-        }
-    }
-
-    // 创建新任务的取消标志
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let cancel_flag_clone = cancel_flag.clone();
+    // 注册与替换在同一个锁内完成，且先于 spawn；旧任务仍可完成 diff/LLM。
+    let observation = ACTIVE_OBSERVATIONS.begin(target_hwnd);
+    let cancel_flag_clone = observation.cancel_flag();
 
     // 启动新任务
     let handle = tokio::spawn(async move {
-        // RAII 清理守卫：确保任务结束时从 ACTIVE_OBSERVATIONS 中移除
-        struct CleanupGuard {
-            hwnd: InputTarget,
-        }
-        impl Drop for CleanupGuard {
-            fn drop(&mut self) {
-                let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-                if active.remove(&self.hwnd).is_some() {
-                    tracing::debug!("Learning: 任务完成，已从活跃观察中移除 hwnd={}", self.hwnd);
-                }
-            }
-        }
-        let _cleanup = CleanupGuard { hwnd: target_hwnd };
+        let _observation = observation;
 
         // 等待观察期（用户修正时间）
         let duration = Duration::from_secs(config.observation_duration_secs.max(1));
@@ -389,12 +365,6 @@ pub fn start_learning_observation(
         );
     });
 
-    // 保存新任务的取消标志
-    {
-        let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-        active.insert(target_hwnd, cancel_flag);
-    }
-
     // 包装为 Tauri JoinHandle
     tauri::async_runtime::JoinHandle::Tokio(handle)
 }
@@ -402,6 +372,160 @@ pub fn start_learning_observation(
 #[cfg(test)]
 mod acceptance_tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct ScriptedReader {
+        focus_checks: AtomicUsize,
+        reads: AtomicUsize,
+        focused_polls: usize,
+        sample: Option<String>,
+    }
+    impl CorrectionReader for ScriptedReader {
+        fn is_focused(&self) -> bool {
+            self.focus_checks.fetch_add(1, Ordering::SeqCst) < self.focused_polls
+        }
+        fn read(&self) -> Option<String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.sample.clone()
+        }
+    }
+    fn reader(focused_polls: usize, sample: Option<&str>) -> Arc<ScriptedReader> {
+        Arc::new(ScriptedReader {
+            focus_checks: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
+            focused_polls,
+            sample: sample.map(str::to_owned),
+        })
+    }
+
+    #[tokio::test]
+    async fn superseded_before_first_poll_does_not_read_the_new_insertion() {
+        let reader = reader(
+            usize::MAX,
+            Some("new insertion must not become old correction"),
+        );
+        let result = observe_with_reader(
+            "cancel-before",
+            Duration::from_secs(5),
+            reader.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await;
+        assert_eq!(result, None);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn superseded_during_poll_delay_does_not_read_the_new_insertion() {
+        let reader = reader(
+            usize::MAX,
+            Some("new insertion must not become old correction"),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(observe_with_reader(
+            "cancel-wait",
+            Duration::from_secs(5),
+            reader.clone(),
+            cancel.clone(),
+        ));
+        sleep(Duration::from_millis(50)).await;
+        cancel.store(true, Ordering::SeqCst);
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn unfocused_target_stops_after_three_polls_without_reading() {
+        let reader = reader(0, Some("bystander must never be read"));
+        assert_eq!(
+            observe_with_reader(
+                "lost-focus",
+                Duration::from_secs(10),
+                reader.clone(),
+                Arc::new(AtomicBool::new(false))
+            )
+            .await,
+            None
+        );
+        assert_eq!(reader.focus_checks.load(Ordering::SeqCst), 3);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn focus_loss_keeps_only_the_last_focused_sample() {
+        let reader = reader(1, Some("known correction before switching apps"));
+        let result = observe_with_reader(
+            "focus-after",
+            Duration::from_secs(10),
+            reader.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+        assert_eq!(
+            result.as_deref(),
+            Some("known correction before switching apps")
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.focus_checks.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn unsupported_control_produces_no_sample() {
+        let reader = reader(usize::MAX, None);
+        assert_eq!(
+            observe_with_reader(
+                "unsupported",
+                Duration::from_millis(500),
+                reader.clone(),
+                Arc::new(AtomicBool::new(false))
+            )
+            .await,
+            None
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    }
+
+    struct ReplacedWhileReading {
+        cancel: Arc<AtomicBool>,
+        reads: AtomicUsize,
+        cancel_on_read: usize,
+    }
+    impl CorrectionReader for ReplacedWhileReading {
+        fn is_focused(&self) -> bool {
+            true
+        }
+        fn read(&self) -> Option<String> {
+            let index = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+            if index == self.cancel_on_read {
+                self.cancel.store(true, Ordering::SeqCst);
+                Some("replacement insertion".into())
+            } else {
+                Some("previously observed correction".into())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn replacement_during_native_read_discards_the_in_flight_sample() {
+        for cancel_on_read in [1, 2] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let reader = Arc::new(ReplacedWhileReading {
+                cancel: cancel.clone(),
+                reads: AtomicUsize::new(0),
+                cancel_on_read,
+            });
+            let result =
+                observe_with_reader("cancel-read", Duration::from_secs(5), reader, cancel).await;
+            assert_eq!(
+                result.as_deref(),
+                if cancel_on_read == 1 {
+                    None
+                } else {
+                    Some("previously observed correction")
+                }
+            );
+        }
+    }
 
     #[test]
     fn real_textedit_correction_survives_validation_and_diff_filters() {
@@ -450,6 +574,36 @@ async fn observe_correction_text(
     target_hwnd: InputTarget,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<String> {
+    observe_with_reader(
+        observation_id,
+        duration,
+        Arc::new(NativeCorrectionReader(target_hwnd)),
+        cancel_flag,
+    )
+    .await
+}
+
+trait CorrectionReader: Send + Sync {
+    fn is_focused(&self) -> bool;
+    fn read(&self) -> Option<String>;
+}
+
+struct NativeCorrectionReader(InputTarget);
+impl CorrectionReader for NativeCorrectionReader {
+    fn is_focused(&self) -> bool {
+        platform::desktop().is_focused(self.0)
+    }
+    fn read(&self) -> Option<String> {
+        read_observed_text(self.0)
+    }
+}
+
+async fn observe_with_reader(
+    observation_id: &str,
+    duration: Duration,
+    reader: Arc<dyn CorrectionReader>,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<String> {
     // 降低轮询频率：100ms → 500ms，减少线程风暴
     let check_interval = Duration::from_millis(500);
     let deadline = Instant::now() + duration;
@@ -481,10 +635,16 @@ async fn observe_correction_text(
         }
 
         sleep(check_interval).await;
+        // A new insertion can supersede this task while it sleeps. Do not read
+        // that insertion as a correction of the old baseline.
+        if cancel_flag.load(Ordering::SeqCst) {
+            ended_due_to_cancel = true;
+            break;
+        }
         check_count += 1;
 
         // 焦点检查：如果目标窗口已失去焦点，跳过本次读取
-        if !platform::desktop().is_focused(target_hwnd) {
+        if !reader.is_focused() {
             focus_lost_count += 1;
             tracing::debug!(
                 "Learning [{}]: 第{}次检测跳过（目标窗口已失焦，连续{}次）",
@@ -511,11 +671,16 @@ async fn observe_correction_text(
 
         // 在同步上下文中调用 UIA 读取（带超时保护）
         let uia_start = Instant::now();
-        let text = tokio::task::spawn_blocking(move || read_observed_text(target_hwnd))
+        let sample_reader = reader.clone();
+        let text = tokio::task::spawn_blocking(move || sample_reader.read())
             .await
             .ok()
             .flatten();
         let uia_elapsed = uia_start.elapsed();
+        if cancel_flag.load(Ordering::SeqCst) {
+            ended_due_to_cancel = true;
+            break;
+        }
 
         // 记录 UIA 读取耗时（用于诊断）
         if uia_elapsed.as_millis() > 200 {
@@ -548,27 +713,8 @@ async fn observe_correction_text(
             &observation_id[..8],
             check_count
         );
-        // 即使没有读取到文本，也尝试立即读取一次
-        if last_text.is_none() {
-            tracing::info!(
-                "Learning [{}]: 优雅取消时尚未读取到文本，尝试立即读取",
-                &observation_id[..8]
-            );
-            let text = tokio::task::spawn_blocking(move || read_observed_text(target_hwnd))
-                .await
-                .ok()
-                .flatten();
-            if let Some(content) = text {
-                if !content.trim().is_empty() {
-                    tracing::info!(
-                        "Learning [{}]: 优雅取消时立即读取成功（长度: {}）",
-                        &observation_id[..8],
-                        content.len()
-                    );
-                    last_text = Some(content);
-                }
-            }
-        }
+        // Only an already observed sample belongs to the old baseline. A final
+        // fresh read here may contain the replacement recording's inserted text.
     } else if ended_due_to_focus_loss {
         // 数据可靠性较差：窗口失焦意味着后续读取可能不可靠。
         // 但如果在失焦前已成功读取到文本，仍可返回 last_text，避免学习功能过于脆弱。

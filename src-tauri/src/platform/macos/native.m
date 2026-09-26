@@ -235,7 +235,10 @@ char *ptt_read_text(uint64_t token) {
         PTTTarget *target=targets[@(token)];
         if (!focused(target) || secure(target.element)) return;
         id value=attribute(target.element,kAXValueAttribute);
-        if ([value isKindOfClass:NSString.class]) result=strdup([value UTF8String]);
+        // AX reads can block while the user switches apps, controls or tabs.
+        // Only accept a sample while the original target still owns focus.
+        if ([value isKindOfClass:NSString.class] && focused(target) && !secure(target.element))
+            result=strdup([value UTF8String]);
     }});
     return result;
 }
@@ -348,7 +351,9 @@ bool ptt_send_shortcut(uint16_t code) {
 // Only exposed by the opt-in ATDD Rust module. No text, titles or clipboard data.
 static NSString *atddFixtureApplication(NSString *path) {
     if ([path.pathExtension isEqualToString:@"txt"]) return @"com.apple.TextEdit";
-    if ([path.pathExtension isEqualToString:@"html"]) return @"com.google.Chrome";
+    if ([path.pathExtension isEqualToString:@"html"])
+        return [path.stringByDeletingPathExtension.pathExtension isEqualToString:@"safari"]
+            ? @"com.apple.Safari" : @"com.google.Chrome";
     return nil;
 }
 static bool atddFixtureMatches(NSString *bundle, NSString *document, NSString *role, NSString *path) {
@@ -357,6 +362,24 @@ static bool atddFixtureMatches(NSString *bundle, NSString *document, NSString *r
     if (!url.isFileURL || (url.host.length && ![url.host isEqualToString:@"localhost"])) return false;
     NSString *actual=[url.path stringByResolvingSymlinksInPath];
     return [actual isEqualToString:[path stringByResolvingSymlinksInPath]];
+}
+static NSString *atddFixtureDocument(PTTTarget *target) {
+    id document=attribute(target.window,kAXDocumentAttribute);
+    if ([document isKindOfClass:NSString.class] && [document length]) return document;
+    // Safari exposes the document URL on the containing web area instead of
+    // its native window. Walk only this input's ancestors, never another tab.
+    id current=target.element;
+    CFAbsoluteTime deadline=CFAbsoluteTimeGetCurrent()+0.3;
+    for (NSUInteger depth=0; current && depth<16 && CFAbsoluteTimeGetCurrent()<deadline; depth++) {
+        AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)current,0.05);
+        if ([attribute(current,kAXRoleAttribute) isEqualToString:@"AXWebArea"]) {
+            id url=attribute(current,kAXURLAttribute);
+            if ([url isKindOfClass:NSURL.class]) return [url absoluteString];
+            return [url isKindOfClass:NSString.class] ? url : nil;
+        }
+        current=attribute(current,kAXParentAttribute);
+    }
+    return nil;
 }
 // Test setup only: open a file created by the opt-in driver, with explicit activation.
 static bool selectFixtureText(PTTTarget *target, NSString *expected, CFRange range) {
@@ -417,7 +440,7 @@ bool ptt_atdd_fixture_focused(uint64_t token, const char *path) {
         PTTTarget *target=targets[@(token)];
         if (!focused(target)) return;
         matches=atddFixtureMatches([NSRunningApplication runningApplicationWithProcessIdentifier:target.pid].bundleIdentifier,
-                                  attribute(target.window,kAXDocumentAttribute),attribute(target.element,kAXRoleAttribute),filename);
+                                  atddFixtureDocument(target),attribute(target.element,kAXRoleAttribute),filename);
     }});
     return matches;
 }
@@ -429,7 +452,7 @@ bool ptt_atdd_select_fixture(uint64_t token, const char *path, const char *expec
     dispatch_sync(targetQueue, ^{ @autoreleasepool {
         PTTTarget *target=targets[@(token)];
         if (!target || !atddFixtureMatches([NSRunningApplication runningApplicationWithProcessIdentifier:target.pid].bundleIdentifier,
-            attribute(target.window,kAXDocumentAttribute),attribute(target.element,kAXRoleAttribute),filename)) return;
+            atddFixtureDocument(target),attribute(target.element,kAXRoleAttribute),filename)) return;
         selected=selectFixtureText(target,text,CFRangeMake((CFIndex)start,(CFIndex)length));
     }});
     return selected;

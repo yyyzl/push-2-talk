@@ -11,6 +11,9 @@ static TestAXNode *node(NSDictionary *attributes) {
     TestAXNode *result=[TestAXNode new]; result.attributes=attributes; return result;
 }
 static TestAXNode *testSystem;
+static TestAXNode *testReadElement;
+static unsigned testTextReads;
+static bool testLoseFocusDuringRead;
 static unsigned testSelectionReadDelay;
 static id testPendingSelection;
 static AXUIElementRef testSystemWide(void) { return (AXUIElementRef)CFBridgingRetain(testSystem); }
@@ -27,6 +30,10 @@ static AXError testCopyAttribute(AXUIElementRef element,CFStringRef key,CFTypeRe
         testPendingSelection=nil;
     }
     id result=((TestAXNode *)object).attributes[(__bridge NSString *)key];
+    if (object==testReadElement && CFEqual(key,kAXValueAttribute)) {
+        testTextReads++;
+        if (testLoseFocusDuringRead) testSystem.attributes=@{@"AXFocusedApplication":node(@{})};
+    }
     if (!result) return kAXErrorAttributeUnsupported;
     *value=CFBridgingRetain(result); return kAXErrorSuccess;
 }
@@ -195,6 +202,40 @@ int main(void) { @autoreleasepool {
     assert(testApplicationActive && testElementFocused);
     assert(restoreTarget.restoreRequested && restoreTarget.focusError==kAXErrorSuccess);
     puts("PASS restoration activates the target application before focusing its input element");
+    // Exercise the real text reader with controlled AX responses; no user text is read.
+    TestAXNode *readElement=node(@{@"AXRole":@"AXTextArea",@"AXValue":@"original correction"});
+    TestAXNode *readWindow=node(@{@"AXChildren":@[]});
+    TestAXNode *readApp=node(@{@"AXWindows":@[readWindow],@"AXFocusedWindow":readWindow,@"AXFocusedUIElement":readElement});
+    PTTTarget *readTarget=[PTTTarget new];
+    readTarget.pid=getpid(); readTarget.application=readApp;
+    readTarget.window=readWindow; readTarget.element=readElement;
+    initializeTargets(); targets[@9001]=readTarget;
+    testSystem.attributes=@{@"AXFocusedApplication":readApp}; testReadElement=readElement;
+    char *observedText=ptt_read_text(9001);
+    assert(observedText && strcmp(observedText,"original correction")==0 && testTextReads==1);
+    ptt_free_string(observedText);
+    puts("PASS learning reads text only from the captured focused input");
+    testSystem.attributes=@{@"AXFocusedApplication":node(@{})};
+    assert(ptt_read_text(9001)==NULL && testTextReads==1);
+    puts("PASS learning never requests AXValue after switching to another application");
+    testSystem.attributes=@{@"AXFocusedApplication":readApp};
+    readApp.attributes=@{@"AXWindows":@[readWindow],@"AXFocusedWindow":readWindow,@"AXFocusedUIElement":node(@{@"AXValue":@"bystander text"})};
+    assert(ptt_read_text(9001)==NULL && testTextReads==1);
+    puts("PASS learning never reads a replacement input in the same window");
+    readApp.attributes=@{@"AXWindows":@[readWindow],@"AXFocusedWindow":readWindow,@"AXFocusedUIElement":readElement};
+    readElement.attributes=@{@"AXRole":@"AXTextField",@"AXSubrole":@"AXSecureTextField",@"AXValue":@"secret fixture"};
+    assert(ptt_read_text(9001)==NULL && testTextReads==1);
+    puts("PASS secure controls are rejected before requesting their value");
+    readElement.attributes=@{@"AXRole":@"AXTextArea"};
+    assert(ptt_read_text(9001)==NULL);
+    readElement.attributes=@{@"AXRole":@"AXTextArea",@"AXValue":@42};
+    assert(ptt_read_text(9001)==NULL);
+    puts("PASS unsupported and non-text AX values produce no learning sample");
+    readElement.attributes=@{@"AXRole":@"AXTextArea",@"AXValue":@"correction during switch"};
+    testLoseFocusDuringRead=true;
+    assert(ptt_read_text(9001)==NULL);
+    puts("PASS a focus change during AXValue reading discards the sample");
+    testLoseFocusDuringRead=false; testReadElement=nil; [targets removeObjectForKey:@9001];
     NSString *fixture=[NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"PushToTalk ATDD %@.txt",NSUUID.UUID.UUIDString]];
     assert([@"Test fixture" writeToFile:fixture atomically:YES encoding:NSUTF8StringEncoding error:nil]);
     NSString *document=[NSURL fileURLWithPath:fixture].absoluteString;
@@ -206,6 +247,27 @@ int main(void) { @autoreleasepool {
     NSString *browserFixture=[fixture stringByAppendingString:@".html"];
     NSString *browserDocument=[NSURL fileURLWithPath:browserFixture].absoluteString;
     assert(atddFixtureMatches(@"com.google.Chrome",browserDocument,@"AXTextArea",browserFixture));
+    NSString *safariFixture=[fixture stringByAppendingString:@".safari.html"];
+    NSString *safariDocument=[NSURL fileURLWithPath:safariFixture].absoluteString;
+    assert(atddFixtureMatches(@"com.apple.Safari",safariDocument,@"AXTextArea",safariFixture));
+    assert(!atddFixtureMatches(@"com.google.Chrome",safariDocument,@"AXTextArea",safariFixture));
+    assert(!atddFixtureMatches(@"com.apple.Safari",browserDocument,@"AXTextArea",browserFixture));
+    assert(!atddFixtureMatches(@"com.apple.Safari",@"https://example.com",@"AXTextArea",safariFixture));
+    puts("PASS Safari ATDD is restricted to its own local fixture and application");
+    TestAXNode *safariWebArea=node(@{@"AXRole":@"AXWebArea",@"AXURL":[NSURL URLWithString:safariDocument]});
+    TestAXNode *safariInput=node(@{@"AXRole":@"AXTextArea",@"AXParent":safariWebArea});
+    PTTTarget *safariTarget=[PTTTarget new]; safariTarget.window=node(@{}); safariTarget.element=safariInput;
+    assert([atddFixtureDocument(safariTarget) isEqualToString:safariDocument]);
+    assert(atddFixtureMatches(@"com.apple.Safari",atddFixtureDocument(safariTarget),@"AXTextArea",safariFixture));
+    puts("PASS browser fixture identity can come from its input's containing AXWebArea URL");
+    safariWebArea.attributes=@{@"AXRole":@"AXWebArea",@"AXURL":@"file:///tmp/unrelated-document.html"};
+    assert(!atddFixtureMatches(@"com.apple.Safari",atddFixtureDocument(safariTarget),@"AXTextArea",safariFixture));
+    safariWebArea.attributes=@{@"AXRole":@"AXWebArea",@"AXURL":@42};
+    assert(atddFixtureDocument(safariTarget)==nil);
+    safariWebArea.attributes=@{@"AXRole":@"AXGroup",@"AXParent":safariWebArea};
+    assert(atddFixtureDocument(safariTarget)==nil);
+    safariWebArea.attributes=@{};
+    puts("PASS unrelated URLs, malformed URL values and cyclic parent chains are rejected");
     assert(!atddFixtureMatches(@"com.apple.TextEdit",browserDocument,@"AXTextArea",browserFixture));
     assert(!atddFixtureMatches(@"com.google.Chrome",document,@"AXTextArea",fixture));
     assert(!atddFixtureMatches(@"com.google.Chrome",browserDocument,@"AXTextField",browserFixture));

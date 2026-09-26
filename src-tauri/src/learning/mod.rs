@@ -12,6 +12,7 @@
 pub mod coordinator;
 pub mod diff_analyzer;
 pub mod llm_judge;
+mod observations;
 pub mod store;
 pub mod validator;
 

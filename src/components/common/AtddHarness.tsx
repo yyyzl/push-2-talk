@@ -11,6 +11,7 @@ export function AtddHarness() {
       <select disabled={running} value={application} onChange={(event) => setApplication(event.target.value)} className="ml-2 rounded border bg-white p-1">
         <option value="text_edit">TextEdit</option>
         <option value="chrome">Chrome 网页输入框</option>
+        <option value="safari">Safari 网页输入框</option>
       </select>
     </label>
     <label className="mb-2 block">验收场景

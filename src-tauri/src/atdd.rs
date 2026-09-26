@@ -29,6 +29,7 @@ pub(crate) enum Application {
     #[default]
     TextEdit,
     Chrome,
+    Safari,
 }
 
 struct Session {
@@ -181,10 +182,10 @@ pub(crate) async fn run(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let extension = if application == Application::Chrome {
-        "html"
-    } else {
-        "txt"
+    let extension = match application {
+        Application::TextEdit => "txt",
+        Application::Chrome => "html",
+        Application::Safari => "safari.html",
     };
     let fixture = std::env::temp_dir().join(format!("PushToTalk-ATDD-{timestamp}.{extension}"));
     let contents = if scenario == Scenario::AssistantSelection {
@@ -200,7 +201,7 @@ pub(crate) async fn run(
     } else {
         (contents.encode_utf16().count() as u64, 0)
     };
-    let document = if application == Application::Chrome {
+    let document = if application != Application::TextEdit {
         // Only the fixed non-sensitive fixture above is interpolated here.
         format!(
             r#"<!doctype html><meta charset="utf-8"><title>PushToTalk ATDD {timestamp}</title>
