@@ -528,6 +528,23 @@ mod acceptance_tests {
     }
 
     #[test]
+    fn real_safari_correction_survives_validation_and_diff_filters() {
+        let baseline = "这次测试使用库伯内特斯管理容器服务运行正常。这次测试用库伯内特司管理容器，运行正常。这个测试使用库博内科斯管理容器，使用库伯内科斯管理能力更加强大。";
+        let corrected = format!(
+            "PushToTalk ATDD\n\n{}",
+            baseline.replacen("库伯内特斯", "Kubernetes", 1)
+        );
+        assert!(is_asr_text_present(&corrected, baseline, 0.5));
+        let window = extract_diff_window(&corrected, baseline, 120);
+        let diffs = merge_word_level_diffs(analyze_diff(baseline, &window), baseline, &window);
+        assert!(diffs.iter().any(|diff| {
+            !diff.original_segment.trim().is_empty()
+                && diff.corrected_segment.contains("Kubernetes")
+                && !is_single_letter_noise(&diff.original_segment, &diff.corrected_segment)
+        }));
+    }
+
+    #[test]
     fn real_textedit_correction_survives_validation_and_diff_filters() {
         let baseline = "使用库伯内特斯管理容器服务运行正常。这次测试使用库伯内德斯管理容器，客户运行正常。这个测试使用库博内特斯管理的容器服务运营正常，这次的测试使用库柏内特斯管理。";
         let corrected = format!(
