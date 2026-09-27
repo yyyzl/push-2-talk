@@ -539,9 +539,29 @@ pub enum AsrLanguageMode {
 #[serde(rename_all = "snake_case")]
 pub enum QwenAsrProfile {
     #[default]
+    #[serde(rename = "qwen_audio_3_1")]
+    QwenAudio3_1,
     #[serde(rename = "qwen_audio_3", alias = "qwen_audio3")]
     QwenAudio3,
     Qwen3Legacy,
+}
+
+impl QwenAsrProfile {
+    pub fn http_model(self) -> &'static str {
+        match self {
+            Self::QwenAudio3_1 => "qwen-audio-3.1-asr-flash",
+            Self::QwenAudio3 => "qwen-audio-3.0-asr-flash",
+            Self::Qwen3Legacy => "qwen3-asr-flash",
+        }
+    }
+
+    pub fn realtime_model(self) -> &'static str {
+        match self {
+            Self::QwenAudio3_1 => "qwen-audio-3.1-asr-flash-streaming",
+            Self::QwenAudio3 => "qwen-audio-3.0-asr-flash-streaming",
+            Self::Qwen3Legacy => "qwen3-asr-flash-realtime",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2160,7 +2180,22 @@ mod tests {
         }))
         .expect("旧版 ASR 配置应能迁移");
 
-        assert_eq!(config.qwen_profile, QwenAsrProfile::QwenAudio3);
+        assert_eq!(
+            serde_json::to_value(config.qwen_profile).unwrap(),
+            "qwen_audio_3_1"
+        );
+        assert_eq!(config.qwen_profile, QwenAsrProfile::default());
+    }
+
+    #[test]
+    fn asr_config_round_trips_all_three_qwen_profiles() {
+        for wire in ["qwen_audio_3_1", "qwen_audio_3", "qwen3_legacy"] {
+            let config: AsrConfig = serde_json::from_value(serde_json::json!({
+                "credentials": {}, "selection": {}, "qwen_profile": wire
+            }))
+            .expect("每种模型都必须能通过 save_config IPC 反序列化");
+            assert_eq!(serde_json::to_value(config).unwrap()["qwen_profile"], wire);
+        }
     }
 
     #[test]

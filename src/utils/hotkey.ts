@@ -1,7 +1,7 @@
 import type { HotkeyKey, AsrConfig, AsrProvider } from '../types';
 import {
   ASR_PROVIDERS,
-  DEFAULT_QWEN_ASR_PROFILE,
+  normalizeQwenAsrProfile,
   FALLBACK_ASR_PROVIDER,
 } from '../constants';
 
@@ -110,10 +110,7 @@ export const normalizeAsrConfigWithFallback = (
 ): { config: AsrConfig; didFallback: boolean } => {
   const normalizedConfig: AsrConfig = {
     ...config,
-    qwen_profile:
-      config.qwen_profile === 'qwen3_legacy'
-        ? 'qwen3_legacy'
-        : DEFAULT_QWEN_ASR_PROFILE,
+    qwen_profile: normalizeQwenAsrProfile(config.qwen_profile),
   };
 
   if (isAsrConfigValid(normalizedConfig)) {

@@ -3,7 +3,7 @@ import { AlertCircle, Sparkles } from "lucide-react";
 import type { AsrConfig, AsrProvider, QwenAsrProfile } from "../types";
 import {
   ASR_PROVIDERS,
-  DEFAULT_QWEN_ASR_PROFILE,
+  normalizeQwenAsrProfile,
   QWEN_ASR_PROFILES,
 } from "../constants";
 import { ApiKeyInput, Toggle, ConfigSelect } from "../components/common";
@@ -31,7 +31,7 @@ export function AsrPage({
   const externalOnlySyncStatus = isExternalSyncing
     ? ("syncing" as const)
     : undefined;
-  const qwenProfile = asrConfig.qwen_profile ?? DEFAULT_QWEN_ASR_PROFILE;
+  const qwenProfile = normalizeQwenAsrProfile(asrConfig.qwen_profile);
   const qwenProfileMeta = QWEN_ASR_PROFILES[qwenProfile];
 
   return (
@@ -99,10 +99,7 @@ export function AsrPage({
                     }}
                     syncStatus={externalOnlySyncStatus}
                     disabled={isRunning}
-                    options={([
-                      "qwen_audio_3",
-                      "qwen3_legacy",
-                    ] as QwenAsrProfile[]).map((profile) => ({
+                    options={(Object.keys(QWEN_ASR_PROFILES) as QwenAsrProfile[]).map((profile) => ({
                       value: profile,
                       label: QWEN_ASR_PROFILES[profile].name,
                     }))}

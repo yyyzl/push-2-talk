@@ -10,8 +10,6 @@ use std::time::Duration;
 
 const QWEN_API_URL: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-const QWEN_AUDIO_3_MODEL: &str = "qwen-audio-3.0-asr-flash";
-const QWEN3_LEGACY_MODEL: &str = "qwen3-asr-flash";
 const MAX_RETRIES: u32 = 2;
 
 fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
@@ -28,7 +26,7 @@ fn build_request_body(
     audio_base64: &str,
 ) -> serde_json::Value {
     match profile {
-        QwenAsrProfile::QwenAudio3 => {
+        QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => {
             let mut parameters = serde_json::json!({
                 "format": "wav",
                 "sample_rate": "16000"
@@ -47,7 +45,7 @@ fn build_request_body(
             }
 
             serde_json::json!({
-                "model": QWEN_AUDIO_3_MODEL,
+                "model": profile.http_model(),
                 "input": {
                     "messages": [{
                         "role": "user",
@@ -65,7 +63,7 @@ fn build_request_body(
         QwenAsrProfile::Qwen3Legacy => {
             let corpus_text = hotwords.join("、");
             serde_json::json!({
-                "model": QWEN3_LEGACY_MODEL,
+                "model": profile.http_model(),
                 "input": {
                     "messages": [
                         {
@@ -93,7 +91,9 @@ fn build_request_body(
 
 fn parse_transcription_text(profile: QwenAsrProfile, result: &serde_json::Value) -> Result<String> {
     let text = match profile {
-        QwenAsrProfile::QwenAudio3 => result["output"]["text"].as_str(),
+        QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => result["output"]["text"]
+            .as_str()
+            .or_else(|| result["output"]["output"]["sentence"]["text"].as_str()),
         QwenAsrProfile::Qwen3Legacy => result["output"]["choices"]
             .as_array()
             .and_then(|arr| arr.first())
@@ -214,7 +214,8 @@ impl QwenASRClient {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("转录失败，未知错误")))
     }
 
-    pub(crate) async fn transcribe_from_memory(&self, audio_data: &[u8]) -> Result<String> {
+    /// 单次识别，不进行自动重试；用于竞速策略和显式 API 验证。
+    pub async fn transcribe_from_memory(&self, audio_data: &[u8]) -> Result<String> {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("音频数据大小: {} bytes", audio_data.len());
 
@@ -287,6 +288,32 @@ mod tests {
     use crate::config::{AsrLanguageMode, QwenAsrProfile};
     use crate::personalization::hotword_compiler::QWEN_HTTP_MAX_HOTWORDS;
     use crate::personalization::CorrectionPair;
+
+    #[test]
+    fn qwen_audio_3_1_http_contract_and_response() {
+        let profile: QwenAsrProfile = serde_json::from_str("\"qwen_audio_3_1\"").unwrap();
+        let request = build_request_body(profile, AsrLanguageMode::Zh, &["Rust".into()], "abc");
+        assert_eq!(request["model"], "qwen-audio-3.1-asr-flash");
+        assert_eq!(
+            request["input"]["messages"][0]["content"][0]["input_audio"]["data"],
+            "data:audio/wav;base64,abc"
+        );
+        assert_eq!(request["parameters"]["vocabulary"]["Rust"], 4);
+        assert_eq!(
+            request["parameters"]["language_hints"],
+            serde_json::json!(["zh"])
+        );
+        for response in [
+            serde_json::json!({"output": {"text": "测试结果"}}),
+            serde_json::json!({"output": {"output": {"sentence": {"text": "测试结果"}}}}),
+        ] {
+            assert_eq!(
+                parse_transcription_text(profile, &response).unwrap(),
+                "测试结果"
+            );
+        }
+        assert!(parse_transcription_text(profile, &serde_json::json!({"output": {}})).is_err());
+    }
 
     #[test]
     fn build_request_body_sets_auto_language() {

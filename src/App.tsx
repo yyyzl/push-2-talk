@@ -23,6 +23,7 @@ import {
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_QWEN_ASR_PROFILE,
   DEFAULT_SEARCH_CONFIG,
   DEFAULT_TNL_CONFIG,
   normalizeTnlConfig,
@@ -85,7 +86,7 @@ function App() {
       enable_fallback: false,
       fallback_provider: null,
     },
-    qwen_profile: 'qwen_audio_3',
+    qwen_profile: DEFAULT_QWEN_ASR_PROFILE,
     language_mode: 'auto',
   });
 

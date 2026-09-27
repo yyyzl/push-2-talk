@@ -170,7 +170,7 @@ export function normalizeTnlConfig(
 }
 
 // ASR 服务商元数据
-export const DEFAULT_QWEN_ASR_PROFILE: QwenAsrProfile = 'qwen_audio_3';
+export const DEFAULT_QWEN_ASR_PROFILE: QwenAsrProfile = 'qwen_audio_3_1';
 
 export const QWEN_ASR_PROFILES: Record<
   QwenAsrProfile,
@@ -181,8 +181,14 @@ export const QWEN_ASR_PROFILES: Record<
     description: string;
   }
 > = {
+  qwen_audio_3_1: {
+    name: 'Qwen Audio 3.1 ASR（默认）',
+    httpModel: 'qwen-audio-3.1-asr-flash',
+    realtimeModel: 'qwen-audio-3.1-asr-flash-streaming',
+    description: '新版多语种与方言识别，支持热词增强',
+  },
   qwen_audio_3: {
-    name: 'Qwen Audio 3.0 ASR（最新版，推荐）',
+    name: 'Qwen Audio 3.0 ASR',
     httpModel: 'qwen-audio-3.0-asr-flash',
     realtimeModel: 'qwen-audio-3.0-asr-flash-streaming',
     description: '多语种与中文方言能力更强，支持新版即时热词协议',
@@ -194,6 +200,14 @@ export const QWEN_ASR_PROFILES: Record<
     description: '保留原有 HTTP 与 Realtime 协议，便于兼容旧环境',
   },
 };
+
+/** 保留明确选择的版本，并兼容修复前落盘的 3.0 名称。 */
+export function normalizeQwenAsrProfile(profile: unknown): QwenAsrProfile {
+  if (profile === 'qwen_audio3') return 'qwen_audio_3';
+  return typeof profile === 'string' && Object.prototype.hasOwnProperty.call(QWEN_ASR_PROFILES, profile)
+    ? profile as QwenAsrProfile
+    : DEFAULT_QWEN_ASR_PROFILE;
+}
 
 export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {
   qwen: {
