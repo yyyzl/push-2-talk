@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "Verify draft output remains compatible with eval case expectations without changing formal quality gates."}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Verify TypeScript parser/guards avoid unsafe assumptions over exported JSON."}
-{"file": ".trellis/tasks/05-17-phase-0b-asr-eval-sample-intake/research/sample-intake-current-state.md", "reason": "Verify implementation matches researched mappings and limitations."}

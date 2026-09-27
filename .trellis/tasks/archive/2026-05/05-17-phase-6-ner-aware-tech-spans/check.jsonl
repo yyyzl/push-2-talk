@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify sidecar and dictionary metadata behavior remains intact"}
-{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "Verify NamedEntity and TNL span contracts"}
-{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "Verify runtime dictionary metadata assumptions remain compatible"}

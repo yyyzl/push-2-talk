@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/tnl-normalization.md", "reason": "Eval runner contracts, diagnostics schema, quality gate, sweep, and ablation expectations."}
-{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "Phase 7 HotwordCompiler status is part of the gate decision context."}
-{"file": ".trellis/tasks/05-17-phase-7-8-eval-gate/research/eval-gate-current-state.md", "reason": "Current suite size, runner capabilities, and Phase 8 decision framing."}

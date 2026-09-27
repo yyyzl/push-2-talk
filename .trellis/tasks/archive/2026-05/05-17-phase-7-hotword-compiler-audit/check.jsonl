@@ -1,4 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/backend/asr-hotword-compilation.md", "reason": "Quality checks for provider hotword payload and priority behavior"}
-{"file": ".trellis/tasks/05-17-phase-7-hotword-compiler-audit/research/phase-7-current-state.md", "reason": "Expected audit conclusions and remaining gaps"}
-{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Runtime-only dictionary source preservation checks"}

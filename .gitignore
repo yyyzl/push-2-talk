@@ -50,13 +50,14 @@ tmpclaude-*
 .openspec/
 
 # Docs (plans and drafts)
-docs/
+docs/*
+!docs/development/
+!docs/development/**
 .ccg/
 
 # Git worktrees
 .worktrees/
-.gitnexus
 
-# Python bytecode (hook scripts under .claude/.codex/.cursor)
+# Python bytecode
 __pycache__/
 *.pyc

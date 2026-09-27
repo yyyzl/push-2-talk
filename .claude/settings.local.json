@@ -42,11 +42,7 @@
       "Bash(npm run build)",
       "Bash(npm run build:*)",
       "WebSearch",
-      "Bash(cp .claude/settings.json /tmp/trellis-migration-snapshot/claude-settings.json)",
-      "Bash(cp .codex/hooks.json /tmp/trellis-migration-snapshot/codex-hooks.json)",
-      "Bash(cp .trellis/config.yaml /tmp/trellis-migration-snapshot/trellis-config.yaml)",
-      "Read(//tmp/**)",
-      "Read(//tmp/trellis-migration-snapshot/**)"
+      "Read(//tmp/**)"
     ],
     "deny": [],
     "ask": []
