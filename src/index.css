@@ -67,6 +67,51 @@ code {
     monospace;
 }
 
+/* macOS draws native traffic lights over this single, integrated toolbar. */
+.mac-toolbar {
+  background: var(--panel);
+}
+
+.mac-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 0 24px;
+}
+
+.mac-window-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  width: 112px;
+}
+
+.mac-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--ink);
+}
+
+.mac-sidebar-toggle:hover {
+  background: var(--sand);
+}
+
+.mac-sidebar-toggle:focus-visible {
+  outline: 2px solid var(--crail);
+  outline-offset: 2px;
+}
+
+#root [data-tauri-drag-region] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .mono {
   font-family: var(--font-mono);
 }

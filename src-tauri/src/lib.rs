@@ -4565,6 +4565,9 @@ pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let start_minimized = args.contains(&"--minimized".to_string());
 
+    let mut context = tauri::generate_context!();
+    platform::window_chrome::configure(context.config_mut());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 当第二个实例启动时，将焦点切换到已有实例的主窗口
@@ -4918,7 +4921,7 @@ pub fn run() {
             show_notification_window,
             test_llm_provider,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| platform::handle_run_event(app, &event));
 }

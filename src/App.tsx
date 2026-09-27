@@ -23,6 +23,7 @@ import {
   DEFAULT_LLM_CONFIG,
 } from "./constants";
 import { loadUsageStats } from "./utils";
+import { desktopOs } from "./utils/platform";
 import { TopStatusBar } from "./components/layout/TopStatusBar";
 import { Sidebar } from "./components/layout/Sidebar";
 import { RightPanel } from "./components/layout/RightPanel";
@@ -875,6 +876,19 @@ function App() {
     }
   })();
 
+  const integratedToolbar = desktopOs === "macos";
+  const topStatusBar = (
+    <TopStatusBar
+      status={status}
+      recordingTime={recordingTime}
+      formatTime={formatTime}
+      usageStats={usageStats}
+      globalNotice={globalNotice}
+      sidebarCollapsed={sidebarCollapsed}
+      onToggleSidebar={integratedToolbar ? () => setSidebarCollapsed((v) => !v) : undefined}
+    />
+  );
+
   return (
     <ConfigSaveContext.Provider
       value={{
@@ -885,60 +899,58 @@ function App() {
         syncWindowSource: syncWindowSnapshot.source,
       }}
     >
-      <div className="h-screen w-full bg-[var(--paper)] text-[var(--ink)] font-serif flex">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
-          activePage={activePage}
-          onNavigate={navigate}
-          updateStatus={updateStatus}
-        />
-
-        <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
-          <TopStatusBar
-            status={status}
-            recordingTime={recordingTime}
-            formatTime={formatTime}
-            usageStats={usageStats}
-            globalNotice={globalNotice}
+      <div className={`h-screen w-full text-[var(--ink)] font-serif flex flex-col ${integratedToolbar ? "bg-[var(--panel)]" : "bg-[var(--paper)]"}`}>
+        {integratedToolbar && topStatusBar}
+        <div className="flex flex-1 min-h-0">
+          <Sidebar
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
+            activePage={activePage}
+            onNavigate={navigate}
+            updateStatus={updateStatus}
+            integratedToolbar={integratedToolbar}
           />
 
-          <div className="flex-1 min-h-0 flex overflow-hidden">
-            <main className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scroll p-6">
-              {error && (
-                <div className="mx-auto max-w-3xl mb-6 flex items-center gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 text-sm font-semibold">
-                  <AlertCircle size={18} />
-                  <span>{error}</span>
-                </div>
+          <div className={`flex-1 min-w-0 flex flex-col overflow-hidden bg-[var(--paper)] ${integratedToolbar ? "rounded-tl-2xl" : ""}`}>
+            {!integratedToolbar && topStatusBar}
+
+            <div className="flex-1 min-h-0 flex overflow-hidden">
+              <main className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scroll p-6">
+                {error && (
+                  <div className="mx-auto max-w-3xl mb-6 flex items-center gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 text-sm font-semibold">
+                    <AlertCircle size={18} />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                {content}
+              </main>
+
+              {activePage === "dashboard" && (
+                <RightPanel
+                  asrConfig={asrConfig}
+                  setAsrConfig={setAsrConfig}
+                  useRealtime={useRealtime}
+                  setUseRealtime={setUseRealtime}
+                  enablePostProcess={enablePostProcess}
+                  setEnablePostProcess={setEnablePostProcess}
+                  enableDictionaryEnhancement={enableDictionaryEnhancement}
+                  setEnableDictionaryEnhancement={setEnableDictionaryEnhancement}
+                  llmConfig={llmConfig}
+                  setLlmConfig={setLlmConfig}
+                  dualHotkeyConfig={dualHotkeyConfig}
+                  dictionary={dictionary}
+                  newWord={newWord}
+                  setNewWord={setNewWord}
+                  onAddWord={handleAddWord}
+                  onNavigate={navigate}
+                  isRunning={isConfigLocked}
+                />
               )}
-
-              {content}
-            </main>
-
-            {activePage === "dashboard" && (
-              <RightPanel
-                asrConfig={asrConfig}
-                setAsrConfig={setAsrConfig}
-                useRealtime={useRealtime}
-                setUseRealtime={setUseRealtime}
-                enablePostProcess={enablePostProcess}
-                setEnablePostProcess={setEnablePostProcess}
-                enableDictionaryEnhancement={enableDictionaryEnhancement}
-                setEnableDictionaryEnhancement={setEnableDictionaryEnhancement}
-                llmConfig={llmConfig}
-                setLlmConfig={setLlmConfig}
-                dualHotkeyConfig={dualHotkeyConfig}
-                dictionary={dictionary}
-                newWord={newWord}
-                setNewWord={setNewWord}
-                onAddWord={handleAddWord}
-                onNavigate={navigate}
-                isRunning={isConfigLocked}
-              />
-            )}
+            </div>
           </div>
-        </div>
 
+        </div>
         <div
           className={`fixed top-6 left-1/2 -translate-x-1/2 pointer-events-none transition-all duration-500 z-50 ${showSuccessToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-4"
             }`}

@@ -8,6 +8,7 @@ mod clipboard;
 mod contract;
 mod hotkey_state;
 pub mod tray;
+pub mod window_chrome;
 pub use clipboard::ClipboardSession;
 
 #[cfg(target_os = "macos")]
