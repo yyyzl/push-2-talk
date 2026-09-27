@@ -3,6 +3,11 @@ import type { HistoryRecord } from "../types";
 import { formatTimestamp } from "../utils";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { TnlDiagnosticsBadge, TnlDiagnosticsSummary } from "../components/history/TnlDiagnosticsSummary";
+import {
+  formatAssistantAnswerPreview,
+  SearchSourcesList,
+  SearchStatusChip,
+} from "../components/history/SearchSources";
 
 export type HistoryPageProps = {
   history: HistoryRecord[];
@@ -66,6 +71,7 @@ export function HistoryPage({ history, onCopyText, onClear }: HistoryPageProps) 
                           {record.presetName}
                         </span>
                       )}
+                      <SearchStatusChip record={record} />
                       <span className="text-[10px] bg-stone-50 text-stone-600 px-1.5 py-0.5 rounded">
                         {(record.totalTimeMs / 1000).toFixed(1)}s
                       </span>
@@ -133,9 +139,12 @@ export function HistoryPage({ history, onCopyText, onClear }: HistoryPageProps) 
                                 <Copy size={13} />
                               </button>
                             </div>
-                            <p className="text-xs text-stone-800 line-clamp-4 leading-relaxed font-semibold whitespace-pre-wrap">{record.polishedText}</p>
+                            <p className="text-xs text-stone-800 line-clamp-4 leading-relaxed font-semibold whitespace-pre-wrap">
+                              {formatAssistantAnswerPreview(record.polishedText)}
+                            </p>
                           </div>
                         </div>
+                        <SearchSourcesList record={record} />
                       </div>
                     ) : (
                       /* 普通润色模式 — 保持原有双栏 */

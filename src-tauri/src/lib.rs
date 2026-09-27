@@ -12,7 +12,10 @@ mod config;
 mod dictionary_utils;
 mod learning;
 mod llm_post_processor;
+mod llm_reasoning;
 mod openai_client;
+pub mod personalization;
+pub use tnl::{clean_disfluency, DisfluencyMode, DisfluencyResult};
 mod pipeline;
 mod platform;
 #[cfg(all(feature = "atdd", not(debug_assertions)))]
@@ -20,6 +23,7 @@ compile_error!("The ATDD harness must not be included in a release build");
 #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
 mod atdd;
 use platform::InputTarget;
+mod search;
 mod streaming_recorder;
 mod text_inserter;
 mod tnl;
@@ -30,12 +34,15 @@ use asr::{
     DoubaoRealtimeClient, DoubaoRealtimeSession, QwenASRClient, QwenRealtimeClient,
     RealtimeSession, SenseVoiceClient,
 };
-use assistant_processor::AssistantProcessor;
+use assistant_processor::{
+    AssistantProcessor, AssistantStreamEvent, TurnOutcome, WebSearchPreference,
+};
 use audio_recorder::AudioRecorder;
 use config::{AppConfig, CONFIG_LOCK};
 use futures_util::FutureExt;
 use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
+use personalization::{default_user_terms_db_path, CorrectionPair, UserTermStore};
 use pipeline::{NormalPipeline, TranscriptionContext};
 use platform::AudioMuteManager;
 use platform::HotkeyService;
@@ -43,6 +50,7 @@ use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -50,6 +58,9 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
+use tokio_util::sync::CancellationToken;
+
+const ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS: u64 = 800;
 
 fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
     let cursor = window.cursor_position().ok()?;
@@ -113,6 +124,8 @@ struct AppState {
     target_window: Arc<Mutex<Option<InputTarget>>>,
     /// 词库（用于 Realtime 模式热更新）
     dictionary: Arc<Mutex<Vec<String>>>,
+    /// 个性化纠错对（用于 ASR 热词编译，录音开始前读取快照）
+    asr_correction_pairs: Arc<Mutex<Vec<CorrectionPair>>>,
     /// 豆包输入法凭据（自动注册获取，跨会话复用）
     doubao_ime_credentials: Arc<Mutex<Option<DoubaoImeCredentials>>>,
     /// 使用统计数据
@@ -127,6 +140,8 @@ struct AppState {
     conversation_session: Arc<Mutex<Option<ConversationSession>>>,
     /// AI 助手模式：是否正在处理中（追问期间阻止重复触发）
     is_assistant_processing: Arc<AtomicBool>,
+    /// AI 助手模式：当前生成取消令牌
+    assistant_cancel_token: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 // ================== 多轮对话数据结构 ==================
@@ -148,6 +163,8 @@ pub(crate) struct ConversationTurn {
     pub assistant_response: String,
     pub asr_time_ms: u64,
     pub llm_time_ms: u64,
+    pub search_time_ms: Option<u64>,
+    pub tool_calls: Vec<search::AssistantToolCall>,
 }
 
 /// 多轮对话会话（替代 PendingAssistantResult）
@@ -155,6 +172,13 @@ pub(crate) struct ConversationTurn {
 pub(crate) struct ConversationSession {
     pub id: String,
     pub turns: Vec<ConversationTurn>,
+    pub pending_turn: Option<TurnPendingPayload>,
+    pub draft_turn_id: Option<String>,
+    pub draft_assistant_response: String,
+    pub draft_tool_calls: Vec<search::AssistantToolCall>,
+    pub draft_status: String,
+    pub draft_warning: Option<String>,
+    pub draft_web_search_enabled: Option<bool>,
     /// 首轮锁定的提示词模式
     pub system_prompt_mode: PromptMode,
     /// 首轮触发时的目标窗口句柄
@@ -173,6 +197,10 @@ struct ConversationTurnPayload {
     assistant_response: String,
     asr_time_ms: u64,
     llm_time_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_time_ms: Option<u64>,
+    #[serde(default)]
+    tool_calls: Vec<search::AssistantToolCall>,
 }
 
 /// 完整会话状态 payload（用于 pull 模式）
@@ -180,11 +208,25 @@ struct ConversationTurnPayload {
 struct ConversationStatePayload {
     session_id: String,
     turns: Vec<ConversationTurnPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_turn: Option<TurnPendingPayload>,
+    #[serde(default)]
+    draft_assistant_response: String,
+    #[serde(default)]
+    draft_tool_calls: Vec<search::AssistantToolCall>,
+    #[serde(default)]
+    is_processing: bool,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_search_enabled: Option<bool>,
 }
 
 /// 追问录音完成后立即发出（前端显示用户消息 + loading）
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 struct TurnPendingPayload {
+    turn_id: String,
     user_instruction: String,
     selected_text: Option<String>,
     has_selection: bool,
@@ -205,11 +247,737 @@ struct TurnErrorPayload {
     error_message: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct TurnDeltaPayload {
+    session_id: String,
+    turn_id: String,
+    content_delta: String,
+    draft_assistant_response: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct TurnWarningPayload {
+    session_id: String,
+    turn_id: String,
+    message: String,
+}
+
+fn emit_assistant_stream_event(
+    app: &AppHandle,
+    session_id: &str,
+    turn_id: &str,
+    event: AssistantStreamEvent,
+    draft_assistant_response: Option<String>,
+) {
+    match event {
+        AssistantStreamEvent::Delta { content_delta } => {
+            let _ = app.emit(
+                "assistant_turn_delta",
+                TurnDeltaPayload {
+                    session_id: session_id.to_string(),
+                    turn_id: turn_id.to_string(),
+                    draft_assistant_response: draft_assistant_response
+                        .unwrap_or_else(|| content_delta.clone()),
+                    content_delta,
+                },
+            );
+        }
+        AssistantStreamEvent::ToolCallStarted {
+            id,
+            name,
+            query,
+            round,
+        } => {
+            let _ = app.emit(
+                "assistant_tool_call_started",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "id": id,
+                    "name": name,
+                    "query": query,
+                    "round": round,
+                }),
+            );
+        }
+        AssistantStreamEvent::ToolCallFinished { call } => {
+            let _ = app.emit(
+                "assistant_tool_call_finished",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "call": call,
+                }),
+            );
+        }
+        AssistantStreamEvent::Warning { message } => {
+            let _ = app.emit(
+                "assistant_turn_warning",
+                TurnWarningPayload {
+                    session_id: session_id.to_string(),
+                    turn_id: turn_id.to_string(),
+                    message,
+                },
+            );
+        }
+    }
+}
+
+fn load_search_runtime_config() -> config::SearchConfig {
+    config::AppConfig::load()
+        .map(|(cfg, _)| cfg.search_config)
+        .unwrap_or_else(|e| {
+            tracing::warn!("加载联网搜索配置失败，使用默认值: {}", e);
+            config::SearchConfig::default()
+        })
+}
+
+fn resolve_pending_web_search_enabled(
+    processor: &AssistantProcessor,
+    prompt_mode: &PromptMode,
+    preference: WebSearchPreference,
+    search_config: &config::SearchConfig,
+) -> bool {
+    processor.is_web_search_requested(prompt_mode, preference, Some(search_config))
+        && search::SearchRegistry::runtime_unavailable_reason(search_config).is_none()
+}
+
+fn register_assistant_cancel_token(state: &AppState) -> CancellationToken {
+    let token = CancellationToken::new();
+    *state.assistant_cancel_token.lock().unwrap() = Some(token.clone());
+    token
+}
+
+fn clear_assistant_cancel_token_after_turn(state: &AppState, token: &CancellationToken) {
+    let mut guard = state.assistant_cancel_token.lock().unwrap();
+    if token.is_cancelled() {
+        if guard
+            .as_ref()
+            .map(|current| current.is_cancelled())
+            .unwrap_or(false)
+        {
+            *guard = None;
+        }
+    } else {
+        *guard = None;
+    }
+}
+
+fn finish_assistant_turn_processing(
+    state: &AppState,
+    turn_id: &str,
+    cancel_token: &CancellationToken,
+) {
+    let active_turn_id = state
+        .conversation_session
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|session| session.draft_turn_id.clone());
+    if active_turn_id
+        .as_deref()
+        .is_some_and(|active| active != turn_id)
+    {
+        return;
+    }
+
+    state.is_assistant_processing.store(false, Ordering::SeqCst);
+    clear_assistant_cancel_token_after_turn(state, cancel_token);
+}
+
+fn log_assistant_turn_cancelled(context: &str, err: &anyhow::Error) {
+    tracing::info!("{context}已取消: {}", err);
+}
+
+fn new_assistant_turn_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn set_conversation_pending(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    pending: TurnPendingPayload,
+    web_search_enabled: bool,
+) -> bool {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return false;
+    };
+    if session.id != session_id {
+        return false;
+    }
+
+    session.pending_turn = Some(pending);
+    session.draft_turn_id = Some(turn_id.to_string());
+    session.draft_assistant_response.clear();
+    session.draft_tool_calls.clear();
+    session.draft_status = "processing".to_string();
+    session.draft_warning = None;
+    session.draft_web_search_enabled = Some(web_search_enabled);
+    true
+}
+
+fn update_conversation_draft_from_event(
+    app: &AppHandle,
+    session_id: &str,
+    turn_id: &str,
+    event: &AssistantStreamEvent,
+) -> Option<String> {
+    let state = app.state::<AppState>();
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return None;
+    };
+    if session.id != session_id || session.draft_turn_id.as_deref() != Some(turn_id) {
+        return None;
+    }
+
+    match event {
+        AssistantStreamEvent::Delta { content_delta } => {
+            session.draft_assistant_response.push_str(content_delta);
+        }
+        AssistantStreamEvent::ToolCallStarted {
+            id,
+            name,
+            query,
+            round,
+        } => {
+            let started = search::AssistantToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                query: query.clone(),
+                status: "searching".to_string(),
+                results: Vec::new(),
+                error: None,
+                elapsed_ms: 0,
+                round: *round,
+            };
+            session.draft_tool_calls.retain(|call| call.id != *id);
+            session.draft_tool_calls.push(started);
+        }
+        AssistantStreamEvent::ToolCallFinished { call } => {
+            session.draft_tool_calls.retain(|item| item.id != call.id);
+            session.draft_tool_calls.push(call.clone());
+        }
+        AssistantStreamEvent::Warning { message } => {
+            session.draft_warning = Some(message.clone());
+        }
+    }
+    Some(session.draft_assistant_response.clone())
+}
+
+fn emit_and_record_assistant_stream_event(
+    app: &AppHandle,
+    session_id: &str,
+    turn_id: &str,
+    event: AssistantStreamEvent,
+) {
+    let draft_assistant_response =
+        update_conversation_draft_from_event(app, session_id, turn_id, &event);
+    emit_assistant_stream_event(app, session_id, turn_id, event, draft_assistant_response);
+}
+
+fn push_completed_turn_if_active(
+    state: &AppState,
+    session_id: &str,
+    turn_id: &str,
+    turn: ConversationTurn,
+) -> bool {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return false;
+    };
+    if session.id != session_id || session.draft_turn_id.as_deref() != Some(turn_id) {
+        return false;
+    }
+    if session.draft_status == "cancelled" {
+        return false;
+    }
+
+    session.turns.push(turn);
+    session.pending_turn = None;
+    session.draft_turn_id = None;
+    session.draft_assistant_response.clear();
+    session.draft_tool_calls.clear();
+    session.draft_status = "idle".to_string();
+    session.draft_warning = None;
+    session.draft_web_search_enabled = None;
+    true
+}
+
+fn mark_conversation_error(state: &AppState, session_id: &str, turn_id: &str, message: String) {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return;
+    };
+    if session.id != session_id || session.draft_turn_id.as_deref() != Some(turn_id) {
+        return;
+    }
+    session.pending_turn = None;
+    session.draft_turn_id = None;
+    session.draft_assistant_response.clear();
+    session.draft_tool_calls.clear();
+    session.draft_status = "error".to_string();
+    session.draft_warning = Some(message);
+    session.draft_web_search_enabled = None;
+}
+
+fn mark_active_conversation_cancelled(
+    state: &AppState,
+) -> (
+    String,
+    Option<String>,
+    String,
+    Vec<search::AssistantToolCall>,
+) {
+    let mut lock = state.conversation_session.lock().unwrap();
+    let Some(session) = lock.as_mut() else {
+        return (String::new(), None, String::new(), Vec::new());
+    };
+    session.draft_status = "cancelled".to_string();
+    session.draft_warning = Some("已停止生成".to_string());
+    (
+        session.id.clone(),
+        session.draft_turn_id.clone(),
+        session.draft_assistant_response.clone(),
+        session.draft_tool_calls.clone(),
+    )
+}
+
+fn to_turn_payload(turn: &ConversationTurn) -> ConversationTurnPayload {
+    ConversationTurnPayload {
+        user_instruction: turn.user_instruction.clone(),
+        selected_text: turn.selected_text.clone(),
+        has_selection: turn.selected_text.is_some(),
+        assistant_response: turn.assistant_response.clone(),
+        asr_time_ms: turn.asr_time_ms,
+        llm_time_ms: turn.llm_time_ms,
+        search_time_ms: turn.search_time_ms,
+        tool_calls: turn.tool_calls.clone(),
+    }
+}
+
+fn turn_from_outcome(
+    user_instruction: String,
+    selected_text: Option<String>,
+    asr_time_ms: u64,
+    outcome: TurnOutcome,
+) -> ConversationTurn {
+    ConversationTurn {
+        user_instruction,
+        selected_text,
+        assistant_response: outcome.assistant_response,
+        asr_time_ms,
+        llm_time_ms: outcome.llm_time_ms,
+        search_time_ms: outcome.search_time_ms,
+        tool_calls: outcome.tool_calls,
+    }
+}
+
+fn add_candidate_arbitration_time(
+    mut outcome: TurnOutcome,
+    candidate_llm_time_ms: Option<u64>,
+) -> TurnOutcome {
+    if let Some(extra) = candidate_llm_time_ms {
+        outcome.llm_time_ms = outcome.llm_time_ms.saturating_add(extra);
+    }
+    outcome
+}
+
+fn apply_assistant_personalization_with_technical_spans(
+    text: String,
+    config: crate::personalization::PersonalizationEngineConfig,
+    technical_spans: &[crate::tnl::Span],
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
+    let source_text = text.clone();
+    let result = match crate::personalization::apply_default_personalization_with_config_and_spans(
+        text,
+        config,
+        technical_spans,
+    ) {
+        Ok(Some(result)) => result,
+        Ok(None) => return (source_text, false, None),
+        Err(e) => {
+            tracing::warn!("AI助手: 加载个性化纠错对失败，保守跳过: {}", e);
+            return (source_text, false, None);
+        }
+    };
+
+    if let Err(e) = crate::personalization::write_runtime_diagnostic(&source_text, &result) {
+        tracing::warn!("AI助手: 写入个性化诊断失败，已忽略: {}", e);
+    }
+    log_assistant_personalization_result(&source_text, &result.conversion);
+    let diagnostics =
+        crate::personalization::personalization_candidates_to_tnl_diagnostics(&result.conversion);
+    if let Some(diagnostics) = &diagnostics {
+        if diagnostics.has_pending_llm() {
+            tracing::info!(
+                "AI助手: 个性化候选进入 LLM 仲裁，候选数: {}",
+                diagnostics.pending_llm_count()
+            );
+        }
+    }
+    (result.text, result.changed, diagnostics)
+}
+
+#[cfg(test)]
+fn apply_assistant_personalization_with_store(
+    text: String,
+    store: crate::personalization::CorrectionPairStore,
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
+    apply_assistant_personalization_with_store_and_config(
+        text,
+        store,
+        crate::personalization::PersonalizationEngineConfig::default(),
+    )
+}
+
+#[cfg(test)]
+fn apply_assistant_personalization_with_store_and_config(
+    text: String,
+    store: crate::personalization::CorrectionPairStore,
+    config: crate::personalization::PersonalizationEngineConfig,
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
+    apply_assistant_personalization_with_store_and_config_and_spans(text, store, config, &[])
+}
+
+#[cfg(test)]
+fn apply_assistant_personalization_with_store_and_config_and_spans(
+    text: String,
+    store: crate::personalization::CorrectionPairStore,
+    config: crate::personalization::PersonalizationEngineConfig,
+    technical_spans: &[crate::tnl::Span],
+) -> (String, bool, Option<crate::tnl::TnlDiagnostics>) {
+    let source_text = text.clone();
+    let result = crate::personalization::apply_personalization_with_store_and_config_and_spans(
+        text,
+        store,
+        config,
+        technical_spans,
+    );
+    log_assistant_personalization_result(&source_text, &result.conversion);
+
+    let diagnostics =
+        crate::personalization::personalization_candidates_to_tnl_diagnostics(&result.conversion);
+    (result.text, result.changed, diagnostics)
+}
+
+fn merge_assistant_tnl_diagnostics(
+    existing: Option<crate::tnl::TnlDiagnostics>,
+    personalization: Option<crate::tnl::TnlDiagnostics>,
+) -> Option<crate::tnl::TnlDiagnostics> {
+    match (existing, personalization) {
+        (None, None) => None,
+        (Some(diagnostics), None) | (None, Some(diagnostics)) => Some(diagnostics),
+        (Some(mut existing), Some(personalization)) => {
+            existing.candidates.extend(personalization.candidates);
+            if existing.arbitration.is_none() {
+                existing.arbitration = personalization.arbitration;
+            }
+            Some(existing)
+        }
+    }
+}
+
+async fn maybe_arbitrate_assistant_candidates(
+    processor: &AssistantProcessor,
+    text: String,
+    diagnostics: Option<crate::tnl::TnlDiagnostics>,
+) -> (String, Option<crate::tnl::TnlDiagnostics>, Option<u64>) {
+    let Some(diagnostics) = diagnostics else {
+        return (text, None, None);
+    };
+
+    if !diagnostics.has_pending_llm() {
+        return (text, Some(diagnostics), None);
+    }
+
+    tracing::info!(
+        "AI助手: 开始 TNL 候选仲裁，候选数: {}",
+        diagnostics.pending_llm_count()
+    );
+
+    let fallback_diagnostics = diagnostics.clone();
+    let arbitration = tokio::time::timeout(
+        std::time::Duration::from_millis(ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS),
+        processor.arbitrate_tnl_candidates(&text, diagnostics),
+    )
+    .await;
+
+    match arbitration {
+        Ok(Ok(result)) => {
+            tracing::info!("AI助手: TNL 候选仲裁完成 (耗时: {}ms)", result.elapsed_ms);
+            (
+                result.text,
+                Some(result.diagnostics),
+                Some(result.elapsed_ms),
+            )
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("AI助手: TNL 候选仲裁失败，保守跳过: {}", e);
+            let mut diagnostics = fallback_diagnostics;
+            diagnostics.mark_pending_skipped(
+                crate::tnl::TnlCandidateDecision::SkippedError,
+                "arbitration_error",
+                None,
+            );
+            (text, Some(diagnostics), None)
+        }
+        Err(_) => {
+            tracing::warn!("AI助手: TNL 候选仲裁超时，保守跳过");
+            let mut diagnostics = fallback_diagnostics;
+            diagnostics.mark_pending_skipped(
+                crate::tnl::TnlCandidateDecision::SkippedTimeout,
+                "arbitration_timeout",
+                Some(ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS),
+            );
+            (
+                text,
+                Some(diagnostics),
+                Some(ASSISTANT_CANDIDATE_ARBITRATION_TIMEOUT_MS),
+            )
+        }
+    }
+}
+
+fn record_assistant_personalization_arbitration_feedback(
+    diagnostics: &Option<crate::tnl::TnlDiagnostics>,
+) {
+    let Some(diagnostics) = diagnostics else {
+        return;
+    };
+
+    match crate::personalization::record_personalization_arbitration_feedback_from_tnl(diagnostics)
+    {
+        Ok(updated_count) if updated_count > 0 => {
+            tracing::info!(
+                "AI助手: 个性化 LLM 仲裁反馈已写入，更新纠错对: {}",
+                updated_count
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!("AI助手: 写入个性化 LLM 仲裁反馈失败，已忽略: {}", e);
+        }
+    }
+}
+
+fn log_assistant_personalization_result(
+    source_text: &str,
+    result: &crate::personalization::ConversionResult,
+) {
+    if result.changed {
+        tracing::info!(
+            "AI助手 个性化二次解码: {} → {} (应用: {}, 候选: {})",
+            source_text,
+            result.text,
+            result.diagnostics.applied.len(),
+            result.diagnostics.candidates.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod assistant_personalization_tests {
+    use super::*;
+
+    #[test]
+    fn assistant_personalization_with_store_changes_known_pair() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed, diagnostics) =
+            apply_assistant_personalization_with_store("我打开 cloud code".to_string(), store);
+
+        assert!(changed);
+        assert_eq!(text, "我打开 Claude Code");
+        assert!(diagnostics.is_none());
+    }
+
+    #[test]
+    fn assistant_personalization_respects_runtime_pass_config() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+        let config = crate::personalization::PersonalizationEngineConfig {
+            enable_syllable_match_pass: false,
+            ..crate::personalization::PersonalizationEngineConfig::default()
+        };
+
+        let (text, changed, diagnostics) = apply_assistant_personalization_with_store_and_config(
+            "我打开 克劳德 code".to_string(),
+            store,
+            config,
+        );
+
+        assert!(!changed);
+        assert_eq!(text, "我打开 克劳德 code");
+        assert!(diagnostics.is_none());
+    }
+
+    #[test]
+    fn assistant_personalization_exports_medium_confidence_candidate_for_arbitration() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.accepted_count = 1;
+        pair.confidence = 0.80;
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed, diagnostics) =
+            apply_assistant_personalization_with_store("我打开 cloud code".to_string(), store);
+
+        assert!(!changed);
+        assert_eq!(text, "我打开 cloud code");
+        let diagnostics = diagnostics.expect("medium confidence candidate should be exported");
+        assert_eq!(diagnostics.pending_llm_count(), 1);
+        assert_eq!(
+            diagnostics.candidates[0].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
+        assert_eq!(
+            diagnostics.candidates[0].decision,
+            crate::tnl::TnlCandidateDecision::PendingLlm
+        );
+    }
+
+    #[test]
+    fn assistant_personalization_uses_named_entity_spans_for_alias_score() {
+        let mut pair =
+            crate::personalization::CorrectionPair::new("claude-code", "claud code", "Claude Code");
+        pair.source = "learned".to_string();
+        pair.accepted_count = 1;
+        pair.confidence = 0.93;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = crate::personalization::CorrectionPairStore::new(vec![pair]);
+        let text = "我打开 克劳德 code";
+        let span_start = text.find("克劳德").expect("named entity term");
+        let spans = vec![crate::tnl::Span {
+            text: "克劳德".to_string(),
+            start: span_start,
+            end: span_start + "克劳德".len(),
+            span_type: crate::tnl::SpanType::NamedEntity,
+        }];
+
+        let (text, changed, diagnostics) =
+            apply_assistant_personalization_with_store_and_config_and_spans(
+                text.to_string(),
+                store,
+                crate::personalization::PersonalizationEngineConfig::default(),
+                &spans,
+            );
+
+        assert!(changed);
+        assert_eq!(text, "我打开 Claude Code");
+        assert!(diagnostics.is_none());
+    }
+
+    #[test]
+    fn assistant_merge_keeps_tnl_and_personalization_candidates() {
+        let tnl = crate::tnl::TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "tnl-0".to_string(),
+                original: "Cruiser".to_string(),
+                target: "Cursor".to_string(),
+                start: 0,
+                end: 7,
+                score: 0.72,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::DictionaryPhonetic,
+                evidence: vec!["tnl".to_string()],
+                decision: crate::tnl::TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+        let personalization = crate::tnl::TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "personalization-8-18-0".to_string(),
+                original: "cloud code".to_string(),
+                target: "Claude Code".to_string(),
+                start: 8,
+                end: 18,
+                score: 0.80,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair,
+                evidence: vec!["pair_id:claude-code".to_string()],
+                decision: crate::tnl::TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+
+        let merged = merge_assistant_tnl_diagnostics(Some(tnl), Some(personalization))
+            .expect("merged diagnostics");
+
+        assert_eq!(merged.candidates.len(), 2);
+        assert_eq!(merged.pending_llm_count(), 2);
+        assert_eq!(
+            merged.candidates[1].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
+    }
+
+    #[test]
+    fn assistant_turn_time_includes_candidate_arbitration_time() {
+        let outcome = TurnOutcome {
+            assistant_response: "ok".to_string(),
+            tool_calls: Vec::new(),
+            llm_time_ms: 120,
+            search_time_ms: None,
+        };
+
+        let outcome = add_candidate_arbitration_time(outcome, Some(35));
+
+        assert_eq!(outcome.llm_time_ms, 155);
+    }
+}
+
 /// 将会话历史格式化并发送 transcription_complete 事件（用于 History 记录）
 fn emit_conversation_history(app: &AppHandle, session: &ConversationSession, inserted: bool) {
-    let formatted = assistant_processor::format_conversation_for_copy(&session.turns);
+    if session.turns.is_empty() {
+        tracing::debug!("AI 助手会话没有已完成轮次，跳过历史记录事件");
+        return;
+    }
+
     let total_asr: u64 = session.turns.iter().map(|t| t.asr_time_ms).sum();
     let total_llm: u64 = session.turns.iter().map(|t| t.llm_time_ms).sum();
+    let total_search: u64 = session.turns.iter().filter_map(|t| t.search_time_ms).sum();
+    let tool_calls_summary: Vec<search::ToolCallSummary> = session
+        .turns
+        .iter()
+        .flat_map(|turn| turn.tool_calls.iter().map(|call| call.summary()))
+        .collect();
+    let mut citation_remap = std::collections::HashMap::new();
+    let mut citations = Vec::new();
+    let mut next_citation_index = 1_u32;
+
+    for (turn_idx, turn) in session.turns.iter().enumerate() {
+        for call in &turn.tool_calls {
+            for item in &call.results {
+                let mut renumbered = item.clone();
+                renumbered.index = next_citation_index;
+                citation_remap.insert(format!("{turn_idx}:{}", item.id), next_citation_index);
+                citations.push(renumbered);
+                next_citation_index += 1;
+            }
+        }
+    }
+
+    let formatted = assistant_processor::format_conversation_for_copy_with_citation_remap(
+        &session.turns,
+        &citation_remap,
+    );
+    let web_searched = !tool_calls_summary.is_empty();
+    let search_failed = web_searched
+        && tool_calls_summary
+            .iter()
+            .all(|summary| summary.status != "success" || summary.results_count == 0);
 
     let result = TranscriptionResult {
         text: formatted,
@@ -217,10 +985,14 @@ fn emit_conversation_history(app: &AppHandle, session: &ConversationSession, ins
         selected_text: session.turns.first().and_then(|t| t.selected_text.clone()),
         asr_time_ms: total_asr,
         llm_time_ms: Some(total_llm),
-        total_time_ms: total_asr + total_llm,
+        total_time_ms: total_asr + total_llm + total_search,
         mode: Some("assistant".to_string()),
         inserted: Some(inserted),
         tnl_diagnostics: None,
+        citations: web_searched.then_some(citations),
+        tool_calls_summary: web_searched.then_some(tool_calls_summary),
+        web_searched,
+        search_failed,
     };
     let _ = app.emit("transcription_complete", result);
 }
@@ -233,10 +1005,13 @@ struct BuiltinDictionaryUpdatedPayload {
 }
 
 const BUILTIN_DICTIONARY_UPDATE_INTERVAL_SECS: u64 = 6 * 60 * 60;
+const DOUBAO_IME_MISSING_FALLBACK_ERROR: &str =
+    "豆包输入法实时 ASR 暂不可用，且未配置备用 ASR。请稍后重试或在 ASR 设置中配置备用服务";
 
 struct TrayMenuState {
     post_process_item: CheckMenuItem<tauri::Wry>,
     dictionary_enhancement_item: CheckMenuItem<tauri::Wry>,
+    web_search_item: CheckMenuItem<tauri::Wry>,
     asr_qwen_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_ime_item: CheckMenuItem<tauri::Wry>,
@@ -246,6 +1021,7 @@ const TRAY_MENU_ID_SHOW: &str = "show";
 const TRAY_MENU_ID_QUIT: &str = "quit";
 const TRAY_MENU_ID_TOGGLE_POST_PROCESS: &str = "tray_toggle_post_process";
 const TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT: &str = "tray_toggle_dictionary_enhancement";
+const TRAY_MENU_ID_TOGGLE_WEB_SEARCH: &str = "tray_toggle_web_search";
 const TRAY_MENU_ID_ASR_QWEN: &str = "tray_asr_qwen";
 const TRAY_MENU_ID_ASR_DOUBAO: &str = "tray_asr_doubao";
 const TRAY_MENU_ID_ASR_DOUBAO_IME: &str = "tray_asr_doubao_ime";
@@ -270,6 +1046,12 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     {
         tracing::warn!("同步托盘词库增强状态失败: {}", e);
     }
+    if let Err(e) = tray_state
+        .web_search_item
+        .set_checked(config.assistant_config.enable_web_search)
+    {
+        tracing::warn!("同步托盘联网搜索状态失败: {}", e);
+    }
 
     sync_asr_provider_checks(
         &tray_state.asr_qwen_item,
@@ -279,9 +1061,305 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     );
 }
 
+fn sync_user_terms_sidecar_from_dictionary_or_warn(dictionary: &[String], lifecycle: &str) {
+    let _ = sync_user_terms_sidecar_from_dictionary_result_or_warn(
+        sync_user_terms_sidecar_from_dictionary(dictionary),
+        lifecycle,
+    );
+}
+
+fn sync_user_terms_sidecar_from_dictionary(dictionary: &[String]) -> anyhow::Result<usize> {
+    let path = default_user_terms_db_path()?;
+    sync_user_terms_sidecar_from_dictionary_at_path(dictionary, &path)
+}
+
+#[cfg(test)]
+fn sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
+    dictionary: &[String],
+    path: &std::path::Path,
+    lifecycle: &str,
+) -> Option<usize> {
+    sync_user_terms_sidecar_from_dictionary_result_or_warn(
+        sync_user_terms_sidecar_from_dictionary_at_path(dictionary, path),
+        lifecycle,
+    )
+}
+
+fn sync_user_terms_sidecar_from_dictionary_result_or_warn(
+    result: anyhow::Result<usize>,
+    lifecycle: &str,
+) -> Option<usize> {
+    match result {
+        Ok(count) => {
+            tracing::debug!(
+                "同步 user_terms sidecar 完成（{}）：{} 个词条",
+                lifecycle,
+                count
+            );
+            Some(count)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "同步 user_terms sidecar 失败（{}），继续使用配置词典: {}",
+                lifecycle,
+                e
+            );
+            None
+        }
+    }
+}
+
+fn sync_user_terms_sidecar_from_dictionary_at_path(
+    dictionary: &[String],
+    path: &std::path::Path,
+) -> anyhow::Result<usize> {
+    let mut normalized_dictionary = dictionary.to_vec();
+    crate::dictionary_utils::backfill_inferred_categories(&mut normalized_dictionary);
+
+    let mut store = UserTermStore::open(path)?;
+    store.hydrate_dictionary_entries(&normalized_dictionary)
+}
+
+fn dictionary_entries_from_user_terms_or_config(config_dictionary: &[String]) -> Vec<String> {
+    match default_user_terms_db_path() {
+        Ok(path) => dictionary_entries_from_user_terms_or_config_at_path(config_dictionary, &path),
+        Err(e) => {
+            tracing::warn!(
+                "解析 user_terms sidecar 路径失败，使用配置词典读取词库: {}",
+                e
+            );
+            normalize_dictionary_for_config_storage(config_dictionary.to_vec())
+        }
+    }
+}
+
+fn dictionary_entries_from_user_terms_or_config_at_path(
+    config_dictionary: &[String],
+    path: &std::path::Path,
+) -> Vec<String> {
+    let normalized_config = normalize_dictionary_for_config_storage(config_dictionary.to_vec());
+
+    let mut store = match UserTermStore::open(path) {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!("读取 user_terms sidecar 失败，回退配置词典: {}", e);
+            return normalized_config;
+        }
+    };
+
+    match store.list_enabled_dictionary_entries() {
+        Ok(entries) if !entries.is_empty() => entries,
+        Ok(_) if !normalized_config.is_empty() && matches!(store.has_entries(), Ok(false)) => {
+            tracing::debug!("user_terms sidecar 为空，从配置词典水合词库");
+            if let Err(e) = store.hydrate_dictionary_entries(&normalized_config) {
+                tracing::warn!("水合 user_terms sidecar 失败，回退配置词典: {}", e);
+                return normalized_config;
+            }
+            match store.list_enabled_dictionary_entries() {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::warn!("水合后读取 user_terms sidecar 失败，回退配置词典: {}", e);
+                    normalized_config
+                }
+            }
+        }
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            tracing::warn!("读取 user_terms sidecar 词条失败，回退配置词典: {}", e);
+            normalized_config
+        }
+    }
+}
+
+fn upsert_user_term_sidecar_entry_and_snapshot_config(
+    word: &str,
+    source: &str,
+    category: Option<&str>,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let path = default_user_terms_db_path()
+        .map_err(|e| format!("解析 user_terms sidecar 路径失败: {}", e))?;
+    upsert_user_term_sidecar_entry_and_snapshot_config_at_path(word, source, category, &path)
+}
+
+fn upsert_user_term_sidecar_entry_and_snapshot_config_at_path(
+    word: &str,
+    source: &str,
+    category: Option<&str>,
+    path: &std::path::Path,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let mut store =
+        UserTermStore::open(path).map_err(|e| format!("打开 user_terms sidecar 失败: {}", e))?;
+    store
+        .upsert_dictionary_entry(word, source, category)
+        .map_err(|e| format!("写入 user_terms sidecar 失败: {}", e))?;
+    let entries = store
+        .list_enabled_dictionary_entries()
+        .map_err(|e| format!("读取 user_terms sidecar 失败: {}", e))?;
+    snapshot_config_dictionary_from_user_term_entries(entries)
+}
+
+fn delete_user_term_sidecar_entries_and_snapshot_config(
+    words: &[String],
+) -> Result<(AppConfig, Vec<String>), String> {
+    let path = default_user_terms_db_path()
+        .map_err(|e| format!("解析 user_terms sidecar 路径失败: {}", e))?;
+    delete_user_term_sidecar_entries_and_snapshot_config_at_path(words, &path)
+}
+
+fn delete_user_term_sidecar_entries_and_snapshot_config_at_path(
+    words: &[String],
+    path: &std::path::Path,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let mut store =
+        UserTermStore::open(path).map_err(|e| format!("打开 user_terms sidecar 失败: {}", e))?;
+    store
+        .disable_dictionary_entries(words)
+        .map_err(|e| format!("删除 user_terms sidecar 词条失败: {}", e))?;
+    let entries = store
+        .list_enabled_dictionary_entries()
+        .map_err(|e| format!("读取 user_terms sidecar 失败: {}", e))?;
+    snapshot_config_dictionary_from_user_term_entries(entries)
+}
+
+fn snapshot_config_dictionary_from_user_term_entries(
+    entries: Vec<String>,
+) -> Result<(AppConfig, Vec<String>), String> {
+    let normalized_entries = normalize_dictionary_for_config_storage(entries);
+    mutate_persisted_config_with_result(|config| {
+        config.dictionary = normalized_entries;
+        Ok(config.dictionary.clone())
+    })
+}
+
+fn runtime_dictionary_entries_from_user_terms_or_input(input_dictionary: &[String]) -> Vec<String> {
+    match default_user_terms_db_path() {
+        Ok(path) => {
+            runtime_dictionary_entries_from_user_terms_or_input_at_path(input_dictionary, &path)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "解析 user_terms sidecar 路径失败，使用输入词典启动运行时词库: {}",
+                e
+            );
+            normalized_runtime_dictionary_from_input(input_dictionary)
+        }
+    }
+}
+
+fn runtime_dictionary_entries_from_user_terms_or_input_at_path(
+    input_dictionary: &[String],
+    path: &std::path::Path,
+) -> Vec<String> {
+    let normalized_input = normalized_runtime_dictionary_from_input(input_dictionary);
+    match UserTermStore::open(path).and_then(|store| {
+        Ok((
+            store.list_enabled_dictionary_entries()?,
+            store.has_entries()?,
+        ))
+    }) {
+        Ok((sidecar_entries, true)) => {
+            tracing::debug!(
+                "从 user_terms sidecar 合并运行时词库：{} 个用户词条，{} 个输入词条",
+                sidecar_entries.len(),
+                normalized_input.len()
+            );
+            merge_sidecar_user_terms_with_runtime_dictionary(sidecar_entries, normalized_input)
+        }
+        Ok(_) => {
+            tracing::warn!("user_terms sidecar 没有启用词条，使用输入词典启动运行时词库");
+            normalized_input
+        }
+        Err(e) => {
+            tracing::warn!(
+                "读取 user_terms sidecar 失败，使用输入词典启动运行时词库: {}",
+                e
+            );
+            normalized_input
+        }
+    }
+}
+
+fn merge_sidecar_user_terms_with_runtime_dictionary(
+    sidecar_entries: Vec<String>,
+    runtime_entries: Vec<String>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut merged = Vec::new();
+
+    let dynamic_entries = runtime_entries.into_iter().filter(|entry| {
+        entry
+            .split('|')
+            .nth(1)
+            .is_some_and(is_runtime_only_dictionary_source)
+    });
+    for entry in sidecar_entries.into_iter().chain(dynamic_entries) {
+        let key = runtime_dictionary_entry_key(&entry);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        merged.push(entry);
+    }
+
+    merged
+}
+
+fn runtime_dictionary_entry_key(entry: &str) -> String {
+    crate::dictionary_utils::extract_word(entry)
+        .trim()
+        .to_lowercase()
+}
+
+fn normalized_runtime_dictionary_from_input(input_dictionary: &[String]) -> Vec<String> {
+    input_dictionary
+        .iter()
+        .filter_map(|entry| normalize_runtime_dictionary_entry(entry))
+        .collect()
+}
+
+fn normalize_runtime_dictionary_entry(entry: &str) -> Option<String> {
+    let word =
+        crate::dictionary_utils::normalize_word(crate::dictionary_utils::extract_word(entry));
+    if word.is_empty() {
+        return None;
+    }
+
+    let mut parts = entry.split('|');
+    let _ = parts.next();
+    let source = parts
+        .next()
+        .map(str::trim)
+        .filter(|source| !source.is_empty());
+    let category = parts
+        .next()
+        .map(str::trim)
+        .filter(|category| !category.is_empty());
+
+    if let Some(source) = source.filter(|source| is_runtime_only_dictionary_source(source)) {
+        let category = crate::dictionary_utils::normalize_category(category)
+            .unwrap_or_else(|| crate::dictionary_utils::infer_dictionary_category(&word));
+        return Some(format!("{}|{}|{}", word, source, category));
+    }
+
+    let source = match source {
+        Some("auto") => "auto",
+        _ => "manual",
+    };
+    let category = crate::dictionary_utils::normalize_or_infer_category(&word, category);
+    Some(crate::dictionary_utils::format_entry_with_category(
+        &word,
+        source,
+        Some(category),
+    ))
+}
+
+fn is_runtime_only_dictionary_source(source: &str) -> bool {
+    matches!(source, "domain" | "recent" | "builtin" | "app_context")
+}
+
 fn load_persisted_config() -> Result<AppConfig, String> {
     match AppConfig::load() {
-        Ok((config, migrated)) => {
+        Ok((mut config, migrated)) => {
+            config.dictionary = dictionary_entries_from_user_terms_or_config(&config.dictionary);
             if migrated {
                 config
                     .save()
@@ -322,6 +1400,248 @@ where
         Ok(())
     })
     .map(|(config, _)| config)
+}
+
+#[cfg(test)]
+mod user_terms_sidecar_sync_tests {
+    use super::*;
+
+    #[test]
+    fn sync_user_terms_sidecar_from_dictionary_at_path_hydrates_terms() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+        let dictionary = vec![
+            "useState|auto".to_string(),
+            "Claude Code|manual|product".to_string(),
+            "  ".to_string(),
+        ];
+
+        let synced = sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
+            &dictionary,
+            &path,
+            "test success",
+        );
+
+        assert_eq!(synced, Some(2));
+
+        let store = crate::personalization::UserTermStore::open(&path).expect("open synced store");
+        let use_state = store
+            .find_by_term("useState")
+            .expect("find useState")
+            .unwrap();
+        assert_eq!(use_state.source, "auto");
+        assert_eq!(use_state.category, "code_symbol");
+
+        let claude_code = store
+            .find_by_term("claude code")
+            .expect("find Claude Code")
+            .unwrap();
+        assert_eq!(claude_code.source, "manual");
+        assert_eq!(claude_code.category, "product");
+    }
+
+    #[test]
+    fn sync_user_terms_sidecar_from_dictionary_at_path_or_warn_ignores_open_error() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("db_directory");
+        std::fs::create_dir(&path).expect("create directory at db path");
+        let dictionary = vec!["Claude Code|manual|product".to_string()];
+
+        let synced = sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
+            &dictionary,
+            &path,
+            "test failure",
+        );
+
+        assert_eq!(synced, None);
+    }
+}
+
+#[cfg(test)]
+mod runtime_user_terms_dictionary_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_dictionary_merges_enabled_sidecar_entries_with_dynamic_runtime_entries() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+        let mut store = crate::personalization::UserTermStore::open(&path).expect("open store");
+        store
+            .hydrate_dictionary_entries(&[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto".to_string(),
+                "禁用短语|manual|phrase".to_string(),
+            ])
+            .expect("hydrate first snapshot");
+        store
+            .hydrate_dictionary_entries(&[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto".to_string(),
+            ])
+            .expect("hydrate second snapshot");
+
+        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
+            &[
+                "Claude Code|recent|generic".to_string(),
+                "useState|recent|generic".to_string(),
+                "领域术语|domain|domain_term".to_string(),
+                "最近工具|recent|generic".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                "Claude Code|manual|product".to_string(),
+                "useState|auto|code_symbol".to_string(),
+                "领域术语|domain|domain_term".to_string(),
+                "最近工具|recent|generic".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_dictionary_falls_back_to_config_when_sidecar_read_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("db_directory");
+        std::fs::create_dir(&path).expect("create directory at db path");
+
+        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
+            &[
+                "useState|auto".to_string(),
+                "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+                "领域术语|domain|domain_term".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                "useState|auto|code_symbol".to_string(),
+                "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+                "领域术语|domain|domain_term".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_dictionary_falls_back_to_config_when_sidecar_is_empty() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+
+        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
+            &[
+                "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                "Claude Code|manual|product".to_string(),
+                "最近工具|recent|generic".to_string(),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod dictionary_sidecar_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn deleted_dictionary_stays_empty_when_a_stale_config_snapshot_is_loaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("user_terms.db");
+        let stale = vec!["Deleted Term|manual|phrase".to_string()];
+        let mut store = UserTermStore::open(&path).unwrap();
+        store.hydrate_dictionary_entries(&stale).unwrap();
+        store
+            .disable_dictionary_entries(&["Deleted Term".to_string()])
+            .unwrap();
+        drop(store);
+        assert!(dictionary_entries_from_user_terms_or_config_at_path(&stale, &path).is_empty());
+        assert_eq!(
+            runtime_dictionary_entries_from_user_terms_or_input_at_path(
+                &[stale[0].clone(), "Runtime Word|recent|phrase".to_string()],
+                &path,
+            ),
+            vec!["Runtime Word|recent|phrase".to_string()]
+        );
+    }
+
+    #[test]
+    fn dictionary_entries_bootstrap_empty_sidecar_from_config_snapshot() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+
+        let entries = dictionary_entries_from_user_terms_or_config_at_path(
+            &[
+                "Claude Code|manual|product".to_string(),
+                "useState|auto".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                "Claude Code|manual|product".to_string(),
+                "useState|auto|code_symbol".to_string(),
+            ]
+        );
+
+        let store = UserTermStore::open(&path).expect("open hydrated store");
+        assert_eq!(
+            store
+                .list_enabled_dictionary_entries()
+                .expect("list hydrated entries"),
+            entries
+        );
+    }
+
+    #[test]
+    fn dictionary_entries_prefer_existing_sidecar_over_config_snapshot() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("personalization").join("user_terms.db");
+        let mut store = UserTermStore::open(&path).expect("open store");
+        store
+            .upsert_dictionary_entry("Claude Code", "manual", Some("product"))
+            .expect("upsert sidecar term");
+
+        let entries = dictionary_entries_from_user_terms_or_config_at_path(
+            &["Old Config Term|manual|phrase".to_string()],
+            &path,
+        );
+
+        assert_eq!(entries, vec!["Claude Code|manual|product".to_string()]);
+    }
+
+    #[test]
+    fn dictionary_entries_fall_back_to_config_when_sidecar_open_fails() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("db_directory");
+        std::fs::create_dir(&path).expect("create directory at db path");
+
+        let entries = dictionary_entries_from_user_terms_or_config_at_path(
+            &[
+                "useState|auto".to_string(),
+                "rust|manual|generic".to_string(),
+            ],
+            &path,
+        );
+
+        assert_eq!(
+            entries,
+            vec!["useState|auto|code_symbol".to_string(), "rust".to_string()]
+        );
+    }
 }
 
 fn emit_config_updated(app: &AppHandle, config: &AppConfig) {
@@ -497,6 +1817,76 @@ fn sync_asr_provider_checks(
     }
 }
 
+fn load_asr_correction_pairs_or_empty() -> Vec<CorrectionPair> {
+    match crate::personalization::default_correction_pairs_path() {
+        Ok(path) => load_asr_correction_pairs_from_path_or_empty(&path),
+        Err(e) => {
+            tracing::warn!("ASR 热词纠错对路径解析失败，跳过 correction pairs: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+fn load_asr_correction_pairs_from_path_or_empty(path: &std::path::Path) -> Vec<CorrectionPair> {
+    match crate::personalization::CorrectionPairStore::load_json_or_default(path) {
+        Ok(store) => store.pairs().to_vec(),
+        Err(e) => {
+            tracing::warn!("ASR 热词纠错对加载失败，降级为仅用户词热词: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+fn refresh_asr_correction_pairs_runtime(state: &AppState) -> Vec<CorrectionPair> {
+    let correction_pairs = load_asr_correction_pairs_or_empty();
+    *state.asr_correction_pairs.lock().unwrap() = correction_pairs.clone();
+    update_asr_http_clients_correction_pairs(state, &correction_pairs);
+    tracing::info!("ASR 热词纠错对缓存已刷新: {} 条", correction_pairs.len());
+    correction_pairs
+}
+
+fn update_asr_http_clients_correction_pairs(state: &AppState, correction_pairs: &[CorrectionPair]) {
+    if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
+        client.update_correction_pairs(correction_pairs.to_vec());
+    }
+    if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
+        client.update_correction_pairs(correction_pairs.to_vec());
+    }
+}
+
+#[cfg(test)]
+mod asr_hotword_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn missing_correction_pairs_file_loads_empty_for_asr_hotwords() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("missing.json");
+
+        let pairs = load_asr_correction_pairs_from_path_or_empty(&path);
+
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn loads_correction_pairs_for_asr_hotwords() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp
+            .path()
+            .join("personalization")
+            .join("correction_pairs.json");
+        let pair = CorrectionPair::new("cloud-code", "cloud code", "Claude Code");
+        crate::personalization::CorrectionPairStore::new(vec![pair])
+            .save_json(&path)
+            .expect("save correction pairs");
+
+        let pairs = load_asr_correction_pairs_from_path_or_empty(&path);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].corrected_text, "Claude Code");
+    }
+}
+
 async fn restart_service_with_config(
     app_handle: AppHandle,
     config: AppConfig,
@@ -504,8 +1894,6 @@ async fn restart_service_with_config(
     if let Err(e) = stop_app(app_handle.clone()).await {
         tracing::warn!("切换 ASR 引擎时停止服务失败: {}", e);
     }
-
-    let dictionary_words = learning::store::entries_to_words(&config.dictionary);
 
     start_app(
         app_handle,
@@ -521,7 +1909,7 @@ async fn restart_service_with_config(
         Some(config.dual_hotkey_config.clone()),
         Some(config.assistant_config.clone()),
         Some(config.enable_mute_other_apps),
-        Some(dictionary_words),
+        Some(config.dictionary.clone()),
     )
     .await
     .map(|_| ())
@@ -609,6 +1997,42 @@ fn toggle_dictionary_enhancement_from_tray(
     refresh_post_processor_after_toggle(app_handle);
 
     tracing::info!("托盘已{}词库增强", if new_value { "开启" } else { "关闭" });
+    Ok(())
+}
+
+fn toggle_web_search_from_tray(
+    app_handle: &AppHandle,
+    web_search_item: &CheckMenuItem<tauri::Wry>,
+) -> Result<(), String> {
+    let (updated_config, new_value) = mutate_persisted_config_with_result(|config| {
+        let new_value = !config.assistant_config.enable_web_search;
+        config.assistant_config.enable_web_search = new_value;
+        Ok(new_value)
+    })?;
+
+    emit_config_updated(app_handle, &updated_config);
+
+    {
+        let state = app_handle.state::<AppState>();
+        let mut processor_guard = state.assistant_processor.lock().unwrap();
+        if updated_config
+            .assistant_config
+            .is_valid_with_shared(&updated_config.llm_config.shared)
+        {
+            *processor_guard = Some(AssistantProcessor::new(
+                updated_config.assistant_config.clone(),
+                &updated_config.llm_config.shared,
+            ));
+        } else {
+            *processor_guard = None;
+        }
+    }
+
+    web_search_item
+        .set_checked(new_value)
+        .map_err(|e| format!("更新托盘联网搜索勾选状态失败: {}", e))?;
+
+    tracing::info!("托盘已{}联网搜索", if new_value { "开启" } else { "关闭" });
     Ok(())
 }
 
@@ -726,6 +2150,17 @@ fn merge_asr_config_for_save(
     }
 }
 
+fn normalize_dictionary_for_config_storage(mut dictionary: Vec<String>) -> Vec<String> {
+    crate::dictionary_utils::backfill_inferred_categories(&mut dictionary);
+    dictionary
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct TnlConfigFieldPatch {
+    disfluency_mode: Option<crate::tnl::DisfluencyMode>,
+}
+
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct ConfigFieldPatch {
@@ -733,6 +2168,31 @@ struct ConfigFieldPatch {
     theme: Option<String>,
     enable_mute_other_apps: Option<bool>,
     close_action: Option<Option<String>>,
+    tnl_config: Option<TnlConfigFieldPatch>,
+}
+
+#[cfg(test)]
+mod config_field_patch_tests {
+    use super::*;
+
+    #[test]
+    fn should_deserialize_tnl_disfluency_mode_patch() {
+        let patch: ConfigFieldPatch = serde_json::from_value(serde_json::json!({
+            "tnlConfig": {
+                "disfluencyMode": "aggressive"
+            }
+        }))
+        .expect("tnl config patch should deserialize");
+
+        assert_eq!(
+            patch
+                .tnl_config
+                .expect("tnl patch")
+                .disfluency_mode
+                .expect("disfluency mode"),
+            crate::tnl::DisfluencyMode::Aggressive
+        );
+    }
 }
 
 // Tauri Commands
@@ -763,12 +2223,14 @@ async fn save_config(
     hotkey_config: Option<config::HotkeyConfig>,
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
+    search_config: Option<config::SearchConfig>,
     learning_config: Option<config::LearningConfig>,
     enable_mute_other_apps: Option<bool>,
     dictionary: Option<Vec<String>>,
     builtin_dictionary_domains: Option<Vec<String>>,
     theme: Option<String>,
 ) -> Result<String, String> {
+    let should_sync_user_terms_sidecar = dictionary.is_some();
     let config = mutate_persisted_config_with_result(|existing| {
         tracing::info!("保存配置...");
 
@@ -808,9 +2270,9 @@ async fn save_config(
             Some(dict) => {
                 // 前端传入的格式：纯词汇 "word" 或带来源 "word|auto"
                 // 直接使用传入的数组，不再合并（前端已经是完整的词典状态）
-                dict
+                normalize_dictionary_for_config_storage(dict)
             }
-            None => existing.dictionary.clone(),
+            None => normalize_dictionary_for_config_storage(existing.dictionary.clone()),
         };
 
         // 智能合并 dual_hotkey_config：如果传入空 keys，保留旧值
@@ -843,6 +2305,7 @@ async fn save_config(
             smart_command_config: smart_command_config
                 .unwrap_or_else(|| existing.smart_command_config.clone()),
             assistant_config: final_assistant_config,
+            search_config: search_config.unwrap_or_else(|| existing.search_config.clone()),
             learning_config: learning_config.unwrap_or_else(|| existing.learning_config.clone()),
             tnl_config: existing.tnl_config.clone(),
             close_action: close_action.or_else(|| existing.close_action.clone()),
@@ -860,6 +2323,10 @@ async fn save_config(
         Ok(())
     })?
     .0;
+
+    if should_sync_user_terms_sidecar {
+        sync_user_terms_sidecar_from_dictionary_or_warn(&config.dictionary, "显式配置词典保存");
+    }
 
     emit_config_updated(&app, &config);
 
@@ -888,6 +2355,7 @@ mod save_config_merge_tests {
                 enable_fallback: true,
                 fallback_provider: Some(config::AsrProvider::Qwen),
             },
+            qwen_profile: config::QwenAsrProfile::Qwen3Legacy,
             language_mode: config::AsrLanguageMode::Zh,
         }
     }
@@ -935,6 +2403,13 @@ mod save_config_merge_tests {
             merged.selection.active_provider,
             config::AsrProvider::Doubao
         );
+    }
+
+    #[test]
+    fn should_backfill_dictionary_before_config_save() {
+        let normalized = normalize_dictionary_for_config_storage(vec!["useState|auto".to_string()]);
+
+        assert_eq!(normalized, vec!["useState|auto|code_symbol"]);
     }
 }
 
@@ -984,6 +2459,12 @@ async fn patch_config_fields(app: AppHandle, patch: ConfigFieldPatch) -> Result<
             }
         }
 
+        if let Some(tnl_patch) = patch.tnl_config {
+            if let Some(mode) = tnl_patch.disfluency_mode {
+                config.tnl_config.disfluency_mode = mode;
+            }
+        }
+
         Ok(())
     })?;
 
@@ -1015,7 +2496,9 @@ async fn handle_recording_start(
     doubao_access_token: Option<String>,
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
+    qwen_profile: config::QwenAsrProfile,
 ) {
     tracing::info!("检测到快捷键按下");
 
@@ -1062,6 +2545,7 @@ async fn handle_recording_start(
                     doubao_app_id,
                     doubao_access_token,
                     dictionary,
+                    correction_pairs,
                     language_mode,
                 )
                 .await;
@@ -1085,7 +2569,9 @@ async fn handle_recording_start(
                     audio_sender_handle,
                     api_key,
                     dictionary,
+                    correction_pairs,
                     language_mode,
+                    qwen_profile,
                 )
                 .await;
             }
@@ -1116,6 +2602,7 @@ async fn handle_doubao_realtime_start(
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
 ) {
     tracing::info!("启动豆包实时流式转录...");
@@ -1145,10 +2632,11 @@ async fn handle_doubao_realtime_start(
         if let (Some(app_id), Some(access_token)) =
             (doubao_app_id.as_ref(), doubao_access_token.as_ref())
         {
-            let realtime_client = DoubaoRealtimeClient::new(
+            let realtime_client = DoubaoRealtimeClient::new_with_correction_pairs(
                 app_id.clone(),
                 access_token.clone(),
                 dictionary,
+                correction_pairs,
                 language_mode,
             );
             // 清理旧的会话和任务（防止资源泄漏）
@@ -1418,7 +2906,9 @@ async fn handle_qwen_realtime_start(
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     api_key: String,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
+    qwen_profile: config::QwenAsrProfile,
 ) {
     tracing::info!("启动千问实时流式转录...");
 
@@ -1437,7 +2927,13 @@ async fn handle_qwen_realtime_start(
         }
     }
 
-    let realtime_client = QwenRealtimeClient::new(api_key, dictionary, language_mode);
+    let realtime_client = QwenRealtimeClient::new_with_profile_and_correction_pairs(
+        api_key,
+        dictionary,
+        correction_pairs,
+        language_mode,
+        qwen_profile,
+    );
     match realtime_client.start_session().await {
         Ok(session) => {
             tracing::info!("千问 WebSocket 连接已建立");
@@ -1511,6 +3007,48 @@ async fn handle_qwen_realtime_start(
                 emit_error_and_hide_overlay(&app, "录音器未初始化".to_string());
             }
         }
+    }
+}
+
+fn non_empty_selected_text(text: Option<String>) -> Option<String> {
+    text.filter(|value| !value.trim().is_empty())
+}
+
+fn capture_native_selection(target_hwnd: Option<InputTarget>) -> Option<String> {
+    let hwnd = target_hwnd?;
+    match platform::desktop().read_selection(hwnd) {
+        Ok(text) => {
+            let text = non_empty_selected_text(Some(text));
+            if let Some(ref text) = text {
+                tracing::info!("原生选区读取捕获选中文本: {} 字符", text.len());
+            } else {
+                tracing::debug!("原生选区读取未检测到选中文本");
+            }
+            text
+        }
+        Err(e) => {
+            tracing::debug!("原生选区读取捕获选中文本失败: {}", e);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod selected_text_capture_tests {
+    use super::non_empty_selected_text;
+
+    #[test]
+    fn non_empty_selected_text_rejects_blank_text() {
+        assert_eq!(non_empty_selected_text(None), None);
+        assert_eq!(non_empty_selected_text(Some(" \r\n\t ".to_string())), None);
+    }
+
+    #[test]
+    fn non_empty_selected_text_keeps_original_content() {
+        assert_eq!(
+            non_empty_selected_text(Some("  class Solution {}\n".to_string())),
+            Some("  class Solution {}\n".to_string())
+        );
     }
 }
 
@@ -1611,11 +3149,13 @@ async fn start_app(
         }
     );
 
-    let dict = dictionary.unwrap_or_default();
+    let input_dictionary = dictionary.unwrap_or_default();
+    let dict = runtime_dictionary_entries_from_user_terms_or_input(&input_dictionary);
     tracing::info!("词库: {} 个词", dict.len());
 
     // 保存词库到 state（用于 Realtime 模式热更新）
     *state.dictionary.lock().unwrap() = dict.clone();
+    let correction_pairs = refresh_asr_correction_pairs_runtime(&state);
 
     // 根据 asr_config 初始化 ASR 客户端
     {
@@ -1626,11 +3166,14 @@ async fn start_app(
         if let Some(ref cfg) = asr_config {
             // 初始化所有有凭证的客户端
             if !cfg.credentials.qwen_api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(
-                    cfg.credentials.qwen_api_key.clone(),
-                    dict.clone(),
-                    cfg.language_mode,
-                ));
+                *state.qwen_client.lock().unwrap() =
+                    Some(QwenASRClient::new_with_profile_and_correction_pairs(
+                        cfg.credentials.qwen_api_key.clone(),
+                        dict.clone(),
+                        correction_pairs.clone(),
+                        cfg.language_mode,
+                        cfg.qwen_profile,
+                    ));
             }
             if !cfg.credentials.sensevoice_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() = Some(SenseVoiceClient::new(
@@ -1640,12 +3183,14 @@ async fn start_app(
             if !cfg.credentials.doubao_app_id.is_empty()
                 && !cfg.credentials.doubao_access_token.is_empty()
             {
-                *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(
-                    cfg.credentials.doubao_app_id.clone(),
-                    cfg.credentials.doubao_access_token.clone(),
-                    dict.clone(),
-                    cfg.language_mode,
-                ));
+                *state.doubao_client.lock().unwrap() =
+                    Some(DoubaoASRClient::new_with_correction_pairs(
+                        cfg.credentials.doubao_app_id.clone(),
+                        cfg.credentials.doubao_access_token.clone(),
+                        dict.clone(),
+                        correction_pairs.clone(),
+                        cfg.language_mode,
+                    ));
             }
 
             // 设置实时转录提供商
@@ -1654,11 +3199,13 @@ async fn start_app(
         } else {
             // 旧逻辑回退（基本不会走到这里）
             if !api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(
-                    api_key.clone(),
-                    dict.clone(),
-                    config::AsrLanguageMode::Auto,
-                ));
+                *state.qwen_client.lock().unwrap() =
+                    Some(QwenASRClient::new_with_correction_pairs(
+                        api_key.clone(),
+                        dict.clone(),
+                        correction_pairs.clone(),
+                        config::AsrLanguageMode::Auto,
+                    ));
             }
             if !fallback_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() =
@@ -1792,6 +3339,7 @@ async fn start_app(
     let audio_sender_handle_start = Arc::clone(&state.audio_sender_handle);
     let use_realtime_start = use_realtime_mode;
     let dictionary_state_start = Arc::clone(&state.dictionary);
+    let asr_correction_pairs_start = Arc::clone(&state.asr_correction_pairs);
     let is_running_start = Arc::clone(&state.is_running);
     // AI 助手模式专用
     let current_trigger_mode_start = Arc::clone(&state.current_trigger_mode);
@@ -1839,6 +3387,10 @@ async fn start_app(
         .as_ref()
         .map(|cfg| cfg.language_mode)
         .unwrap_or(config::AsrLanguageMode::Auto);
+    let qwen_profile_start = asr_config
+        .as_ref()
+        .map(|cfg| cfg.qwen_profile)
+        .unwrap_or_default();
 
     let app_handle_stop = app_handle.clone();
     let audio_recorder_stop = Arc::clone(&state.audio_recorder);
@@ -1880,6 +3432,9 @@ async fn start_app(
     // 目标窗口句柄（用于焦点恢复）
     let target_window_start = Arc::clone(&state.target_window);
     let target_window_stop = Arc::clone(&state.target_window);
+    let assistant_selected_text_snapshot = Arc::new(Mutex::new(None::<String>));
+    let assistant_selected_text_snapshot_start = Arc::clone(&assistant_selected_text_snapshot);
+    let assistant_selected_text_snapshot_stop = Arc::clone(&assistant_selected_text_snapshot);
 
     // 统计数据相关（用于 on_stop）
     let usage_stats_stop = Arc::clone(&state.usage_stats);
@@ -1911,6 +3466,7 @@ async fn start_app(
         // 这是用户触发热键时的前台窗口，用于后续焦点恢复
         let target_hwnd = platform::desktop().capture_target();
         *target_window_start.lock().unwrap() = target_hwnd;
+        *assistant_selected_text_snapshot_start.lock().unwrap() = None;
         if let Some(hwnd) = target_hwnd {
             tracing::info!("已保存目标输入位置: {}", hwnd);
         } else {
@@ -1945,18 +3501,82 @@ async fn start_app(
         let doubao_app_id = doubao_app_id_start.clone();
         let doubao_access_token = doubao_access_token_start.clone();
         let language_mode = asr_language_mode_start;
+        let qwen_profile = qwen_profile_start;
         let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
         let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
         let dictionary_state = Arc::clone(&dictionary_state_start);
+        let asr_correction_pairs = Arc::clone(&asr_correction_pairs_start);
         let recording_start_instant_spawn = Arc::clone(&recording_start_instant_start);
+        let selected_text_snapshot = Arc::clone(&assistant_selected_text_snapshot_start);
 
         let _start_task = tauri::async_runtime::spawn(async move {
             // 记录录音开始时间（包含录音准备时间：静音、显示窗口等）
             // 注意：这个时间略早于实际音频采集开始，但包含了用户感知到的准备时间
             *recording_start_instant_spawn.lock().unwrap() = Some(std::time::Instant::now());
 
-            // 从 state 获取最新词库（支持热更新）
-            let dictionary = dictionary_state.lock().unwrap().clone();
+            if trigger_mode == config::TriggerMode::AiAssistant {
+                if let Some(hwnd) = target_hwnd {
+                    let selection_read_start = std::time::Instant::now();
+                    match tokio::task::spawn_blocking(move || {
+                        platform::desktop().read_selection(hwnd)
+                    })
+                    .await
+                    {
+                        Ok(Ok(text)) => {
+                            if let Some(text) = non_empty_selected_text(Some(text)) {
+                                tracing::info!(
+                                    "AI 助手预捕获选中文本: {} 字符（原生读取 {}ms）",
+                                    text.len(),
+                                    selection_read_start.elapsed().as_millis()
+                                );
+                                *selected_text_snapshot.lock().unwrap() = Some(text);
+                            } else {
+                                tracing::debug!("AI 助手预捕获未检测到选中文本");
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            tracing::debug!("AI 助手预捕获选中文本失败: {}", e);
+                        }
+                        Err(e) => {
+                            tracing::warn!("AI 助手预捕获选中文本任务异常: {}", e);
+                        }
+                    }
+                }
+            }
+
+            // 从 state 获取最新词库（支持热更新），并为本次录音追加临时上下文热词。
+            let mut dictionary = dictionary_state.lock().unwrap().clone();
+            if let Some(hwnd) = target_hwnd {
+                let context_read_start = std::time::Instant::now();
+                match tokio::task::spawn_blocking(move || platform::desktop().read_text(hwnd)).await
+                {
+                    Ok(Ok(context_text)) if !context_text.trim().is_empty() => {
+                        let before_len = dictionary.len();
+                        dictionary = personalization::augment_dictionary_with_app_context_hotwords(
+                            dictionary,
+                            &context_text,
+                        );
+                        let added_count = dictionary.len().saturating_sub(before_len);
+                        if added_count > 0 {
+                            tracing::debug!(
+                                "已追加当前 App 上下文 ASR 热词: {}（原生读取 {}ms）",
+                                added_count,
+                                context_read_start.elapsed().as_millis()
+                            );
+                        }
+                    }
+                    Ok(Ok(_)) => {
+                        tracing::debug!("当前 App 上下文为空，跳过临时 ASR 热词追加");
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!("读取当前 App 上下文失败，跳过临时 ASR 热词追加: {}", e);
+                    }
+                    Err(e) => {
+                        tracing::warn!("当前 App 上下文读取任务异常，跳过临时 ASR 热词追加: {}", e);
+                    }
+                }
+            }
+            let correction_pairs = asr_correction_pairs.lock().unwrap().clone();
             // 1. 先执行开始录音逻辑 (内部会发送 recording_started 事件)
             handle_recording_start(
                 app.clone(),
@@ -1974,7 +3594,9 @@ async fn start_app(
                 doubao_access_token,
                 audio_mute_manager,
                 dictionary,
+                correction_pairs,
                 language_mode,
+                qwen_profile,
             )
             .await;
 
@@ -2061,6 +3683,8 @@ async fn start_app(
 
         // 获取目标窗口句柄（用于焦点恢复）
         let target_hwnd = *target_window_stop.lock().unwrap();
+        let pre_captured_selected_text =
+            non_empty_selected_text(assistant_selected_text_snapshot_stop.lock().unwrap().take());
 
         // 统计数据相关
         let usage_stats = Arc::clone(&usage_stats_stop);
@@ -2123,23 +3747,31 @@ async fn start_app(
 
                     // 捕获选中文本（此时用户已松开热键，Ctrl+C 模拟安全）
                     // 剪贴板即时释放：ClipboardGuard 在此 scope 结束时 drop，立即恢复用户剪贴板
-                    tracing::info!("AI 助手模式：开始捕获选中文本...");
-                    let selected_text = match clipboard_manager::get_selected_text(target_hwnd) {
-                        Ok((guard, text)) => {
-                            if let Some(ref t) = text {
-                                tracing::info!("已捕获选中文本: {} 字符", t.len());
-                            } else {
-                                tracing::info!("无选中文本，将使用问答模式");
+                    let selected_text = if let Some(text) = pre_captured_selected_text {
+                        tracing::info!("使用 AI 助手预捕获选中文本: {} 字符", text.len());
+                        Some(text)
+                    } else {
+                        tracing::info!("AI 助手模式：开始捕获选中文本...");
+                        match clipboard_manager::get_selected_text(target_hwnd) {
+                            Ok((guard, text)) => {
+                                if let Some(ref t) = text {
+                                    tracing::info!("已捕获选中文本: {} 字符", t.len());
+                                } else {
+                                    tracing::info!("剪贴板未捕获选中文本，尝试 原生选区读取");
+                                }
+                                // guard 在此 scope 结束时 drop，自动恢复剪贴板
+                                drop(guard);
+                                text.or_else(|| capture_native_selection(target_hwnd))
                             }
-                            // guard 在此 scope 结束时 drop，自动恢复剪贴板
-                            drop(guard);
-                            text
-                        }
-                        Err(e) => {
-                            tracing::warn!("捕获选中文本失败: {}，继续处理但无上下文", e);
-                            None
+                            Err(e) => {
+                                tracing::warn!("剪贴板捕获选中文本失败: {}，尝试 原生选区读取", e);
+                                capture_native_selection(target_hwnd)
+                            }
                         }
                     };
+                    if selected_text.is_none() {
+                        tracing::info!("无选中文本，将使用问答模式");
+                    }
 
                     #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
                     atdd::observe_selection(selected_text.as_deref());
@@ -2362,25 +3994,31 @@ async fn handle_assistant_mode(
             .unwrap()
             .clone();
 
-        // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
-        let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
-            tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
-            fallback_prov.clone()
+        if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) && fallback_prov.is_none() {
+            tracing::warn!("豆包输入法实时 ASR 失败，且未配置备用 ASR");
+            Err(anyhow::anyhow!(DOUBAO_IME_MISSING_FALLBACK_ERROR))
         } else {
-            active_prov
-        };
+            // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
+            let effective_active_prov =
+                if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
+                    tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
+                    fallback_prov.clone()
+                } else {
+                    active_prov
+                };
 
-        transcribe_with_available_clients(
-            qwen,
-            doubao,
-            sensevoice,
-            &data,
-            enable_fb,
-            effective_active_prov,
-            fallback_prov,
-            "(AI助手备用) ",
-        )
-        .await
+            transcribe_with_available_clients(
+                qwen,
+                doubao,
+                sensevoice,
+                &data,
+                enable_fb,
+                effective_active_prov,
+                fallback_prov,
+                "(AI助手备用) ",
+            )
+            .await
+        }
     } else {
         asr_result
     };
@@ -2415,25 +4053,33 @@ async fn handle_assistant_mode(
         let dict = state.dictionary.lock().unwrap().clone();
         dict
     };
-    let user_instruction = {
-        let tnl_enabled = config::AppConfig::load()
-            .map(|(c, _)| c.tnl_config.enabled)
-            .unwrap_or(true);
-        if tnl_enabled {
-            let engine = tnl::TnlEngine::new(dictionary);
-            let tnl_result = engine.normalize(&asr_text);
-            if tnl_result.changed {
-                tracing::info!(
-                    "AI助手 TNL: {} → {} ({}us)",
-                    asr_text,
-                    tnl_result.text,
-                    tnl_result.elapsed_us
-                );
-            }
-            tnl_result.text
-        } else {
-            asr_text.clone()
+    let tnl_config = config::AppConfig::load()
+        .map(|(c, _)| c.tnl_config)
+        .unwrap_or_default();
+    let tnl_enabled = tnl_config.enabled;
+    let (user_instruction, tnl_diagnostics) = if tnl_enabled {
+        let engine =
+            tnl::TnlEngine::new_with_disfluency_mode(dictionary, tnl_config.disfluency_mode);
+        let tnl_result = engine.normalize(&asr_text);
+        if tnl_result.changed {
+            tracing::info!(
+                "AI助手 TNL: {} → {} ({}us)",
+                asr_text,
+                tnl_result.text,
+                tnl_result.elapsed_us
+            );
         }
+        let (text, _, personalization_diagnostics) =
+            apply_assistant_personalization_with_technical_spans(
+                tnl_result.text,
+                crate::personalization::PersonalizationEngineConfig::from_tnl_config(&tnl_config),
+                &tnl_result.technical_spans,
+            );
+        let diagnostics =
+            merge_assistant_tnl_diagnostics(tnl_result.diagnostics, personalization_diagnostics);
+        (text, diagnostics)
+    } else {
+        (asr_text.clone(), None)
     };
 
     // 5. 获取 processor
@@ -2447,6 +4093,9 @@ async fn handle_assistant_mode(
         );
         return;
     };
+    let (user_instruction, tnl_diagnostics, candidate_llm_time_ms) =
+        maybe_arbitrate_assistant_candidates(&processor, user_instruction, tnl_diagnostics).await;
+    record_assistant_personalization_arbitration_feedback(&tnl_diagnostics);
 
     // 6. 检查会话状态：分支新对话 / 追问
     let state = app.state::<AppState>();
@@ -2470,12 +4119,34 @@ async fn handle_assistant_mode(
             return;
         }
 
+        let turn_id = new_assistant_turn_id();
+        let web_search_preference = WebSearchPreference::UseConfig;
+        let search_config = load_search_runtime_config();
+        let web_search_enabled = resolve_pending_web_search_enabled(
+            &processor,
+            &prompt_mode,
+            web_search_preference,
+            &search_config,
+        );
+
         // 发送 turn_pending 事件（前端立即显示用户消息 + loading）
         let pending_payload = TurnPendingPayload {
+            turn_id: turn_id.clone(),
             user_instruction: user_instruction.clone(),
             selected_text: selected_text.clone(),
             has_selection: selected_text.is_some(),
         };
+        if !set_conversation_pending(
+            &state,
+            &session_id,
+            &turn_id,
+            pending_payload.clone(),
+            web_search_enabled,
+        ) {
+            tracing::warn!("AI 助手: 追问 pending 写入失败，会话已变化");
+            state.is_assistant_processing.store(false, Ordering::SeqCst);
+            return;
+        }
         let _ = app.emit("assistant_turn_pending", pending_payload);
 
         // 隐藏 overlay
@@ -2496,74 +4167,79 @@ async fn handle_assistant_mode(
 
         // 调用 LLM（追问模式）
         let _ = app.emit("post_processing", "assistant");
-        let llm_start = std::time::Instant::now();
+        let cancel_token = register_assistant_cancel_token(&state);
+        let stream_app = app.clone();
+        let stream_session_id = session_id.clone();
+        let stream_turn_id = turn_id.clone();
 
         let result = processor
-            .process_followup(
+            .process_turn(
                 &history,
                 &user_instruction,
                 selected_text.as_deref(),
                 &prompt_mode,
+                Some(search_config),
+                web_search_preference,
+                cancel_token.clone(),
+                move |event| {
+                    emit_and_record_assistant_stream_event(
+                        &stream_app,
+                        &stream_session_id,
+                        &stream_turn_id,
+                        event,
+                    )
+                },
             )
             .await;
 
-        let llm_time_ms = llm_start.elapsed().as_millis() as u64;
-
         match result {
-            Ok(response_text) => {
-                let turn = ConversationTurn {
-                    user_instruction: user_instruction.clone(),
-                    selected_text: selected_text.clone(),
-                    assistant_response: response_text,
+            Ok(outcome) => {
+                let outcome = add_candidate_arbitration_time(outcome, candidate_llm_time_ms);
+                let turn = turn_from_outcome(
+                    user_instruction.clone(),
+                    selected_text.clone(),
                     asr_time_ms,
-                    llm_time_ms,
-                };
+                    outcome,
+                );
 
-                // Push to session
-                {
-                    let mut lock = state.conversation_session.lock().unwrap();
-                    if let Some(ref mut session) = *lock {
-                        session.turns.push(turn.clone());
-                    } else {
-                        // 用户在处理期间关闭了面板，丢弃结果
-                        tracing::warn!("AI 助手: 追问完成但会话已关闭，丢弃结果");
-                        state.is_assistant_processing.store(false, Ordering::SeqCst);
-                        return;
-                    }
+                if !push_completed_turn_if_active(&state, &session_id, &turn_id, turn.clone()) {
+                    tracing::warn!(
+                        "AI 助手: 追问完成但会话已关闭、已取消或已被新请求替换，丢弃结果"
+                    );
+                    finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+                    return;
                 }
 
                 // 发送 turn_complete 事件
                 let payload = TurnCompletePayload {
                     session_id,
-                    turn: ConversationTurnPayload {
-                        user_instruction: turn.user_instruction,
-                        selected_text: turn.selected_text,
-                        has_selection: selected_text.is_some(),
-                        assistant_response: turn.assistant_response,
-                        asr_time_ms: turn.asr_time_ms,
-                        llm_time_ms: turn.llm_time_ms,
-                    },
+                    turn: to_turn_payload(&turn),
                     is_followup: true,
                 };
                 let _ = app.emit("assistant_turn_complete", payload);
                 tracing::info!(
                     "AI 助手追问完成 (ASR: {}ms, LLM: {}ms)",
                     asr_time_ms,
-                    llm_time_ms
+                    turn.llm_time_ms
                 );
             }
             Err(e) => {
-                // 发送 turn_error 事件（不写入 turns，用户可重试）
-                let error_payload = TurnErrorPayload {
-                    session_id,
-                    error_message: format!("{}", e),
-                };
-                let _ = app.emit("assistant_turn_error", error_payload);
-                tracing::error!("AI 助手追问失败: {}", e);
+                if cancel_token.is_cancelled() {
+                    log_assistant_turn_cancelled("AI 助手追问", &e);
+                } else {
+                    // 发送 turn_error 事件（不写入 turns，用户可重试）
+                    let error_payload = TurnErrorPayload {
+                        session_id: session_id.clone(),
+                        error_message: format!("{}", e),
+                    };
+                    mark_conversation_error(&state, &session_id, &turn_id, format!("{}", e));
+                    let _ = app.emit("assistant_turn_error", error_payload);
+                    tracing::error!("AI 助手追问失败: {}", e);
+                }
             }
         }
 
-        state.is_assistant_processing.store(false, Ordering::SeqCst);
+        finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
     } else {
         // =================== 新会话路径 ===================
 
@@ -2590,69 +4266,126 @@ async fn handle_assistant_mode(
             }
         }
 
-        // 调用 LLM（首轮：复用现有 process / process_with_context）
-        let _ = app.emit("post_processing", "assistant");
-        let llm_start = std::time::Instant::now();
+        let session_id = uuid::Uuid::new_v4().to_string();
 
-        let result = if let Some(ref text) = selected_text {
-            processor
-                .process_with_context(&user_instruction, text)
-                .await
-        } else {
-            processor.process(&user_instruction).await
+        // 创建空 session 并显示面板，让后续 streaming delta 有承载对象
+        {
+            let mut lock = state.conversation_session.lock().unwrap();
+            // 安全清理：如果有旧会话未关闭，补发历史事件
+            if let Some(old_session) = lock.take() {
+                tracing::warn!(
+                    "AI 助手: 新会话覆盖了旧会话 (id={}), 补发完成事件",
+                    old_session.id
+                );
+                emit_conversation_history(&app, &old_session, false);
+            }
+            let session = ConversationSession {
+                id: session_id.clone(),
+                turns: Vec::new(),
+                pending_turn: None,
+                draft_turn_id: None,
+                draft_assistant_response: String::new(),
+                draft_tool_calls: Vec::new(),
+                draft_status: "idle".to_string(),
+                draft_warning: None,
+                draft_web_search_enabled: None,
+                system_prompt_mode: prompt_mode.clone(),
+                target_hwnd,
+                created_at: std::time::Instant::now(),
+            };
+            *lock = Some(session);
+        }
+
+        show_result_panel_window(&app).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let turn_id = new_assistant_turn_id();
+        let web_search_preference = WebSearchPreference::UseConfig;
+        let search_config = load_search_runtime_config();
+        let web_search_enabled = resolve_pending_web_search_enabled(
+            &processor,
+            &prompt_mode,
+            web_search_preference,
+            &search_config,
+        );
+        let pending_payload = TurnPendingPayload {
+            turn_id: turn_id.clone(),
+            user_instruction: user_instruction.clone(),
+            selected_text: selected_text.clone(),
+            has_selection: selected_text.is_some(),
         };
 
-        let llm_time_ms = llm_start.elapsed().as_millis() as u64;
+        if state
+            .is_assistant_processing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            tracing::warn!("AI 助手: 已有请求在处理中，忽略新会话触发");
+            return;
+        }
+
+        if !set_conversation_pending(
+            &state,
+            &session_id,
+            &turn_id,
+            pending_payload.clone(),
+            web_search_enabled,
+        ) {
+            tracing::warn!("AI 助手: 新会话 pending 写入失败，会话已变化");
+            state.is_assistant_processing.store(false, Ordering::SeqCst);
+            return;
+        }
+        let _ = app.emit("assistant_turn_pending", pending_payload);
+
+        // 调用 LLM（首轮统一走 agentic process_turn）
+        let _ = app.emit("post_processing", "assistant");
+        let cancel_token = register_assistant_cancel_token(&state);
+        let stream_app = app.clone();
+        let stream_session_id = session_id.clone();
+        let stream_turn_id = turn_id.clone();
+
+        let result = processor
+            .process_turn(
+                &[],
+                &user_instruction,
+                selected_text.as_deref(),
+                &prompt_mode,
+                Some(search_config),
+                web_search_preference,
+                cancel_token.clone(),
+                move |event| {
+                    emit_and_record_assistant_stream_event(
+                        &stream_app,
+                        &stream_session_id,
+                        &stream_turn_id,
+                        event,
+                    )
+                },
+            )
+            .await;
 
         match result {
-            Ok(response_text) => {
-                let turn = ConversationTurn {
-                    user_instruction: user_instruction.clone(),
-                    selected_text: selected_text.clone(),
-                    assistant_response: response_text,
+            Ok(outcome) => {
+                let outcome = add_candidate_arbitration_time(outcome, candidate_llm_time_ms);
+                let turn = turn_from_outcome(
+                    user_instruction.clone(),
+                    selected_text.clone(),
                     asr_time_ms,
-                    llm_time_ms,
-                };
+                    outcome,
+                );
 
-                let session_id = uuid::Uuid::new_v4().to_string();
-
-                // 创建 session 并存入 AppState
-                {
-                    let mut lock = state.conversation_session.lock().unwrap();
-                    // 安全清理：如果有旧会话未关闭，补发历史事件
-                    if let Some(old_session) = lock.take() {
-                        tracing::warn!(
-                            "AI 助手: 新会话覆盖了旧会话 (id={}), 补发完成事件",
-                            old_session.id
-                        );
-                        emit_conversation_history(&app, &old_session, false);
-                    }
-                    let session = ConversationSession {
-                        id: session_id.clone(),
-                        turns: vec![turn.clone()],
-                        system_prompt_mode: prompt_mode,
-                        target_hwnd,
-                        created_at: std::time::Instant::now(),
-                    };
-                    *lock = Some(session);
+                if !push_completed_turn_if_active(&state, &session_id, &turn_id, turn.clone()) {
+                    tracing::warn!(
+                        "AI 助手: 首轮完成但会话已关闭、已取消或已被新请求替换，丢弃结果"
+                    );
+                    finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+                    return;
                 }
-
-                // 显示结果面板（居中定位，仅首轮）
-                show_result_panel_window(&app).await;
-                // 等待 WebView 激活后再发送事件
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
                 // 发送 turn_complete 事件
                 let payload = TurnCompletePayload {
-                    session_id,
-                    turn: ConversationTurnPayload {
-                        user_instruction: turn.user_instruction,
-                        selected_text: turn.selected_text,
-                        has_selection: selected_text.is_some(),
-                        assistant_response: turn.assistant_response,
-                        asr_time_ms: turn.asr_time_ms,
-                        llm_time_ms: turn.llm_time_ms,
-                    },
+                    session_id: session_id.clone(),
+                    turn: to_turn_payload(&turn),
                     is_followup: false,
                 };
                 let _ = app.emit("assistant_turn_complete", payload);
@@ -2660,15 +4393,25 @@ async fn handle_assistant_mode(
                 tracing::info!(
                     "AI 助手新会话创建完成 (ASR: {}ms, LLM: {}ms)",
                     asr_time_ms,
-                    llm_time_ms
+                    turn.llm_time_ms
                 );
             }
             Err(e) => {
                 let _ = recording_start_instant.lock().unwrap().take();
-                tracing::error!("AI 助手处理失败: {}", e);
-                let _ = app.emit("error", format!("AI 助手处理失败: {}", e));
+                if cancel_token.is_cancelled() {
+                    log_assistant_turn_cancelled("AI 助手处理", &e);
+                } else {
+                    tracing::error!("AI 助手处理失败: {}", e);
+                    let error_payload = TurnErrorPayload {
+                        session_id: session_id.clone(),
+                        error_message: format!("{}", e),
+                    };
+                    mark_conversation_error(&state, &session_id, &turn_id, format!("{}", e));
+                    let _ = app.emit("assistant_turn_error", error_payload);
+                }
             }
         }
+        finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
     }
 }
 
@@ -3255,26 +4998,33 @@ async fn fallback_transcription(
         .unwrap()
         .clone();
 
-    // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
-    let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
-        tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
-        fallback_prov.clone()
-    } else {
-        active_prov
-    };
-
     let asr_start = std::time::Instant::now();
-    let result = transcribe_with_available_clients(
-        qwen,
-        doubao,
-        sensevoice,
-        &audio_data,
-        enable_fallback,
-        effective_active_prov,
-        fallback_prov,
-        "(备用) ",
-    )
-    .await;
+    let result = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme))
+        && fallback_prov.is_none()
+    {
+        tracing::warn!("豆包输入法实时 ASR 失败，且未配置备用 ASR");
+        Err(anyhow::anyhow!(DOUBAO_IME_MISSING_FALLBACK_ERROR))
+    } else {
+        // DoubaoIme 不支持 HTTP 模式，直接使用 fallback_provider
+        let effective_active_prov = if matches!(active_prov, Some(config::AsrProvider::DoubaoIme)) {
+            tracing::info!("豆包输入法不支持 HTTP 备用模式，切换到 fallback provider");
+            fallback_prov.clone()
+        } else {
+            active_prov
+        };
+
+        transcribe_with_available_clients(
+            qwen,
+            doubao,
+            sensevoice,
+            &audio_data,
+            enable_fallback,
+            effective_active_prov,
+            fallback_prov,
+            "(备用) ",
+        )
+        .await
+    };
     let asr_time_ms = asr_start.elapsed().as_millis() as u64;
 
     handle_transcription_result(
@@ -3335,6 +5085,14 @@ struct TranscriptionResult {
     inserted: Option<bool>, // 新增：是否已自动插入
     #[serde(skip_serializing_if = "Option::is_none")]
     tnl_diagnostics: Option<tnl::TnlDiagnostics>, // 可选：TNL 候选/替换诊断
+    #[serde(skip_serializing_if = "Option::is_none")]
+    citations: Option<Vec<search::SearchResultItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls_summary: Option<Vec<search::ToolCallSummary>>,
+    #[serde(default)]
+    web_searched: bool,
+    #[serde(default)]
+    search_failed: bool,
 }
 
 /// 处理转录结果（听写模式专用，使用 NormalPipeline）
@@ -3410,6 +5168,10 @@ async fn handle_transcription_result(
                 mode: Some(format!("{:?}", result.mode).to_lowercase()),
                 inserted: Some(result.inserted),
                 tnl_diagnostics: result.tnl_diagnostics,
+                citations: None,
+                tool_calls_summary: None,
+                web_searched: false,
+                search_failed: false,
             };
 
             // 发送完成事件
@@ -4064,32 +5826,51 @@ async fn add_learned_word(
     app_handle: AppHandle,
     word: String,
     source: String,
+    original: Option<String>,
+    corrected: Option<String>,
+    category: Option<String>,
+    context: Option<String>,
 ) -> Result<(), String> {
-    use crate::dictionary_utils::{entries_to_words, upsert_entry};
-
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
-    let (updated_config, words) = mutate_persisted_config_with_result(|config| {
-        // 添加词条（source: "manual" 或 "auto"）
-        upsert_entry(&mut config.dictionary, &word, &source);
-        Ok(entries_to_words(&config.dictionary))
-    })?;
+    let stored_correction_pair = crate::personalization::record_accepted_correction_pair(
+        original.as_deref(),
+        corrected.as_deref(),
+        category.as_deref(),
+        context.as_deref(),
+    )
+    .map_err(|e| format!("保存个性化纠错对失败: {}", e))?;
+
+    let (updated_config, dictionary_entries) =
+        upsert_user_term_sidecar_entry_and_snapshot_config(&word, &source, category.as_deref())?;
 
     // 热更新运行时词库
     let state = app_handle.state::<AppState>();
-    *state.dictionary.lock().unwrap() = words.clone();
+    *state.dictionary.lock().unwrap() = dictionary_entries.clone();
 
     // 更新 ASR 客户端词库
     if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
-        client.update_dictionary(words.clone());
+        client.update_dictionary(dictionary_entries.clone());
     }
     if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
-        client.update_dictionary(words.clone());
+        client.update_dictionary(dictionary_entries.clone());
+    }
+
+    if stored_correction_pair.is_some() {
+        refresh_asr_correction_pairs_runtime(&state);
     }
 
     // 发送事件通知前端刷新配置和词典
     emit_config_updated(&app_handle, &updated_config);
     app_handle.emit("dictionary_updated", ()).ok();
 
+    if let Some(pair) = stored_correction_pair {
+        tracing::info!(
+            "个性化纠错对已保存: {} → {} (id: {})",
+            pair.original_text,
+            pair.corrected_text,
+            pair.id
+        );
+    }
     tracing::info!("词汇 '{}' 已添加到词典", word);
     Ok(())
 }
@@ -4099,13 +5880,16 @@ async fn add_learned_word(
 async fn get_dictionary_entries() -> Result<Vec<String>, String> {
     tracing::info!("获取词典条目...");
 
-    let _guard = CONFIG_LOCK
-        .lock()
-        .map_err(|e| format!("获取配置锁失败: {}", e))?;
-    let config = load_persisted_config()?;
+    let config = {
+        let _guard = CONFIG_LOCK
+            .lock()
+            .map_err(|e| format!("获取配置锁失败: {}", e))?;
+        load_persisted_config()?
+    };
+    let entries = dictionary_entries_from_user_terms_or_config(&config.dictionary);
 
-    tracing::info!("返回 {} 个词典条目", config.dictionary.len());
-    Ok(config.dictionary)
+    tracing::info!("返回 {} 个词典条目", entries.len());
+    Ok(entries)
 }
 
 /// 删除指定词汇的词典条目（按 word 匹配）
@@ -4114,25 +5898,20 @@ async fn delete_dictionary_entries(
     app_handle: AppHandle,
     words: Vec<String>,
 ) -> Result<(), String> {
-    use crate::dictionary_utils::{entries_to_words, remove_entries};
-
     tracing::info!("删除词典条目: {:?}", words);
-    let (updated_config, dict_words) = mutate_persisted_config_with_result(|config| {
-        // 删除指定词汇（按 word 匹配，不区分来源）
-        remove_entries(&mut config.dictionary, &words);
-        Ok(entries_to_words(&config.dictionary))
-    })?;
+    let (updated_config, dictionary_entries) =
+        delete_user_term_sidecar_entries_and_snapshot_config(&words)?;
 
     // 热更新运行时词库
     let state = app_handle.state::<AppState>();
-    *state.dictionary.lock().unwrap() = dict_words.clone();
+    *state.dictionary.lock().unwrap() = dictionary_entries.clone();
 
     // 更新 ASR 客户端词库
     if let Some(ref mut client) = *state.qwen_client.lock().unwrap() {
-        client.update_dictionary(dict_words.clone());
+        client.update_dictionary(dictionary_entries.clone());
     }
     if let Some(ref mut client) = *state.doubao_client.lock().unwrap() {
-        client.update_dictionary(dict_words.clone());
+        client.update_dictionary(dictionary_entries.clone());
     }
 
     // 发送事件通知前端刷新配置和词典
@@ -4143,19 +5922,41 @@ async fn delete_dictionary_entries(
     Ok(())
 }
 
-/// 忽略学习建议（暂不实现黑名单，仅关闭通知）
+/// 忽略学习建议
 #[tauri::command]
-async fn dismiss_learning_suggestion(id: String) -> Result<(), String> {
+async fn dismiss_learning_suggestion(
+    app_handle: AppHandle,
+    id: String,
+    original: Option<String>,
+    corrected: Option<String>,
+) -> Result<(), String> {
     tracing::debug!("忽略学习建议: {}", id);
-    // 当前版本仅关闭通知，不实现黑名单机制
-    // 未来可在此添加：将 id 对应的词汇加入黑名单，避免重复建议
+    let rejected_pair = crate::personalization::record_rejected_correction_pair(
+        original.as_deref(),
+        corrected.as_deref(),
+    )
+    .map_err(|e| format!("记录学习负反馈失败: {}", e))?;
+    if rejected_pair.is_some() {
+        let state = app_handle.state::<AppState>();
+        refresh_asr_correction_pairs_runtime(&state);
+    }
+    if let Some(pair) = rejected_pair {
+        tracing::info!(
+            "个性化纠错对负反馈: {} → {} (id: {}, confidence: {:.2}, rejected: {})",
+            pair.original_text,
+            pair.corrected_text,
+            pair.id,
+            pair.confidence,
+            pair.rejected_count
+        );
+    }
     Ok(())
 }
 
 /// 粘贴 AI 助手最新回复到原窗口
 ///
 /// 取出会话，检查目标窗口是否有效：
-/// - 有效：隐藏面板 → 恢复焦点 → Ctrl+V 粘贴 → 触发学习观察
+/// - 有效：隐藏面板 → 恢复焦点 → Ctrl+V 粘贴
 /// - 无效：复制到剪贴板（降级）
 /// 粘贴 = 会话结束
 #[tauri::command]
@@ -4198,18 +5999,6 @@ async fn paste_latest_reply(
                 clipboard_manager::copy_to_clipboard(&result_text).map_err(|e| e.to_string())?;
                 emit_conversation_history(&app, &session, false);
                 return Ok(format!("{}；结果已复制到剪贴板", error));
-            }
-
-            // 触发学习观察
-            if let Ok((config, _)) = config::AppConfig::load() {
-                if config.learning_config.enabled {
-                    learning::coordinator::start_learning_observation(
-                        app.clone(),
-                        result_text.clone(),
-                        hwnd,
-                        config.learning_config,
-                    );
-                }
             }
 
             // 发送完成事件（粘贴 = 已插入）
@@ -4263,20 +6052,24 @@ async fn get_conversation_state(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<ConversationStatePayload>, String> {
     let lock = state.conversation_session.lock().unwrap();
-    Ok(lock.as_ref().map(|session| ConversationStatePayload {
-        session_id: session.id.clone(),
-        turns: session
-            .turns
-            .iter()
-            .map(|t| ConversationTurnPayload {
-                user_instruction: t.user_instruction.clone(),
-                selected_text: t.selected_text.clone(),
-                has_selection: t.selected_text.is_some(),
-                assistant_response: t.assistant_response.clone(),
-                asr_time_ms: t.asr_time_ms,
-                llm_time_ms: t.llm_time_ms,
-            })
-            .collect(),
+    let is_processing = state.is_assistant_processing.load(Ordering::SeqCst);
+    Ok(lock.as_ref().map(|session| {
+        let status = if is_processing && session.pending_turn.is_some() {
+            "processing".to_string()
+        } else {
+            session.draft_status.clone()
+        };
+        ConversationStatePayload {
+            session_id: session.id.clone(),
+            turns: session.turns.iter().map(to_turn_payload).collect(),
+            pending_turn: session.pending_turn.clone(),
+            draft_assistant_response: session.draft_assistant_response.clone(),
+            draft_tool_calls: session.draft_tool_calls.clone(),
+            is_processing,
+            status,
+            warning_message: session.draft_warning.clone(),
+            web_search_enabled: session.draft_web_search_enabled,
+        }
     }))
 }
 
@@ -4289,6 +6082,18 @@ async fn dismiss_conversation(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    if state.is_assistant_processing.load(Ordering::SeqCst) {
+        if let Some(token) = state.assistant_cancel_token.lock().unwrap().take() {
+            token.cancel();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while state.is_assistant_processing.load(Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        state.is_assistant_processing.store(false, Ordering::SeqCst);
+    }
     if let Some(session) = state.conversation_session.lock().unwrap().take() {
         emit_conversation_history(&app, &session, false);
     }
@@ -4303,6 +6108,7 @@ async fn dismiss_conversation(
 #[tauri::command]
 async fn send_text_question(
     text: String,
+    web_search_enabled: Option<bool>,
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
@@ -4336,74 +6142,150 @@ async fn send_text_question(
         return Err("正在处理中，请稍候".into());
     }
 
-    // 4. 发 pending 事件（前端立即显示用户消息 + loading）
+    // 4. 注册取消令牌并发 pending 事件（前端立即显示用户消息 + loading）
+    let turn_id = new_assistant_turn_id();
+    let cancel_token = register_assistant_cancel_token(&state);
+    let web_search_preference = match web_search_enabled {
+        Some(true) => WebSearchPreference::Enabled,
+        Some(false) => WebSearchPreference::Disabled,
+        None => WebSearchPreference::UseConfig,
+    };
+    let search_config = load_search_runtime_config();
+    let web_search_allowed = resolve_pending_web_search_enabled(
+        &processor,
+        &prompt_mode,
+        web_search_preference,
+        &search_config,
+    );
     let pending_payload = TurnPendingPayload {
+        turn_id: turn_id.clone(),
         user_instruction: text.clone(),
         selected_text: None,
         has_selection: false,
     };
+    if !set_conversation_pending(
+        &state,
+        &session_id,
+        &turn_id,
+        pending_payload.clone(),
+        web_search_allowed,
+    ) {
+        finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+        return Err("当前对话会话已变化，请重试".into());
+    }
     let _ = app.emit("assistant_turn_pending", pending_payload);
 
-    // 5. 调用 LLM（追问模式，asr_time_ms = 0）
-    let llm_start = std::time::Instant::now();
+    tokio::spawn(run_text_question_task(
+        app,
+        session_id,
+        turn_id,
+        history,
+        prompt_mode,
+        text,
+        processor,
+        cancel_token,
+        web_search_preference,
+    ));
+
+    Ok(())
+}
+
+async fn run_text_question_task(
+    app: AppHandle,
+    session_id: String,
+    turn_id: String,
+    history: Vec<ConversationTurn>,
+    prompt_mode: PromptMode,
+    text: String,
+    processor: AssistantProcessor,
+    cancel_token: CancellationToken,
+    web_search_preference: WebSearchPreference,
+) {
+    let search_config = load_search_runtime_config();
+    let stream_app = app.clone();
+    let stream_session_id = session_id.clone();
+    let stream_turn_id = turn_id.clone();
 
     let result = processor
-        .process_followup(&history, &text, None, &prompt_mode)
+        .process_turn(
+            &history,
+            &text,
+            None,
+            &prompt_mode,
+            Some(search_config),
+            web_search_preference,
+            cancel_token.clone(),
+            move |event| {
+                emit_and_record_assistant_stream_event(
+                    &stream_app,
+                    &stream_session_id,
+                    &stream_turn_id,
+                    event,
+                )
+            },
+        )
         .await;
 
-    let llm_time_ms = llm_start.elapsed().as_millis() as u64;
-
+    let state = app.state::<AppState>();
     match result {
-        Ok(response_text) => {
-            let turn = ConversationTurn {
-                user_instruction: text,
-                selected_text: None,
-                assistant_response: response_text,
-                asr_time_ms: 0,
-                llm_time_ms,
-            };
-
-            // 推入 session
-            {
-                let mut lock = state.conversation_session.lock().unwrap();
-                if let Some(ref mut session) = *lock {
-                    session.turns.push(turn.clone());
-                } else {
-                    // 用户在处理期间关闭了面板，丢弃结果
-                    tracing::warn!("AI 助手: 文本追问完成但会话已关闭，丢弃结果");
-                    state.is_assistant_processing.store(false, Ordering::SeqCst);
-                    return Ok(());
-                }
+        Ok(outcome) => {
+            let turn = turn_from_outcome(text, None, 0, outcome);
+            if push_completed_turn_if_active(&state, &session_id, &turn_id, turn.clone()) {
+                let payload = TurnCompletePayload {
+                    session_id: session_id.clone(),
+                    turn: to_turn_payload(&turn),
+                    is_followup: true,
+                };
+                let _ = app.emit("assistant_turn_complete", payload);
+                tracing::info!("AI 助手文本追问完成 (LLM: {}ms)", turn.llm_time_ms);
+            } else {
+                tracing::warn!(
+                    "AI 助手: 文本追问完成但会话已关闭、已取消或已被新请求替换，丢弃结果"
+                );
             }
-
-            // 发送 turn_complete 事件
-            let payload = TurnCompletePayload {
-                session_id,
-                turn: ConversationTurnPayload {
-                    user_instruction: turn.user_instruction,
-                    selected_text: turn.selected_text,
-                    has_selection: false,
-                    assistant_response: turn.assistant_response,
-                    asr_time_ms: 0,
-                    llm_time_ms: turn.llm_time_ms,
-                },
-                is_followup: true,
-            };
-            let _ = app.emit("assistant_turn_complete", payload);
-            tracing::info!("AI 助手文本追问完成 (LLM: {}ms)", llm_time_ms);
         }
         Err(e) => {
-            let error_payload = TurnErrorPayload {
-                session_id,
-                error_message: format!("{}", e),
-            };
-            let _ = app.emit("assistant_turn_error", error_payload);
-            tracing::error!("AI 助手文本追问失败: {}", e);
+            if cancel_token.is_cancelled() {
+                log_assistant_turn_cancelled("AI 助手文本追问", &e);
+            } else {
+                let message = format!("{}", e);
+                mark_conversation_error(&state, &session_id, &turn_id, message.clone());
+                let error_payload = TurnErrorPayload {
+                    session_id: session_id.clone(),
+                    error_message: message,
+                };
+                let _ = app.emit("assistant_turn_error", error_payload);
+                tracing::error!("AI 助手文本追问失败: {}", e);
+            }
         }
     }
 
+    finish_assistant_turn_processing(&state, &turn_id, &cancel_token);
+}
+
+#[tauri::command]
+async fn cancel_assistant_generation(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(token) = state.assistant_cancel_token.lock().unwrap().take() {
+        token.cancel();
+    }
     state.is_assistant_processing.store(false, Ordering::SeqCst);
 
+    let (session_id, turn_id, partial_content, tool_calls) =
+        mark_active_conversation_cancelled(&state);
+
+    let _ = app.emit(
+        "assistant_turn_cancelled",
+        serde_json::json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "partial_content": partial_content,
+            "tool_calls": tool_calls,
+            "message": "已停止生成",
+        }),
+    );
     Ok(())
 }
 
@@ -4549,11 +6431,20 @@ async fn test_llm_provider(
             ChatOptions {
                 max_tokens: 4,
                 temperature: 0.0,
+                reasoning: None,
+                custom_body: None,
             },
         )
         .await
         .map(|s| s.trim().to_string())
         .map_err(|e| format!("测试请求失败: {e}"))
+}
+
+#[tauri::command]
+async fn test_search_provider(provider: config::SearchProviderConfig) -> Result<u32, String> {
+    search::SearchRegistry::test_provider(provider)
+        .await
+        .map_err(|e| format!("搜索引擎连接测试失败: {e}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4632,6 +6523,7 @@ pub fn run() {
                 audio_mute_manager: Arc::new(Mutex::new(None)),
                 target_window: Arc::new(Mutex::new(None)),
                 dictionary: Arc::new(Mutex::new(Vec::new())),
+                asr_correction_pairs: Arc::new(Mutex::new(Vec::new())),
                 doubao_ime_credentials: Arc::new(Mutex::new(None)),
                 usage_stats: Arc::new(Mutex::new(usage_stats)),
                 recording_start_instant: Arc::new(Mutex::new(None)),
@@ -4639,6 +6531,7 @@ pub fn run() {
                 builtin_dictionary_updater_started: Arc::clone(&builtin_dictionary_updater_started),
                 conversation_session: Arc::new(Mutex::new(None)),
                 is_assistant_processing: Arc::new(AtomicBool::new(false)),
+                assistant_cancel_token: Arc::new(Mutex::new(None)),
             };
 
             let initial_config = load_persisted_config().unwrap_or_else(|e| {
@@ -4653,6 +6546,7 @@ pub fn run() {
             let initial_enable_post_process = initial_config.enable_llm_post_process;
             let initial_enable_dictionary_enhancement =
                 initial_config.enable_dictionary_enhancement;
+            let initial_enable_web_search = initial_config.assistant_config.enable_web_search;
             let initial_active_provider =
                 initial_config.asr_config.selection.active_provider.clone();
 
@@ -4697,6 +6591,14 @@ pub fn run() {
                 initial_enable_dictionary_enhancement,
                 None::<&str>,
             )?;
+            let web_search_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_TOGGLE_WEB_SEARCH,
+                "联网搜索 (Beta)",
+                true,
+                initial_enable_web_search,
+                None::<&str>,
+            )?;
 
             let asr_qwen_item = CheckMenuItem::with_id(
                 app,
@@ -4735,6 +6637,7 @@ pub fn run() {
                     &show_item,
                     &post_process_item,
                     &dictionary_enhancement_item,
+                    &web_search_item,
                     &asr_switch_submenu,
                     &quit_item,
                 ],
@@ -4742,6 +6645,7 @@ pub fn run() {
 
             let post_process_item_for_event = post_process_item.clone();
             let dictionary_enhancement_item_for_event = dictionary_enhancement_item.clone();
+            let web_search_item_for_event = web_search_item.clone();
             let asr_qwen_item_for_event = asr_qwen_item.clone();
             let asr_doubao_item_for_event = asr_doubao_item.clone();
             let asr_doubao_ime_item_for_event = asr_doubao_ime_item.clone();
@@ -4749,6 +6653,7 @@ pub fn run() {
             app.manage(TrayMenuState {
                 post_process_item: post_process_item.clone(),
                 dictionary_enhancement_item: dictionary_enhancement_item.clone(),
+                web_search_item: web_search_item.clone(),
                 asr_qwen_item: asr_qwen_item.clone(),
                 asr_doubao_item: asr_doubao_item.clone(),
                 asr_doubao_ime_item: asr_doubao_ime_item.clone(),
@@ -4779,6 +6684,13 @@ pub fn run() {
                             &dictionary_enhancement_item_for_event,
                         ) {
                             tracing::error!("托盘切换词库增强失败: {}", e);
+                            let _ = app.emit("error", e);
+                        }
+                    }
+                    TRAY_MENU_ID_TOGGLE_WEB_SEARCH => {
+                        if let Err(e) = toggle_web_search_from_tray(app, &web_search_item_for_event)
+                        {
+                            tracing::error!("托盘切换联网搜索失败: {}", e);
                             let _ = app.emit("error", e);
                         }
                     }
@@ -4917,9 +6829,11 @@ pub fn run() {
             copy_latest_reply,
             copy_full_conversation,
             dismiss_conversation,
+            cancel_assistant_generation,
             send_text_question,
             show_notification_window,
             test_llm_provider,
+            test_search_provider,
         ])
         .build(context)
         .expect("error while building tauri application")

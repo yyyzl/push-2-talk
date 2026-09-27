@@ -18,6 +18,7 @@ extern "C" {
     fn ptt_target_focused(token: u64) -> bool;
     fn ptt_restore_target(token: u64) -> bool;
     fn ptt_read_text(token: u64) -> *mut c_char;
+    fn ptt_read_selection(token: u64) -> *mut c_char;
     fn ptt_free_string(value: *mut c_char);
     fn ptt_key_down(code: u16) -> bool;
     fn ptt_hotkeys_start() -> bool;
@@ -145,6 +146,13 @@ impl DesktopBackend for MacDesktop {
     fn read_text(&self, target: InputTarget) -> Result<String> {
         let pointer = unsafe { ptt_read_text(target.0) };
         anyhow::ensure!(!pointer.is_null(), "此输入控件不支持文本读取，或已失去焦点");
+        let text = unsafe { CStr::from_ptr(pointer).to_string_lossy().into_owned() };
+        unsafe { ptt_free_string(pointer) };
+        Ok(text.replace("\r\n", "\n").replace('\r', "\n"))
+    }
+    fn read_selection(&self, target: InputTarget) -> Result<String> {
+        let pointer = unsafe { ptt_read_selection(target.0) };
+        anyhow::ensure!(!pointer.is_null(), "此输入控件不支持选区读取，或已失去焦点");
         let text = unsafe { CStr::from_ptr(pointer).to_string_lossy().into_owned() };
         unsafe { ptt_free_string(pointer) };
         Ok(text.replace("\r\n", "\n").replace('\r', "\n"))

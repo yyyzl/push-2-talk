@@ -11,6 +11,8 @@
 
 pub mod coordinator;
 pub mod diff_analyzer;
+#[cfg(test)]
+mod judge_http_tests;
 pub mod llm_judge;
 mod observations;
 pub mod store;

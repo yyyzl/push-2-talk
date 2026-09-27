@@ -3,6 +3,11 @@ import { MessageSquare, Clock, Copy, History, Mic, Sparkles, X, Quote } from "lu
 import type { HistoryRecord } from "../../types";
 import { formatTimestamp } from "../../utils";
 import { TnlDiagnosticsBadge, TnlDiagnosticsSummary } from "./TnlDiagnosticsSummary";
+import {
+  formatAssistantAnswerPreview,
+  SearchSourcesList,
+  SearchStatusChip,
+} from "./SearchSources";
 
 export type HistoryDrawerProps = {
   open: boolean;
@@ -87,6 +92,7 @@ export function HistoryDrawer({
                           {record.presetName}
                         </span>
                       )}
+                      <SearchStatusChip record={record} />
                       <span className="text-[10px] bg-stone-50 text-stone-600 px-1.5 py-0.5 rounded">
                         {(record.totalTimeMs / 1000).toFixed(1)}s
                       </span>
@@ -150,10 +156,11 @@ export function HistoryDrawer({
                               </button>
                             </div>
                             <p className="text-xs text-stone-800 line-clamp-3 leading-relaxed font-semibold whitespace-pre-wrap">
-                              {record.polishedText}
+                              {formatAssistantAnswerPreview(record.polishedText)}
                             </p>
                           </div>
                         </div>
+                        <SearchSourcesList record={record} compact />
                       </div>
                     ) : (
                       /* 普通润色模式 */

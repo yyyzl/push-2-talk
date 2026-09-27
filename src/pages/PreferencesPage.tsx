@@ -1,8 +1,8 @@
-import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle } from "lucide-react";
+import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { usePlatformStatus } from "../hooks/usePlatformStatus";
 import { PlatformPermissions } from "../components/common/PlatformPermissions";
-import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
+import type { AppStatus, DisfluencyMode, UpdateStatus, LearningConfig, SharedLlmConfig, TnlConfig } from "../types";
 import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../components/common";
 import { RedDot } from "../components/common/RedDot";
 import { SettingsModal } from "../components/modals/SettingsModal";
@@ -29,10 +29,22 @@ export type PreferencesPageProps = {
 
   sharedConfig: SharedLlmConfig;
   learningConfig: LearningConfig;
+  tnlConfig: TnlConfig;
   setLearningConfig: (next: LearningConfig) => void;
   onSetLearningEnabled: (enabled: boolean) => Promise<void>;
+  onSetDisfluencyMode: (mode: DisfluencyMode) => Promise<void>;
   onNavigateToModels?: () => void;
 };
+
+const DISFLUENCY_MODE_OPTIONS: Array<{
+  value: DisfluencyMode;
+  label: string;
+  summary: string;
+}> = [
+  { value: "off", label: "关闭", summary: "保留原始口语" },
+  { value: "conservative", label: "保守", summary: "默认清理" },
+  { value: "aggressive", label: "强力", summary: "更干净" },
+];
 
 export function PreferencesPage({
   status,
@@ -50,8 +62,10 @@ export function PreferencesPage({
   onDownloadAndInstall,
   sharedConfig,
   learningConfig,
+  tnlConfig,
   setLearningConfig,
   onSetLearningEnabled,
+  onSetDisfluencyMode,
   onNavigateToModels,
 }: PreferencesPageProps) {
   const platformState = usePlatformStatus();
@@ -69,6 +83,10 @@ export function PreferencesPage({
 
   // 自动学习配置状态
   const learningEnabled = learningConfig.enabled;
+  const disfluencyMode = tnlConfig.disfluency_mode;
+  const disfluencySummary =
+    DISFLUENCY_MODE_OPTIONS.find((option) => option.value === disfluencyMode)?.summary
+    ?? DISFLUENCY_MODE_OPTIONS[1].summary;
   const [learningConfigModalOpen, setLearningConfigModalOpen] = useState(false);
 
   // 切换自动学习开关
@@ -99,6 +117,56 @@ export function PreferencesPage({
 
         <PlatformPermissions {...platformState} onRequest={platformState.request} onRefresh={platformState.refresh}
           serviceIdle={status === "idle"} startingService={startingService} onStartService={startService} />
+        <div className="flex items-center justify-between gap-4 p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
+          <div className="flex items-center gap-3">
+            <div
+              className={[
+                "p-2 rounded-xl",
+                disfluencyMode !== "off"
+                  ? "bg-[rgba(120,140,93,0.12)] text-[var(--sage)]"
+                  : "bg-white border border-[var(--stone)] text-stone-500",
+              ].join(" ")}
+            >
+              <Sparkles size={16} />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <div className="text-sm font-bold text-[var(--ink)]">口语流畅化</div>
+                <Tooltip content="关闭会保留口头填充词；保守只处理明确句首填充；强力会额外处理重复字和 false start。">
+                  <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+                </Tooltip>
+              </div>
+              <div className="text-[11px] text-stone-400 font-semibold">{disfluencySummary}</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 overflow-hidden rounded-xl border border-[var(--stone)] bg-white">
+            {DISFLUENCY_MODE_OPTIONS.map((option) => {
+              const selected = disfluencyMode === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    if (selected) return;
+                    void onSetDisfluencyMode(option.value);
+                  }}
+                  disabled={status === "recording" || status === "transcribing"}
+                  className={[
+                    "h-9 min-w-[3.5rem] px-3 text-xs font-bold transition-colors",
+                    "disabled:cursor-not-allowed disabled:opacity-50",
+                    selected
+                      ? "bg-[var(--ink)] text-white"
+                      : "text-stone-500 hover:bg-[var(--paper)] hover:text-[var(--ink)]",
+                  ].join(" ")}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
           <div className="flex items-center gap-3">
             <div

@@ -13,6 +13,7 @@ static TestAXNode *node(NSDictionary *attributes) {
 static TestAXNode *testSystem;
 static TestAXNode *testReadElement;
 static unsigned testTextReads;
+static unsigned testSelectedTextReads;
 static bool testLoseFocusDuringRead;
 static unsigned testSelectionReadDelay;
 static id testPendingSelection;
@@ -32,6 +33,10 @@ static AXError testCopyAttribute(AXUIElementRef element,CFStringRef key,CFTypeRe
     id result=((TestAXNode *)object).attributes[(__bridge NSString *)key];
     if (object==testReadElement && CFEqual(key,kAXValueAttribute)) {
         testTextReads++;
+        if (testLoseFocusDuringRead) testSystem.attributes=@{@"AXFocusedApplication":node(@{})};
+    }
+    if (object==testReadElement && CFEqual(key,kAXSelectedTextAttribute)) {
+        testSelectedTextReads++;
         if (testLoseFocusDuringRead) testSystem.attributes=@{@"AXFocusedApplication":node(@{})};
     }
     if (!result) return kAXErrorAttributeUnsupported;
@@ -235,7 +240,32 @@ int main(void) { @autoreleasepool {
     testLoseFocusDuringRead=true;
     assert(ptt_read_text(9001)==NULL);
     puts("PASS a focus change during AXValue reading discards the sample");
+    testLoseFocusDuringRead=false;
+    testSystem.attributes=@{@"AXFocusedApplication":readApp};
+    readElement.attributes=@{@"AXRole":@"AXTextArea",@"AXValue":@"whole document",@"AXSelectedText":@"selected 中文"};
+    char *selection=ptt_read_selection(9001);
+    assert(selection && strcmp(selection,"selected 中文")==0 && testSelectedTextReads==1);
+    ptt_free_string(selection);
+    puts("PASS assistant pre-capture reads only selected text from the saved input");
+    testSystem.attributes=@{@"AXFocusedApplication":node(@{})};
+    assert(ptt_read_selection(9001)==NULL && testSelectedTextReads==1);
+    puts("PASS selection capture never reads a bystander application");
+    testSystem.attributes=@{@"AXFocusedApplication":readApp};
+    readElement.attributes=@{@"AXRole":@"AXTextField",@"AXSubrole":@"AXSecureTextField",@"AXSelectedText":@"secret fixture"};
+    assert(ptt_read_selection(9001)==NULL && testSelectedTextReads==1);
+    puts("PASS selection capture rejects secure controls before reading");
+    readElement.attributes=@{@"AXRole":@"AXTextArea",@"AXValue":@"whole document"};
+    assert(ptt_read_selection(9001)==NULL);
+    readElement.attributes=@{@"AXRole":@"AXTextArea",@"AXSelectedText":@42};
+    assert(ptt_read_selection(9001)==NULL);
+    puts("PASS unsupported selections never fall back to full document contents");
+    readElement.attributes=@{@"AXRole":@"AXTextArea",@"AXSelectedText":@"selection during switch"};
+    testLoseFocusDuringRead=true;
+    assert(ptt_read_selection(9001)==NULL);
+    puts("PASS selection capture discards a value when focus changes during the read");
     testLoseFocusDuringRead=false; testReadElement=nil; [targets removeObjectForKey:@9001];
+    assert(ptt_read_selection(9001)==NULL);
+    puts("PASS expired input targets cannot produce a selection");
     NSString *fixture=[NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"PushToTalk ATDD %@.txt",NSUUID.UUID.UUIDString]];
     assert([@"Test fixture" writeToFile:fixture atomically:YES encoding:NSUTF8StringEncoding error:nil]);
     NSString *document=[NSURL fileURLWithPath:fixture].absoluteString;

@@ -1,0 +1,70 @@
+[
+  {
+    "audio_id": "mvp-disfluency-conservative-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "嗯，我打开 cloud code",
+    "expected_text": "我打开 Claude Code",
+    "user_final_text": "我打开 Claude Code",
+    "category": "disfluency_cleanup",
+    "notes": "Conservative 默认清理句首填充词后继续命中 correction pair",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-disfluency-conservative-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "这个，配置 open ai key",
+    "expected_text": "配置 OpenAI key",
+    "user_final_text": "配置 OpenAI key",
+    "category": "disfluency_cleanup",
+    "notes": "Conservative 清理句首填充短语后继续命中 correction pair",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-disfluency-aggressive-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我我我打开 wind surf",
+    "expected_text": "我打开 Windsurf",
+    "user_final_text": "我打开 Windsurf",
+    "category": "disfluency_cleanup",
+    "notes": "Aggressive 折叠重复字后继续命中 correction pair",
+    "diagnostics": null,
+    "disfluency_mode": "aggressive"
+  },
+  {
+    "audio_id": "mvp-disfluency-aggressive-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我，那个，今天用 cloud code",
+    "expected_text": "今天用 Claude Code",
+    "user_final_text": "今天用 Claude Code",
+    "category": "disfluency_cleanup",
+    "notes": "Aggressive 清理句首 false start 后继续命中 correction pair",
+    "diagnostics": null,
+    "disfluency_mode": "aggressive"
+  },
+  {
+    "audio_id": "mvp-disfluency-guard-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "这个东西很重要",
+    "expected_text": "这个东西很重要",
+    "user_final_text": "这个东西很重要",
+    "category": "false_positive_guard",
+    "notes": "Conservative 不能误删内容词里的“这个”",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-disfluency-guard-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "嗯哼，我打开 cloud code",
+    "expected_text": "嗯哼，我打开 Claude Code",
+    "user_final_text": "嗯哼，我打开 Claude Code",
+    "category": "disfluency_guard",
+    "notes": "Conservative 不能误删多字感叹词，但后续 correction pair 仍可命中",
+    "diagnostics": null
+  }
+]

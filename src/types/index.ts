@@ -28,6 +28,7 @@ export interface DualHotkeyConfig {
 // ASR 配置
 export type AsrProvider = 'qwen' | 'doubao' | 'doubao_ime' | 'siliconflow';
 export type AsrLanguageMode = 'zh' | 'auto';
+export type QwenAsrProfile = 'qwen_audio_3_1' | 'qwen_audio_3' | 'qwen3_legacy';
 
 export interface AsrCredentials {
   qwen_api_key: string;
@@ -49,10 +50,17 @@ export interface AsrSelection {
 export interface AsrConfig {
   credentials: AsrCredentials;
   selection: AsrSelection;
+  qwen_profile: QwenAsrProfile;
   language_mode: AsrLanguageMode;
 }
 
 // LLM 配置
+export type ReasoningEffort = "default" | "none" | "auto" | "low" | "medium" | "high" | "xhigh";
+
+export interface LlmReasoningConfig {
+  effort: ReasoningEffort;
+}
+
 export interface LlmPreset {
   id: string;
   name: string;
@@ -61,6 +69,8 @@ export interface LlmPreset {
   provider_id?: string;
   /** Per-preset model override. Invariant: requires `provider_id` to be set. */
   model?: string;
+  reasoning?: LlmReasoningConfig;
+  custom_body?: unknown;
 }
 
 // LLM 提供商配置
@@ -99,6 +109,8 @@ export interface LlmFeatureConfig {
   // 如果 use_shared=false，完全独立配置
   endpoint?: string;
   api_key?: string;
+  reasoning?: LlmReasoningConfig;
+  custom_body?: unknown;
 }
 
 export interface LlmConfig {
@@ -112,8 +124,50 @@ export interface LlmConfig {
 export interface AssistantConfig {
   enabled: boolean;
   llm: LlmFeatureConfig;
+  qa_llm?: LlmFeatureConfig;
+  text_processing_llm?: LlmFeatureConfig;
   qa_system_prompt: string;               // 问答模式提示词（无选中文本时）
   text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
+  enable_web_search: boolean;
+  web_search_max_loops: number;
+  web_search_in_text_mode: boolean;
+}
+
+export type SearchProviderType = "tavily" | "bocha" | "serper" | "searxng";
+
+export interface SearchProviderConfig {
+  id: string;
+  provider_type: SearchProviderType;
+  display_name: string;
+  enabled: boolean;
+  endpoint?: string | null;
+  api_key?: string | null;
+  basic_auth_username?: string | null;
+  basic_auth_password?: string | null;
+  serper_gl?: string | null;
+  serper_hl?: string | null;
+  serper_tbs?: string | null;
+  searxng_language?: string | null;
+  searxng_time_range?: string | null;
+}
+
+export interface SearchConfig {
+  providers: SearchProviderConfig[];
+  default_provider_id?: string | null;
+  max_results: number;
+  timeout_secs: number;
+  enable_fallback: boolean;
+}
+
+export type DisfluencyMode = "off" | "conservative" | "aggressive";
+
+export interface TnlConfig {
+  enabled: boolean;
+  disfluency_mode: DisfluencyMode;
+  enable_personalization_exact_text_pass: boolean;
+  enable_personalization_syllable_match_pass: boolean;
+  personalization_max_window_tokens: number;
+  personalization_apply_threshold: number;
 }
 
 // 应用配置
@@ -126,21 +180,41 @@ export interface AppConfig {
   enable_dictionary_enhancement: boolean;
   llm_config: LlmConfig;
   assistant_config: AssistantConfig;
+  search_config: SearchConfig;
   learning_config: LearningConfig;
+  tnl_config: TnlConfig;
   close_action: "close" | "minimize" | null;
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;
   enable_mute_other_apps: boolean;
-  dictionary: string[];  // 简化格式："word" 或 "word|auto"
+  dictionary: string[];  // 简化格式："word"、"word|auto" 或 "word|source|category"
   builtin_dictionary_domains: string[];  // 内置词库领域列表
   theme: string;
 }
+
+export type DictionaryCategory =
+  | "person"
+  | "product"
+  | "tool"
+  | "phrase"
+  | "email"
+  | "url"
+  | "code_symbol"
+  | "domain_term"
+  | "generic";
+
+export type LearningSuggestionCategory =
+  | DictionaryCategory
+  | "proper_noun"
+  | "term"
+  | "frequent";
 
 // 词库条目
 export interface DictionaryEntry {
   id: string;
   word: string;
   source: "manual" | "auto";
+  category: DictionaryCategory;
   added_at: number;  // Unix timestamp (seconds)
   frequency: number;
   last_used_at: number | null;  // Unix timestamp (seconds)
@@ -157,6 +231,30 @@ export interface TranscriptionResult {
   mode?: string; // "normal" | "assistant"
   inserted?: boolean;
   tnl_diagnostics?: TnlDiagnostics;
+  citations?: SearchCitation[];
+  tool_calls_summary?: ToolCallSummary[];
+  web_searched?: boolean;
+  search_failed?: boolean;
+}
+
+export interface SearchCitation {
+  index: number;
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+  source?: string | null;
+}
+
+export interface ToolCallSummary {
+  id: string;
+  name: string;
+  query: string;
+  status: string;
+  results_count: number;
+  error?: string | null;
+  elapsed_ms: number;
+  round: number;
 }
 
 export type TnlCandidateRisk = "low" | "medium" | "high";
@@ -224,6 +322,10 @@ export interface HistoryRecord {
   success: boolean;
   errorMessage: string | null;
   tnlDiagnostics?: TnlDiagnostics;
+  citations?: SearchCitation[];
+  toolCallsSummary?: ToolCallSummary[];
+  webSearched?: boolean;
+  searchFailed?: boolean;
 }
 
 // ASR 服务商元数据
@@ -274,6 +376,7 @@ export interface VocabularyLearningSuggestion {
   original: string;
   corrected: string;
   context: string;
-  category: 'proper_noun' | 'term' | 'frequent';
+  category: LearningSuggestionCategory;
   reason: string;
+  already_in_dictionary?: boolean;
 }

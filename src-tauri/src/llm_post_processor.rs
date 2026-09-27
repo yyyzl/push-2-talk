@@ -117,7 +117,19 @@ impl LlmPostProcessor {
             .find(|p| p.id == config.active_preset_id)
         {
             preset.system_prompt.hash(&mut hasher);
+            serde_json::to_string(&preset.reasoning)
+                .unwrap_or_default()
+                .hash(&mut hasher);
+            serde_json::to_string(&preset.custom_body)
+                .unwrap_or_default()
+                .hash(&mut hasher);
         }
+        serde_json::to_string(&config.feature_override.reasoning)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+        serde_json::to_string(&config.feature_override.custom_body)
+            .unwrap_or_default()
+            .hash(&mut hasher);
         hasher.finish()
     }
 
@@ -135,6 +147,22 @@ impl LlmPostProcessor {
             .find(|p| p.id == self.config.active_preset_id)
             .map(|p| p.system_prompt.clone())
             .unwrap_or_else(|| "You are a helpful assistant.".to_string())
+    }
+
+    fn active_chat_options(&self) -> ChatOptions {
+        let preset = self
+            .config
+            .presets
+            .iter()
+            .find(|p| p.id == self.config.active_preset_id);
+        let mut options = ChatOptions::for_polishing();
+        options.reasoning = preset
+            .and_then(|p| p.reasoning.clone())
+            .or_else(|| self.config.feature_override.reasoning.clone());
+        options.custom_body = preset
+            .and_then(|p| p.custom_body.clone())
+            .or_else(|| self.config.feature_override.custom_body.clone());
+        options
     }
 
     fn build_user_message(
@@ -273,6 +301,15 @@ impl LlmPostProcessor {
     pub async fn arbitrate_tnl_candidates(
         &self,
         text: &str,
+        diagnostics: TnlDiagnostics,
+    ) -> Result<TnlCandidateArbitrationResult> {
+        Self::arbitrate_tnl_candidates_with_client(&self.client, text, diagnostics).await
+    }
+
+    /// 使用指定 OpenAI 客户端执行候选仲裁，供普通听写和 AI 助手语音路径复用。
+    pub(crate) async fn arbitrate_tnl_candidates_with_client(
+        client: &OpenAiClient,
+        text: &str,
         mut diagnostics: TnlDiagnostics,
     ) -> Result<TnlCandidateArbitrationResult> {
         let pending_candidates = Self::prepare_candidate_arbitration_candidates(&mut diagnostics);
@@ -288,8 +325,7 @@ impl LlmPostProcessor {
         let user_message =
             Self::build_candidate_arbitration_user_message(text, &pending_candidates);
         let start = Instant::now();
-        let response = self
-            .client
+        let response = client
             .chat_simple(
                 Self::candidate_arbitration_system_prompt(),
                 &user_message,
@@ -364,8 +400,7 @@ impl LlmPostProcessor {
             .filter(|candidate| candidate.decision == TnlCandidateDecision::SkippedLimit)
             .count();
 
-        let mut accepted: Vec<TnlCandidate> = Vec::new();
-        let mut applied_count = 0usize;
+        let mut accepted_indices: Vec<usize> = Vec::new();
         let mut rejected_count = 0usize;
 
         for idx in pending_indices {
@@ -386,8 +421,7 @@ impl LlmPostProcessor {
             if action == "apply" || action == "replace" {
                 candidate.decision = TnlCandidateDecision::AppliedLlm;
                 candidate.evidence.push(reason);
-                accepted.push(candidate.clone());
-                applied_count += 1;
+                accepted_indices.push(idx);
             } else {
                 candidate.decision = TnlCandidateDecision::RejectedLlm;
                 candidate.evidence.push(reason);
@@ -395,7 +429,11 @@ impl LlmPostProcessor {
             }
         }
 
-        accepted.sort_by(|a, b| b.start.cmp(&a.start));
+        let (accepted, overlap_rejected_count) =
+            Self::select_non_overlapping_accepted_candidates(&mut diagnostics, accepted_indices);
+        rejected_count = rejected_count.saturating_add(overlap_rejected_count);
+        let applied_count = accepted.len();
+
         let mut output = text.to_string();
         for candidate in &accepted {
             if candidate.start <= candidate.end && candidate.end <= output.len() {
@@ -418,6 +456,56 @@ impl LlmPostProcessor {
             diagnostics,
             elapsed_ms,
         })
+    }
+
+    fn select_non_overlapping_accepted_candidates(
+        diagnostics: &mut TnlDiagnostics,
+        mut accepted_indices: Vec<usize>,
+    ) -> (Vec<TnlCandidate>, usize) {
+        accepted_indices.sort_by(|a, b| {
+            let candidate_a = &diagnostics.candidates[*a];
+            let candidate_b = &diagnostics.candidates[*b];
+            let len_a = candidate_a.end.saturating_sub(candidate_a.start);
+            let len_b = candidate_b.end.saturating_sub(candidate_b.start);
+
+            len_b
+                .cmp(&len_a)
+                .then_with(|| candidate_b.score.total_cmp(&candidate_a.score))
+                .then_with(|| candidate_a.start.cmp(&candidate_b.start))
+        });
+
+        let mut selected = Vec::new();
+        let mut selected_ranges: Vec<(usize, usize)> = Vec::new();
+        let mut rejected_count = 0usize;
+
+        for idx in accepted_indices {
+            let candidate = &diagnostics.candidates[idx];
+            let start = candidate.start;
+            let end = candidate.end;
+
+            if selected_ranges
+                .iter()
+                .any(|(selected_start, selected_end)| {
+                    Self::spans_overlap(start, end, *selected_start, *selected_end)
+                })
+            {
+                let candidate = &mut diagnostics.candidates[idx];
+                candidate.decision = TnlCandidateDecision::RejectedLlm;
+                candidate.evidence.push("llm_overlap_rejected".to_string());
+                rejected_count = rejected_count.saturating_add(1);
+                continue;
+            }
+
+            selected_ranges.push((start, end));
+            selected.push(diagnostics.candidates[idx].clone());
+        }
+
+        selected.sort_by(|a, b| b.start.cmp(&a.start));
+        (selected, rejected_count)
+    }
+
+    fn spans_overlap(start_a: usize, end_a: usize, start_b: usize, end_b: usize) -> bool {
+        start_a < end_b && start_b < end_a
     }
 
     fn extract_json_object(response: &str) -> Result<&str> {
@@ -488,7 +576,7 @@ impl LlmPostProcessor {
             Self::build_user_message(raw_text, dictionary, enable_dictionary_enhancement);
 
         self.client
-            .chat_simple(&system_prompt, &user_message, ChatOptions::for_polishing())
+            .chat_simple(&system_prompt, &user_message, self.active_chat_options())
             .await
     }
 }
@@ -520,6 +608,8 @@ mod tests {
                 system_prompt: "You are a test assistant.".to_string(),
                 provider_id: None,
                 model: None,
+                reasoning: None,
+                custom_body: None,
             }],
             active_preset_id: "test".to_string(),
         }
@@ -650,6 +740,47 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_candidate_arbitration_response_rejects_overlapping_accepts() {
+        let diagnostics = crate::tnl::TnlDiagnostics {
+            candidates: vec![
+                pending_candidate(
+                    "candidate-0-10-long".to_string(),
+                    "cloud code",
+                    "Claude Code",
+                    0,
+                    10,
+                ),
+                pending_candidate("candidate-0-5-short".to_string(), "cloud", "Claude", 0, 5),
+            ],
+            arbitration: None,
+        };
+
+        let result = LlmPostProcessor::apply_candidate_arbitration_response(
+            "cloud code",
+            diagnostics,
+            r#"{"decisions":[{"id":"candidate-0-10-long","action":"apply","reason":"短语更完整"},{"id":"candidate-0-5-short","action":"apply","reason":"单词也相似"}]}"#,
+            18,
+        )
+        .expect("仲裁 JSON 应可解析");
+
+        assert_eq!(result.text, "Claude Code");
+        assert_eq!(
+            result.diagnostics.candidates[0].decision,
+            crate::tnl::TnlCandidateDecision::AppliedLlm
+        );
+        assert_eq!(
+            result.diagnostics.candidates[1].decision,
+            crate::tnl::TnlCandidateDecision::RejectedLlm
+        );
+        assert!(result.diagnostics.candidates[1]
+            .evidence
+            .contains(&"llm_overlap_rejected".to_string()));
+        let arbitration = result.diagnostics.arbitration.unwrap();
+        assert_eq!(arbitration.applied_count, 1);
+        assert_eq!(arbitration.rejected_count, 1);
+    }
+
+    #[test]
     fn test_prepare_candidate_arbitration_candidates_respects_limit() {
         let mut diagnostics = crate::tnl::TnlDiagnostics {
             candidates: (0..7)
@@ -742,6 +873,8 @@ mod tests {
                     system_prompt: "default prompt".to_string(),
                     provider_id: None,
                     model: None,
+                    reasoning: None,
+                    custom_body: None,
                 },
                 LlmPreset {
                     id: "p-override".to_string(),
@@ -749,6 +882,8 @@ mod tests {
                     system_prompt: "override prompt".to_string(),
                     provider_id: Some("prov-strong".to_string()),
                     model: None,
+                    reasoning: None,
+                    custom_body: None,
                 },
             ],
             active_preset_id: "p-default".to_string(),

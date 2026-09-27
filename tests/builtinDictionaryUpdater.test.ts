@@ -10,7 +10,7 @@ for (const [label, newline] of [["LF", "\n"], ["CRLF", "\r\n"]]) {
     assert.match(source, /setup\(move \|app\|/);
     assert.match(source, /builtin_hotwords_raw/);
     const startAppBlock = source.match(
-      /async fn start_app[\s\S]*?\r?\n}\r?\n\r?\n#\[tauri::command\]\r?\nasync fn stop_app/
+      /async fn start_app[\s\S]*?\r?\n}\r?\n\r?\n#\[tauri::command\]/
     );
     assert.ok(startAppBlock, "应能匹配到 start_app 函数体");
     assert.doesNotMatch(

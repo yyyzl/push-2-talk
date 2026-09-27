@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { SourceBadge } from "../components/learning/SourceBadge";
-import type { DictionaryEntry } from "../types";
+import type { DictionaryCategory, DictionaryEntry } from "../types";
 import {
   BUILTIN_DICTIONARY_DOMAINS,
   BUILTIN_DICTIONARY_LIMIT,
@@ -10,6 +10,7 @@ import {
   getBuiltinWordsForDomains,
   setBuiltinDomainsSnapshot,
 } from "../utils/builtinDictionary";
+import { DICTIONARY_CATEGORY_OPTIONS } from "../utils/dictionaryUtils";
 
 export type DictionaryPageProps = {
   dictionary: DictionaryEntry[];
@@ -26,6 +27,7 @@ export type DictionaryPageProps = {
   handleSaveEdit: () => void;
   handleCancelEdit: () => void;
   handleBatchDelete: (ids: string[]) => void;
+  handleUpdateCategory: (word: string, category: DictionaryCategory) => void;
   builtinDictionaryDomains: string[];
   setBuiltinDictionaryDomains: (next: string[]) => void;
   builtinDictionaryVersion: number;
@@ -50,6 +52,7 @@ export function DictionaryPage({
   handleSaveEdit,
   handleCancelEdit,
   handleBatchDelete,
+  handleUpdateCategory,
   builtinDictionaryDomains,
   setBuiltinDictionaryDomains,
   builtinDictionaryVersion,
@@ -373,6 +376,26 @@ export function DictionaryPage({
                       {entry.word}
                     </span>
                     <SourceBadge source={entry.source} />
+                    <select
+                      value={entry.category}
+                      disabled={isRunning}
+                      aria-label={`${entry.word} 分类`}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        handleUpdateCategory(
+                          entry.word,
+                          e.target.value as DictionaryCategory,
+                        );
+                      }}
+                      className="max-w-[6.5rem] rounded-full border border-stone-200 bg-stone-50 px-2 py-0.5 text-[10px] font-semibold text-stone-500 outline-none transition-colors hover:border-stone-300 disabled:opacity-50"
+                    >
+                      {DICTIONARY_CATEGORY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                       <button
                         onClick={(e) => {

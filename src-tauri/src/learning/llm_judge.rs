@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tokio::time::{timeout, Duration};
 
+use crate::dictionary_utils::normalize_category;
 use crate::openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
 
 /// LLM 判断结果
@@ -56,10 +57,16 @@ impl LlmJudge {
 3. 如果不能联动，返回修正后的单词本身
 4. 判断这个词/短语是否值得加入词库
 
-只有以下类型的词汇值得学习：
-1. 专有名词（人名、地名、品牌、机构名）→ category: "proper_noun"
-2. 专业术语（技术、医学、法律等领域）→ category: "term"
-3. 高频使用的特定词汇 → category: "frequent"
+只有以下类型的词汇值得学习，并必须从完整词库分类中选择 category：
+1. 人名 / 个人称呼 → "person"
+2. 产品、品牌、机构、项目名 → "product"
+3. 工具、软件、框架、命令行工具 → "tool"
+4. 固定短语或常用搭配 → "phrase"
+5. 邮箱地址 → "email"
+6. URL / 域名 / 链接 → "url"
+7. 代码符号、文件名、API、驼峰词、下划线词、含连字符版本词 → "code_symbol"
+8. 专业领域术语 → "domain_term"
+9. 高频但难归类的用户词 → "generic"
 
 不值得学习的词汇：
 - 常见人名（如张伟、李明）
@@ -78,10 +85,10 @@ impl LlmJudge {
 
 分析：
 - "claude" 和后面的 "code" 可以联动成 "claude code"
-- "claude code" 是一个技术工具名称，属于专业术语
+- "claude code" 是一个技术工具名称，属于工具
 
 输出：
-{"should_learn": true, "word": "claude code", "category": "term", "reason": "AI 编程工具名称"}
+{"should_learn": true, "word": "claude code", "category": "tool", "reason": "AI 编程工具名称"}
 
 ---
 
@@ -96,7 +103,7 @@ impl LlmJudge {
 - "人工智能大模型" 是一个专业术语
 
 输出：
-{"should_learn": true, "word": "人工智能大模型", "category": "term", "reason": "AI 领域专业术语"}
+{"should_learn": true, "word": "人工智能大模型", "category": "domain_term", "reason": "AI 领域专业术语"}
 
 ---
 
@@ -112,11 +119,26 @@ impl LlmJudge {
 - "李娜" 是人名，值得学习
 
 输出：
-{"should_learn": true, "word": "李娜", "category": "proper_noun", "reason": "人名"}
+{"should_learn": true, "word": "李娜", "category": "person", "reason": "人名"}
 
 ---
 
-### 案例 4：不应该学习（常见词）
+### 案例 4：代码符号
+输入：
+- 原文："gpt 5.3 codex"
+- 修正："GPT-5.3-Codex"
+- 上下文："请切换到 GPT-5.3-Codex 模型"
+
+分析：
+- "GPT-5.3-Codex" 是含连字符和版本号的技术符号
+- 应保留大小写和符号形式
+
+输出：
+{"should_learn": true, "word": "GPT-5.3-Codex", "category": "code_symbol", "reason": "技术模型代号"}
+
+---
+
+### 案例 5：不应该学习（常见词）
 输入：
 - 原文："张为"
 - 修正："张伟"
@@ -127,12 +149,12 @@ impl LlmJudge {
 - 不值得加入词库
 
 输出：
-{"should_learn": false, "word": "张伟", "category": "proper_noun", "reason": "常见人名，ASR 通常能正确识别"}
+{"should_learn": false, "word": "张伟", "category": "person", "reason": "常见人名，ASR 通常能正确识别"}
 
 ---
 
 返回 JSON 格式（严格遵循）：
-{"should_learn": true/false, "word": "建议添加的词汇或短语", "category": "proper_noun/term/frequent", "reason": "简短理由"}"#;
+{"should_learn": true/false, "word": "建议添加的词汇或短语", "category": "person/product/tool/phrase/email/url/code_symbol/domain_term/generic", "reason": "简短理由"}"#;
 
         let user_prompt = format!(
             "原文：\"{}\"\n修正：\"{}\"\n上下文：\"{}\"\n\n请判断：\n1. 修正后的词能否和上下文联动成更有意义的短语？\n2. 这个词/短语是否值得加入词库？",
@@ -146,6 +168,8 @@ impl LlmJudge {
             // 256 was exhausted before any JSON on the tested DeepSeek model.
             max_tokens: 1024,
             temperature: 0.1,
+            reasoning: None,
+            custom_body: None,
         };
 
         // 5 秒超时（适应更长的 Few-Shot prompt）
@@ -198,13 +222,10 @@ fn parse_llm_response(text: &str) -> Result<LlmJudgeResult> {
 /// 检查：
 /// 1. 如果 should_learn=true，词汇不能为空
 /// 2. 词汇长度不超过 64 字符
-/// 3. 分类为有效值
+/// 3. 分类为有效词库 category（兼容旧分类别名）
 fn sanitize_result(mut result: LlmJudgeResult) -> Result<LlmJudgeResult> {
     // 最大词汇长度
     const MAX_WORD_LEN: usize = 64;
-
-    // 有效分类列表
-    const VALID_CATEGORIES: [&str; 3] = ["proper_noun", "term", "frequent"];
 
     // 1. 检查词汇（仅在 should_learn=true 时强制非空）
     let word = result.word.trim();
@@ -225,12 +246,17 @@ fn sanitize_result(mut result: LlmJudgeResult) -> Result<LlmJudgeResult> {
     }
 
     // 3. 验证分类（仅在 should_learn=true 时检查）
-    if result.should_learn && !VALID_CATEGORIES.contains(&result.category.as_str()) {
-        tracing::debug!(
-            "Learning: LLM 返回无效分类 '{}', 默认为 'term'",
-            result.category
-        );
-        result.category = "term".to_string();
+    if result.should_learn {
+        let original_category = result.category.clone();
+        result.category = normalize_category(Some(&original_category))
+            .unwrap_or_else(|| {
+                tracing::debug!(
+                    "Learning: LLM 返回无效分类 '{}', 默认为 'domain_term'",
+                    original_category
+                );
+                "domain_term"
+            })
+            .to_string();
     }
 
     // 4. 限制 reason 长度（防止过长）
@@ -245,4 +271,39 @@ fn sanitize_result(mut result: LlmJudgeResult) -> Result<LlmJudgeResult> {
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_dictionary_category() {
+        let result = parse_llm_response(
+            r#"{"should_learn":true,"word":"GPT-5.3-Codex","category":"code_symbol","reason":"技术模型代号"}"#,
+        )
+        .expect("parse result");
+
+        assert_eq!(result.category, "code_symbol");
+    }
+
+    #[test]
+    fn normalizes_legacy_learning_category() {
+        let result = parse_llm_response(
+            r#"{"should_learn":true,"word":"Claude Code","category":"term","reason":"AI 工具"}"#,
+        )
+        .expect("parse result");
+
+        assert_eq!(result.category, "domain_term");
+    }
+
+    #[test]
+    fn invalid_category_falls_back_to_domain_term() {
+        let result = parse_llm_response(
+            r#"{"should_learn":true,"word":"Claude Code","category":"unknown","reason":"AI 工具"}"#,
+        )
+        .expect("parse result");
+
+        assert_eq!(result.category, "domain_term");
+    }
 }

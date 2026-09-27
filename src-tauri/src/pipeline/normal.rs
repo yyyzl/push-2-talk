@@ -15,6 +15,12 @@ use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
+use crate::personalization::{
+    apply_default_personalization_with_config_and_spans,
+    personalization_candidates_to_tnl_diagnostics,
+    record_personalization_arbitration_feedback_from_tnl, write_runtime_diagnostic,
+    ConversionResult, PersonalizationEngineConfig,
+};
 use crate::text_inserter::TextInserter;
 use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 
@@ -81,31 +87,47 @@ impl NormalPipeline {
         );
 
         // 2. TNL 技术规范化（如果启用）
-        let (text, tnl_changed, tnl_diagnostics) = {
-            // 从配置加载 TNL 开关
-            let tnl_enabled = AppConfig::load()
-                .map(|(c, _)| c.tnl_config.enabled)
-                .unwrap_or(true);
-
-            if tnl_enabled {
-                let engine = TnlEngine::new(dictionary.clone());
-                let tnl_result = engine.normalize(&asr_text);
-                if tnl_result.changed {
-                    tracing::info!(
-                        "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
-                        asr_text,
-                        tnl_result.text,
-                        tnl_result.elapsed_us,
-                        tnl_result.applied.len()
-                    );
-                }
-                (tnl_result.text, tnl_result.changed, tnl_result.diagnostics)
-            } else {
-                (asr_text.clone(), false, None)
+        let tnl_config = AppConfig::load()
+            .map(|(c, _)| c.tnl_config)
+            .unwrap_or_default();
+        let tnl_enabled = tnl_config.enabled;
+        let (text, tnl_changed, tnl_diagnostics, technical_spans) = if tnl_enabled {
+            let engine =
+                TnlEngine::new_with_disfluency_mode(dictionary.clone(), tnl_config.disfluency_mode);
+            let tnl_result = engine.normalize(&asr_text);
+            if tnl_result.changed {
+                tracing::info!(
+                    "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
+                    asr_text,
+                    tnl_result.text,
+                    tnl_result.elapsed_us,
+                    tnl_result.applied.len()
+                );
             }
+            (
+                tnl_result.text,
+                tnl_result.changed,
+                tnl_result.diagnostics,
+                tnl_result.technical_spans,
+            )
+        } else {
+            (asr_text.clone(), false, None, Vec::new())
         };
 
-        // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL 后文本（text）
+        // 2.5. 本地个性化二次解码（MVP：仅当 correction_pairs.json 存在时启用）
+        let (text, personalization_changed, personalization_diagnostics) = if tnl_enabled {
+            Self::maybe_apply_personalization(
+                text,
+                PersonalizationEngineConfig::from_tnl_config(&tnl_config),
+                &technical_spans,
+            )
+        } else {
+            (text, false, None)
+        };
+        let tnl_diagnostics =
+            Self::merge_tnl_diagnostics(tnl_diagnostics, personalization_diagnostics);
+
+        // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL/个性化后的文本（text）
 
         // 3. 可选候选仲裁（绑定词库增强开关，不改变全文润色逻辑）
         let pre_arbitration_text = text.clone();
@@ -117,6 +139,7 @@ impl NormalPipeline {
         )
         .await;
         let candidate_changed = text != pre_arbitration_text;
+        Self::record_personalization_arbitration_feedback(&tnl_diagnostics);
 
         // 4. 可选 LLM 后处理
         let (final_text, original_text, llm_time_ms) = Self::maybe_polish(
@@ -167,7 +190,7 @@ impl NormalPipeline {
         // - 无 LLM 处理且 TNL 未改变文本 → 不显示双栏（original_text = None）
         let history_original = if original_text.is_some() {
             original_text
-        } else if tnl_changed || candidate_changed {
+        } else if tnl_changed || personalization_changed || candidate_changed {
             Some(asr_text)
         } else {
             None
@@ -267,6 +290,103 @@ impl NormalPipeline {
                     Some(CANDIDATE_ARBITRATION_TIMEOUT_MS),
                 )
             }
+        }
+    }
+
+    fn record_personalization_arbitration_feedback(diagnostics: &Option<TnlDiagnostics>) {
+        let Some(diagnostics) = diagnostics else {
+            return;
+        };
+
+        match record_personalization_arbitration_feedback_from_tnl(diagnostics) {
+            Ok(updated_count) if updated_count > 0 => {
+                tracing::info!(
+                    "NormalPipeline: 个性化 LLM 仲裁反馈已写入，更新纠错对: {}",
+                    updated_count
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("NormalPipeline: 写入个性化 LLM 仲裁反馈失败，已忽略: {}", e);
+            }
+        }
+    }
+
+    fn merge_tnl_diagnostics(
+        existing: Option<TnlDiagnostics>,
+        personalization: Option<TnlDiagnostics>,
+    ) -> Option<TnlDiagnostics> {
+        match (existing, personalization) {
+            (None, None) => None,
+            (Some(diagnostics), None) | (None, Some(diagnostics)) => Some(diagnostics),
+            (Some(mut existing), Some(personalization)) => {
+                existing.candidates.extend(personalization.candidates);
+                if existing.arbitration.is_none() {
+                    existing.arbitration = personalization.arbitration;
+                }
+                Some(existing)
+            }
+        }
+    }
+
+    fn maybe_apply_personalization(
+        text: String,
+        config: PersonalizationEngineConfig,
+        technical_spans: &[crate::tnl::Span],
+    ) -> (String, bool, Option<TnlDiagnostics>) {
+        let source_text = text.clone();
+        let result = match apply_default_personalization_with_config_and_spans(
+            text,
+            config,
+            technical_spans,
+        ) {
+            Ok(Some(result)) => result,
+            Ok(None) => return (source_text, false, None),
+            Err(e) => {
+                tracing::warn!("NormalPipeline: 加载个性化纠错对失败，保守跳过: {}", e);
+                return (source_text, false, None);
+            }
+        };
+
+        if let Err(e) = write_runtime_diagnostic(&source_text, &result) {
+            tracing::warn!("NormalPipeline: 写入个性化诊断失败，已忽略: {}", e);
+        }
+        Self::log_personalization_result(&source_text, &result.conversion);
+
+        let diagnostics = personalization_candidates_to_tnl_diagnostics(&result.conversion);
+        if let Some(diagnostics) = &diagnostics {
+            if diagnostics.has_pending_llm() {
+                tracing::info!(
+                    "NormalPipeline: 个性化候选进入 LLM 仲裁，候选数: {}",
+                    diagnostics.pending_llm_count()
+                );
+            }
+        }
+
+        (result.text, result.changed, diagnostics)
+    }
+
+    #[cfg(test)]
+    fn apply_personalization_with_store(
+        text: String,
+        store: crate::personalization::CorrectionPairStore,
+    ) -> (String, bool) {
+        let source_text = text.clone();
+        let result = crate::personalization::apply_personalization_with_store(text, store);
+        Self::log_personalization_result(&source_text, &result.conversion);
+
+        (result.text, result.changed)
+    }
+
+    fn log_personalization_result(source_text: &str, result: &ConversionResult) {
+        if result.changed {
+            tracing::info!(
+                "NormalPipeline: 个性化二次解码: {} → {} (应用: {}, 候选: {})",
+                source_text,
+                result.text,
+                result.diagnostics.applied.len(),
+                result.diagnostics.candidates.len()
+            );
         }
     }
 
@@ -371,6 +491,7 @@ impl Default for NormalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::personalization::{CorrectionPair, CorrectionPairStore};
 
     #[test]
     fn empty_transcript_is_rejected_before_processing_or_insertion() {
@@ -396,5 +517,82 @@ mod tests {
     fn test_pipeline_creation() {
         let _pipeline = NormalPipeline::new();
         // Pipeline 现在是无状态的，只需要能创建即可
+    }
+
+    #[test]
+    fn test_apply_personalization_with_store_changes_known_pair() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed) = NormalPipeline::apply_personalization_with_store(
+            "我打开 克劳德 code".to_string(),
+            store,
+        );
+
+        assert!(changed);
+        assert_eq!(text, "我打开 Claude Code");
+    }
+
+    #[test]
+    fn test_apply_personalization_with_store_keeps_unrelated_text() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed) = NormalPipeline::apply_personalization_with_store(
+            "I use cloud storage".to_string(),
+            store,
+        );
+
+        assert!(!changed);
+        assert_eq!(text, "I use cloud storage");
+    }
+
+    #[test]
+    fn test_merge_tnl_diagnostics_keeps_existing_and_personalization_candidates() {
+        let existing = TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "tnl-0".to_string(),
+                original: "Cruiser".to_string(),
+                target: "Cursor".to_string(),
+                start: 0,
+                end: 7,
+                score: 0.72,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::DictionaryPhonetic,
+                evidence: vec!["tnl".to_string()],
+                decision: TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+        let personalization = TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "personalization-8-18-0".to_string(),
+                original: "cloud code".to_string(),
+                target: "Claude Code".to_string(),
+                start: 8,
+                end: 18,
+                score: 0.80,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair,
+                evidence: vec!["pair_id:claude-code".to_string()],
+                decision: TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+
+        let merged = NormalPipeline::merge_tnl_diagnostics(Some(existing), Some(personalization))
+            .expect("merged diagnostics");
+
+        assert_eq!(merged.candidates.len(), 2);
+        assert_eq!(merged.pending_llm_count(), 2);
+        assert_eq!(
+            merged.candidates[1].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
     }
 }

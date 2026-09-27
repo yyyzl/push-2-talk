@@ -1,5 +1,18 @@
 import { desktopOs, platformKeyLabels } from "../utils/platform";
-import type { HotkeyKey, LlmPreset, LlmConfig, AssistantConfig, AsrProvider, AsrProviderMeta, LearningConfig, SharedLlmConfig } from '../types';
+import type {
+  AssistantConfig,
+  AsrProvider,
+  AsrProviderMeta,
+  QwenAsrProfile,
+  DisfluencyMode,
+  HotkeyKey,
+  LearningConfig,
+  LlmConfig,
+  LlmPreset,
+  SearchConfig,
+  SharedLlmConfig,
+  TnlConfig,
+} from '../types';
 
 // 按键显示名称映射
 export const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
@@ -84,8 +97,12 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
     provider_id: undefined,
     model: undefined,
     endpoint: undefined,
-    api_key: undefined
+    api_key: undefined,
+    reasoning: undefined,
+    custom_body: undefined
   },
+  qa_llm: undefined,
+  text_processing_llm: undefined,
   qa_system_prompt: `你是一个智能语音助手。用户会通过语音向你提问，你需要：
 1. 理解用户的问题
 2. 给出简洁、准确、有用的回答
@@ -94,23 +111,109 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
 - 回答要简洁明了，适合直接粘贴使用
 - 避免过多的解释和废话
 - 如果是代码相关问题，直接给出代码`,
-  text_processing_system_prompt: `你是一个文本处理助手。用户会选中一段文本，然后通过语音告诉你要如何处理这段文本。
-你的任务：
-1. 理解用户的语音指令
-2. 对选中的文本执行相应操作（润色、翻译、总结、改写等）
-3. 直接输出处理后的文本
-注意：
-- 只输出处理后的结果，不要输出任何解释
-- 保持原文的格式和结构（除非用户要求改变）
-- 如果指令不明确，按最合理的方式处理`
+  text_processing_system_prompt: `你是一个选区上下文助手。用户会选中一段文本，然后用语音或文字提出问题/指令。你需要：
+1. 始终先阅读【本轮选中文本（主要上下文）】，把它作为本轮回答的主要依据。
+2. 判断用户意图：是编辑类任务，还是基于选中文本回答问题、解释、分析、提建议。
+3. 编辑类任务（润色、翻译、总结、改写、扩写、修复语法等）：直接输出处理后的文本，不要添加“这是修改后的版本”等前缀。
+4. 问答/解释/分析类任务：围绕选中文本给出清晰回答，可以引用关键点，但不要脱离选区泛泛回答。
+5. 保持原文格式和结构，除非用户明确要求改变。
+
+如果指令不明确，优先根据选中文本给出最可能有用的处理结果；确实无法判断时，只提出一个简短澄清问题。`,
+  enable_web_search: false,
+  web_search_max_loops: 3,
+  web_search_in_text_mode: false
 };
 
+export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
+  providers: [],
+  default_provider_id: null,
+  max_results: 5,
+  timeout_secs: 6,
+  enable_fallback: true
+};
+
+export const DEFAULT_TNL_CONFIG: TnlConfig = {
+  enabled: true,
+  disfluency_mode: "conservative",
+  enable_personalization_exact_text_pass: true,
+  enable_personalization_syllable_match_pass: true,
+  personalization_max_window_tokens: 5,
+  personalization_apply_threshold: 0.88
+};
+
+const isDisfluencyMode = (mode: unknown): mode is DisfluencyMode =>
+  mode === "off" || mode === "conservative" || mode === "aggressive";
+
+export function normalizeTnlConfig(
+  tnlConfig: Partial<TnlConfig> | null | undefined,
+): TnlConfig {
+  if (!tnlConfig) return DEFAULT_TNL_CONFIG;
+
+  const maxWindowTokens = Number(tnlConfig.personalization_max_window_tokens);
+  const applyThreshold = Number(tnlConfig.personalization_apply_threshold);
+
+  return {
+    ...DEFAULT_TNL_CONFIG,
+    ...tnlConfig,
+    disfluency_mode: isDisfluencyMode(tnlConfig.disfluency_mode)
+      ? tnlConfig.disfluency_mode
+      : DEFAULT_TNL_CONFIG.disfluency_mode,
+    personalization_max_window_tokens:
+      Number.isFinite(maxWindowTokens) && maxWindowTokens > 0
+        ? maxWindowTokens
+        : DEFAULT_TNL_CONFIG.personalization_max_window_tokens,
+    personalization_apply_threshold:
+      Number.isFinite(applyThreshold) && applyThreshold > 0 && applyThreshold <= 1
+        ? applyThreshold
+        : DEFAULT_TNL_CONFIG.personalization_apply_threshold,
+  };
+}
+
 // ASR 服务商元数据
+export const DEFAULT_QWEN_ASR_PROFILE: QwenAsrProfile = 'qwen_audio_3_1';
+
+export const QWEN_ASR_PROFILES: Record<
+  QwenAsrProfile,
+  {
+    name: string;
+    httpModel: string;
+    realtimeModel: string;
+    description: string;
+  }
+> = {
+  qwen_audio_3_1: {
+    name: 'Qwen Audio 3.1 ASR（默认）',
+    httpModel: 'qwen-audio-3.1-asr-flash',
+    realtimeModel: 'qwen-audio-3.1-asr-flash-streaming',
+    description: '新版多语种与方言识别，支持热词增强',
+  },
+  qwen_audio_3: {
+    name: 'Qwen Audio 3.0 ASR',
+    httpModel: 'qwen-audio-3.0-asr-flash',
+    realtimeModel: 'qwen-audio-3.0-asr-flash-streaming',
+    description: '多语种与中文方言能力更强，支持新版即时热词协议',
+  },
+  qwen3_legacy: {
+    name: 'Qwen3 ASR Flash（旧版兼容）',
+    httpModel: 'qwen3-asr-flash',
+    realtimeModel: 'qwen3-asr-flash-realtime',
+    description: '保留原有 HTTP 与 Realtime 协议，便于兼容旧环境',
+  },
+};
+
+/** 保留明确选择的版本，并兼容修复前落盘的 3.0 名称。 */
+export function normalizeQwenAsrProfile(profile: unknown): QwenAsrProfile {
+  if (profile === 'qwen_audio3') return 'qwen_audio_3';
+  return typeof profile === 'string' && Object.prototype.hasOwnProperty.call(QWEN_ASR_PROFILES, profile)
+    ? profile as QwenAsrProfile
+    : DEFAULT_QWEN_ASR_PROFILE;
+}
+
 export const ASR_PROVIDERS: Record<AsrProvider, AsrProviderMeta> = {
   qwen: {
     name: '阿里千问',
-    model: 'qwen3-asr-flash',
-    docsUrl: 'https://help.aliyun.com/zh/dashscope/developer-reference/quick-start',
+    model: QWEN_ASR_PROFILES[DEFAULT_QWEN_ASR_PROFILE].httpModel,
+    docsUrl: 'https://help.aliyun.com/zh/model-studio/asr-model',
   },
   doubao: {
     name: '豆包',
@@ -147,7 +250,7 @@ export const VALID_ASR_PROVIDERS: AsrProvider[] = ['qwen', 'doubao', 'doubao_ime
 // 默认 ASR 缓存
 export const DEFAULT_ASR_CACHE = {
   active_provider: 'doubao_ime' as AsrProvider,
-  qwen: { api_key: '' },
+  qwen: { api_key: '', profile: DEFAULT_QWEN_ASR_PROFILE },
   doubao: { app_id: '', access_token: '' },
   doubao_ime: { device_id: '', token: '', cdid: '' },
   siliconflow: { api_key: '' }

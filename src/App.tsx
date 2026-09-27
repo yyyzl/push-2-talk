@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   CheckCircle2,
@@ -13,6 +13,8 @@ import type {
   DualHotkeyConfig,
   LearningConfig,
   LlmConfig,
+  SearchConfig,
+  TnlConfig,
   UsageStats,
 } from "./types";
 import type { AppPage } from "./pages/types";
@@ -21,6 +23,10 @@ import {
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  DEFAULT_QWEN_ASR_PROFILE,
+  DEFAULT_SEARCH_CONFIG,
+  DEFAULT_TNL_CONFIG,
+  normalizeTnlConfig,
 } from "./constants";
 import { loadUsageStats } from "./utils";
 import { desktopOs } from "./utils/platform";
@@ -54,6 +60,7 @@ import {
   scheduleSyncWindowRelease,
   type ConfigSyncWindowSnapshot,
 } from "./utils/configSyncWindow";
+import { buildRecentHotwordEntries } from "./utils/recentHotwords";
 
 /** 哨兵值：外部配置更新时设置，applyRuntimeConfig effect 据此跳过并重置基准 */
 const EXTERNAL_UPDATE_SENTINEL = "__EXTERNAL_CONFIG_UPDATE__";
@@ -80,6 +87,7 @@ function App() {
       enable_fallback: false,
       fallback_provider: null,
     },
+    qwen_profile: DEFAULT_QWEN_ASR_PROFILE,
     language_mode: 'auto',
   });
 
@@ -87,6 +95,7 @@ function App() {
   const [enablePostProcess, setEnablePostProcess] = useState(false);
   const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(false);
   const [learningConfig, setLearningConfig] = useState<LearningConfig>(DEFAULT_LEARNING_CONFIG);
+  const [tnlConfig, setTnlConfig] = useState<TnlConfig>(DEFAULT_TNL_CONFIG);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
@@ -115,6 +124,7 @@ function App() {
     handleSaveEdit,
     handleCancelEdit,
     handleBatchDelete,
+    handleUpdateCategory,
   } = useDictionary();
   const [builtinDictionaryDomains, setBuiltinDictionaryDomains] = useState<string[]>([]);
   const [builtinDictionaryVersion, setBuiltinDictionaryVersion] = useState(0);
@@ -126,6 +136,10 @@ function App() {
     handleCopyText,
     handleClearHistory,
   } = useHistoryController();
+  const recentHotwordEntries = useMemo(
+    () => buildRecentHotwordEntries(history),
+    [history],
+  );
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   // R8.2 (v4): cross-page focus state — set by ModelsPage callback, consumed by LlmPage useEffect
   // v4 simplification: no "action" field — model selector is inline so just scrolling+activating is enough
@@ -158,6 +172,7 @@ function App() {
   // hotkeyConfig 已迁移到 dualHotkeyConfig，不再单独使用
   const [dualHotkeyConfig, setDualHotkeyConfig] = useState<DualHotkeyConfig>(DEFAULT_DUAL_HOTKEY_CONFIG);
   const [assistantConfig, setAssistantConfig] = useState<AssistantConfig>(DEFAULT_ASSISTANT_CONFIG);
+  const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
 
   // 创建 ref 用于在 useHotkeyRecording 中访问 wrappedSaveImmediately
   const saveImmediatelyRef = useRef<((overrides?: ConfigOverrides) => Promise<void>) | null>(null);
@@ -307,7 +322,9 @@ function App() {
     setEnableDictionaryEnhancement,
     setLlmConfig,
     setAssistantConfig,
+    setSearchConfig,
     setLearningConfig,
+    setTnlConfig,
     setEnableMuteOtherApps,
     setTheme,
     setCloseAction,
@@ -368,13 +385,17 @@ function App() {
     setLlmConfig,
     assistantConfig,
     setAssistantConfig,
+    searchConfig,
+    setSearchConfig,
     asrConfig,
     dualHotkeyConfig,
     setDualHotkeyConfig,
     learningConfig,
     setLearningConfig,
+    setTnlConfig,
     dictionary,
     setDictionary,
+    recentHotwordEntries,
     builtinDictionaryDomains,
     setBuiltinDictionaryDomains,
     status,
@@ -434,6 +455,9 @@ function App() {
     theme?: string;
     enableMuteOtherApps?: boolean;
     closeAction?: "close" | "minimize" | null;
+    tnlConfig?: {
+      disfluencyMode?: TnlConfig["disfluency_mode"];
+    };
   }) => {
     cancelAutoSaveDebounce();
     const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
@@ -447,6 +471,7 @@ function App() {
     const previousTheme = theme;
     const previousEnableMuteOtherApps = enableMuteOtherApps;
     const previousLearningConfig = learningConfig;
+    const previousTnlConfig = tnlConfig;
     const previousCloseAction = closeAction;
 
     if (typeof patch.theme === "string") {
@@ -461,6 +486,12 @@ function App() {
     }
     if (patch.closeAction !== undefined) {
       setCloseAction(patch.closeAction);
+    }
+    if (patch.tnlConfig?.disfluencyMode) {
+      setTnlConfig(normalizeTnlConfig({
+        ...tnlConfig,
+        disfluency_mode: patch.tnlConfig.disfluencyMode,
+      }));
     }
 
     setSyncStatus("syncing");
@@ -484,6 +515,9 @@ function App() {
       if (patch.closeAction !== undefined) {
         setCloseAction(previousCloseAction);
       }
+      if (patch.tnlConfig?.disfluencyMode) {
+        setTnlConfig(previousTnlConfig);
+      }
 
       setSyncStatus("error");
       syncTimeoutRef.current = window.setTimeout(() => {
@@ -497,11 +531,13 @@ function App() {
     theme,
     enableMuteOtherApps,
     learningConfig,
+    tnlConfig,
     closeAction,
     patchConfigFields,
     setTheme,
     setEnableMuteOtherApps,
     setLearningConfig,
+    setTnlConfig,
     setCloseAction,
     cancelAutoSaveDebounce,
     releaseConfigSyncWindow,
@@ -598,8 +634,10 @@ function App() {
       enableDictionaryEnhancement,
       llmConfig,
       assistantConfig,
+      searchConfig,
       enableMuteOtherApps,
       dictionary,
+      recentHotwordEntries,
       builtinDictionaryDomains,
     });
 
@@ -635,7 +673,7 @@ function App() {
       }
       // 失败时不更新基准，下次相同配置会重试
     });
-  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
+  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, searchConfig, enableMuteOtherApps, dictionary, recentHotwordEntries, builtinDictionaryDomains, applyRuntimeConfig]);
 
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
@@ -670,7 +708,26 @@ function App() {
     autoSaveTimerRef.current = window.setTimeout(() => {
       if (statusRef.current === "recording" || statusRef.current === "transcribing") return;
       console.log("[App.tsx] debounce 到期，执行 handleSaveConfig");
-      void handleSaveConfigRef.current();
+      if (syncTimeoutRef.current) {
+        window.clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      setSyncStatus("syncing");
+      void (async () => {
+        try {
+          await handleSaveConfigRef.current();
+          setSyncStatus("success");
+          syncTimeoutRef.current = window.setTimeout(() => {
+            setSyncStatus("idle");
+          }, 1500);
+        } catch (err) {
+          console.error("[App.tsx] debounce 保存配置失败:", err);
+          setSyncStatus("error");
+          syncTimeoutRef.current = window.setTimeout(() => {
+            setSyncStatus("idle");
+          }, 2000);
+        }
+      })();
     }, 900);
 
     return () => {
@@ -683,6 +740,7 @@ function App() {
     enableDictionaryEnhancement,
     llmConfig,
     assistantConfig,
+    searchConfig,
     dictionary,
     builtinDictionaryDomains,
     enableMuteOtherApps,
@@ -787,6 +845,8 @@ function App() {
           <AssistantPage
             assistantConfig={assistantConfig}
             setAssistantConfig={setAssistantConfig}
+            searchConfig={searchConfig}
+            setSearchConfig={setSearchConfig}
             sharedConfig={llmConfig.shared}
             onNavigateToModels={() => setActivePage("models")}
             isRunning={isConfigLocked}
@@ -809,6 +869,7 @@ function App() {
             handleSaveEdit={handleSaveEdit}
             handleCancelEdit={handleCancelEdit}
             handleBatchDelete={handleBatchDelete}
+            handleUpdateCategory={handleUpdateCategory}
             builtinDictionaryDomains={builtinDictionaryDomains}
             setBuiltinDictionaryDomains={setBuiltinDictionaryDomains}
             builtinDictionaryVersion={builtinDictionaryVersion}
@@ -840,6 +901,7 @@ function App() {
             onStartService={handleStartStop}
             theme={theme}
             learningConfig={learningConfig}
+            tnlConfig={tnlConfig}
             setLearningConfig={setLearningConfig}
             setTheme={async (newTheme) => {
               console.log("[App.tsx] setTheme 被调用, newTheme=", newTheme);
@@ -865,6 +927,9 @@ function App() {
             sharedConfig={llmConfig.shared}
             onSetLearningEnabled={async (enabled) => {
               await saveFieldPatchWithStatus({ learningEnabled: enabled });
+            }}
+            onSetDisfluencyMode={async (mode) => {
+              await saveFieldPatchWithStatus({ tnlConfig: { disfluencyMode: mode } });
             }}
             onNavigateToModels={() => setActivePage("models")}
           />

@@ -1,7 +1,11 @@
 import type { Dispatch, SetStateAction } from "react";
 import { AlertCircle, Sparkles } from "lucide-react";
-import type { AsrConfig, AsrProvider } from "../types";
-import { ASR_PROVIDERS } from "../constants";
+import type { AsrConfig, AsrProvider, QwenAsrProfile } from "../types";
+import {
+  ASR_PROVIDERS,
+  normalizeQwenAsrProfile,
+  QWEN_ASR_PROFILES,
+} from "../constants";
 import { ApiKeyInput, Toggle, ConfigSelect } from "../components/common";
 import { useConfigSave } from "../contexts/ConfigSaveContext";
 
@@ -27,6 +31,8 @@ export function AsrPage({
   const externalOnlySyncStatus = isExternalSyncing
     ? ("syncing" as const)
     : undefined;
+  const qwenProfile = normalizeQwenAsrProfile(asrConfig.qwen_profile);
+  const qwenProfileMeta = QWEN_ASR_PROFILES[qwenProfile];
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 font-sans">
@@ -72,20 +78,52 @@ export function AsrPage({
             </div>
 
             {asrConfig.selection.active_provider === "qwen" && (
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-stone-500">API Key</label>
-                <ApiKeyInput
-                  value={asrConfig.credentials.qwen_api_key}
-                  onChange={(value) => {
-                    setAsrConfig((prev) => ({
-                      ...prev,
-                      credentials: { ...prev.credentials, qwen_api_key: value },
-                    }));
-                  }}
-                  show={showApiKey}
-                  onToggleShow={() => setShowApiKey(!showApiKey)}
-                  placeholder="sk-..."
-                />
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-stone-500">千问模型版本</label>
+                  <ConfigSelect<QwenAsrProfile>
+                    value={qwenProfile}
+                    onChange={(profile) => {
+                      setAsrConfig((prev) => ({
+                        ...prev,
+                        qwen_profile: profile,
+                      }));
+                    }}
+                    onCommit={async (profile) => {
+                      await saveImmediately({
+                        asrConfig: {
+                          ...asrConfig,
+                          qwen_profile: profile,
+                        },
+                      });
+                    }}
+                    syncStatus={externalOnlySyncStatus}
+                    disabled={isRunning}
+                    options={(Object.keys(QWEN_ASR_PROFILES) as QwenAsrProfile[]).map((profile) => ({
+                      value: profile,
+                      label: QWEN_ASR_PROFILES[profile].name,
+                    }))}
+                  />
+                  <p className="text-xs text-stone-400">
+                    {qwenProfileMeta.description}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-stone-500">API Key</label>
+                  <ApiKeyInput
+                    value={asrConfig.credentials.qwen_api_key}
+                    onChange={(value) => {
+                      setAsrConfig((prev) => ({
+                        ...prev,
+                        credentials: { ...prev.credentials, qwen_api_key: value },
+                      }));
+                    }}
+                    show={showApiKey}
+                    onToggleShow={() => setShowApiKey(!showApiKey)}
+                    placeholder="sk-..."
+                  />
+                </div>
               </div>
             )}
 
@@ -134,7 +172,13 @@ export function AsrPage({
             )}
 
             <div className="text-xs text-stone-400 font-semibold">
-              模型：{ASR_PROVIDERS[asrConfig.selection.active_provider].model}
+              {asrConfig.selection.active_provider === "qwen" ? (
+                <>
+                  HTTP：{qwenProfileMeta.httpModel}；实时：{qwenProfileMeta.realtimeModel}
+                </>
+              ) : (
+                <>模型：{ASR_PROVIDERS[asrConfig.selection.active_provider].model}</>
+              )}
             </div>
 
             <div className="space-y-2">

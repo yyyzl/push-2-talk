@@ -30,7 +30,16 @@ impl DesktopBackend for WindowsDesktop {
         win32_input::release_all_modifiers()
     }
     fn read_text(&self, target: InputTarget) -> Result<String> {
-        uia_text_reader::get_focused_window_text(target.0 as isize)
+        anyhow::ensure!(self.is_focused(target), "原输入位置已失去焦点");
+        let text = uia_text_reader::get_focused_window_text(target.0 as isize)?;
+        anyhow::ensure!(self.is_focused(target), "读取期间原输入位置已失去焦点");
+        Ok(text)
+    }
+    fn read_selection(&self, target: InputTarget) -> Result<String> {
+        anyhow::ensure!(self.is_focused(target), "原输入位置已失去焦点");
+        let text = uia_text_reader::get_selected_text(target.0 as isize)?;
+        anyhow::ensure!(self.is_focused(target), "读取期间原输入位置已失去焦点");
+        Ok(text)
     }
     fn status(&self) -> PlatformStatus {
         PlatformStatus {

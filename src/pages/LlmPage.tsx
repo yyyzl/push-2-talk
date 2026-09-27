@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import { AlertCircle, MessageSquareQuote, Plus, Trash2 } from "lucide-react";
 import type { LlmConfig, LlmPreset } from "../types";
 import { PresetModelSelect } from "../components/llm/PresetModelSelect";
+import { ReasoningEffortSelect } from "../components/llm/ReasoningEffortSelect";
 
 export type LlmPageProps = {
   llmConfig: LlmConfig;
@@ -184,15 +185,33 @@ export function LlmPage({
               <div className="h-px bg-[var(--stone)]" />
 
               {activePreset && (
-                <PresetModelSelect
-                  preset={activePreset}
-                  llmConfig={llmConfig}
-                  disabled={isRunning}
-                  onCommit={(providerId, model) =>
-                    commitPresetModel(activePreset.id, providerId, model)
-                  }
-                  onNavigateToModels={onNavigateToModels}
-                />
+                <div className="space-y-6">
+                  <PresetModelSelect
+                    preset={activePreset}
+                    llmConfig={llmConfig}
+                    disabled={isRunning}
+                    onCommit={(providerId, model) =>
+                      commitPresetModel(activePreset.id, providerId, model)
+                    }
+                    onNavigateToModels={onNavigateToModels}
+                  />
+
+                  <ReasoningEffortSelect
+                    value={activePreset.reasoning?.effort}
+                    disabled={isRunning}
+                    description="润色、翻译、格式整理通常建议关闭思考；默认表示不额外传任何思考参数。"
+                    onChange={(effort) => {
+                      setLlmConfig((prev) => ({
+                        ...prev,
+                        presets: prev.presets.map((preset) =>
+                          preset.id === activePreset.id
+                            ? { ...preset, reasoning: effort ? { effort } : undefined }
+                            : preset,
+                        ),
+                      }));
+                    }}
+                  />
+                </div>
               )}
             </div>
           </section>

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 // 测试 1: AssistantResultPayload 类型字段完整性
@@ -202,4 +203,296 @@ test("formatTimingDisplay: 边界情况（asr = 0, llm = 0）", async () => {
     "../src/types/assistant-result"
   );
   assert.equal(formatTimingDisplay(0, 0), "LLM 0.0s");
+});
+
+test("formatTimingDisplay: 有联网搜索耗时时展示搜索段", async () => {
+  const { formatTimingDisplay } = await import(
+    "../src/types/assistant-result"
+  );
+  assert.equal(
+    formatTimingDisplay(1100, 1200, 2300),
+    "ASR 1.1s · 搜索 2.3s · LLM 1.2s · 总计 4.6s",
+  );
+});
+
+test("findCitationByMarker: 按 index + id 精确匹配引用", async () => {
+  const { findCitationByMarker } = await import(
+    "../src/types/assistant-result"
+  );
+  const citations = [
+    {
+      index: 1,
+      id: "abc123def456",
+      title: "OpenAI News",
+      url: "https://example.com/openai",
+      snippet: "snippet",
+      source: "example.com",
+    },
+  ];
+
+  assert.equal(
+    findCitationByMarker(citations, 1, "abc123def456")?.url,
+    "https://example.com/openai",
+  );
+  assert.equal(findCitationByMarker(citations, 2, "abc123def456"), null);
+  assert.equal(findCitationByMarker(citations, 1, "missing"), null);
+});
+
+test("MarkdownRenderer: 搜索引用应预处理为内部标记，避免渲染成 localhost 链接", async () => {
+  const source = await readFile("src/components/MarkdownRenderer.tsx", "utf8");
+
+  assert.match(source, /function prepareCitationMarkdown/);
+  assert.match(source, /RAW_CITATION_PATTERN/);
+  assert.match(source, /CITATION_TOKEN_PATTERN/);
+  assert.match(source, /\{prepareCitationMarkdown\(content\)\}/);
+  assert.doesNotMatch(source, /\{content\}\s*<\/ReactMarkdown>/);
+  assert.match(source, /P2T_CITATION/);
+  assert.match(source, /\[\{index\}\]/);
+  assert.match(source, /align-super/);
+  assert.match(source, /打开引用来源/);
+  assert.match(source, /data-citation-title/);
+  assert.match(source, /data-citation-url/);
+  assert.match(source, /data-citation-snippet/);
+  assert.match(source, /useLayoutEffect/);
+  assert.match(source, /tooltipRef/);
+  assert.match(source, /position: "fixed"/);
+  assert.match(source, /pointerEvents: "none"/);
+  assert.match(source, /window\.innerWidth/);
+  assert.match(source, /window\.innerHeight/);
+  assert.match(source, /Math\.min\(\s*Math\.max/);
+  assert.doesNotMatch(source, /group-hover:block/);
+  assert.doesNotMatch(source, /absolute bottom-full/);
+  assert.doesNotMatch(source, />\s*\{index\}\s*\n\s*\{/);
+});
+
+test("ResultPanelWindow: 用户卡片应提供可展开的选中文本展示", async () => {
+  const source = await readFile("src/windows/ResultPanelWindow.tsx", "utf8");
+
+  assert.match(source, /function SelectedTextPreview/);
+  assert.match(source, /选中文本/);
+  assert.match(source, /aria-expanded=\{expanded\}/);
+  assert.match(source, /setExpanded/);
+  assert.match(source, /maxHeight:\s*expanded\s*\?/);
+  assert.match(source, /whiteSpace:\s*"pre-wrap"/);
+  assert.match(source, /wordBreak:\s*"break-word"/);
+});
+
+test("DEFAULT_ASSISTANT_CONFIG: 文本处理提示词应支持基于选区提问", async () => {
+  const { DEFAULT_ASSISTANT_CONFIG } = await import("../src/constants");
+
+  assert.match(
+    DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt,
+    /基于选中文本回答问题/,
+  );
+  assert.match(DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt, /编辑类任务/);
+  assert.match(DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt, /解释/);
+  assert.match(DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt, /分析/);
+});
+
+test("resolveInitialWebSearchEnabled: 配置启用且默认搜索引擎可用时默认开启", async () => {
+  const { resolveInitialWebSearchEnabled } = await import(
+    "../src/utils/searchRuntime"
+  );
+
+  assert.equal(
+    resolveInitialWebSearchEnabled({
+      assistant_config: {
+        enabled: true,
+        llm: { use_shared: true },
+        qa_system_prompt: "qa",
+        text_processing_system_prompt: "tp",
+        enable_web_search: true,
+        web_search_max_loops: 3,
+        web_search_in_text_mode: false,
+      },
+      search_config: {
+        providers: [
+          {
+            id: "default",
+            provider_type: "tavily",
+            display_name: "Tavily",
+            enabled: true,
+            endpoint: "https://api.tavily.com/search",
+            api_key: "key",
+          },
+        ],
+        default_provider_id: "default",
+        max_results: 5,
+        timeout_secs: 6,
+        enable_fallback: true,
+      },
+    }),
+    true,
+  );
+});
+
+test("resolveInitialWebSearchEnabled: Tavily/Bocha/Serper 可使用默认 endpoint", async () => {
+  const { resolveInitialWebSearchEnabled } = await import(
+    "../src/utils/searchRuntime"
+  );
+
+  assert.equal(
+    resolveInitialWebSearchEnabled({
+      assistant_config: {
+        enabled: true,
+        llm: { use_shared: true },
+        qa_system_prompt: "qa",
+        text_processing_system_prompt: "tp",
+        enable_web_search: true,
+        web_search_max_loops: 3,
+        web_search_in_text_mode: false,
+      },
+      search_config: {
+        providers: [
+          {
+            id: "default",
+            provider_type: "tavily",
+            display_name: "Tavily",
+            enabled: true,
+            endpoint: "",
+            api_key: "key",
+          },
+        ],
+        default_provider_id: "default",
+        max_results: 5,
+        timeout_secs: 6,
+        enable_fallback: true,
+      },
+    }),
+    true,
+  );
+});
+
+test("resolveInitialWebSearchEnabled: 搜索 API 可运行时不依赖旧 AI 助手开关", async () => {
+  const { resolveInitialWebSearchEnabled } = await import(
+    "../src/utils/searchRuntime"
+  );
+
+  const base = {
+    assistant_config: {
+      enabled: true,
+      llm: { use_shared: true },
+      qa_system_prompt: "qa",
+      text_processing_system_prompt: "tp",
+      enable_web_search: true,
+      web_search_max_loops: 3,
+      web_search_in_text_mode: false,
+    },
+    search_config: {
+      providers: [
+        {
+          id: "default",
+          provider_type: "tavily" as const,
+          display_name: "Tavily",
+          enabled: true,
+          endpoint: "https://api.tavily.com/search",
+          api_key: "",
+        },
+      ],
+      default_provider_id: "default",
+      max_results: 5,
+      timeout_secs: 6,
+      enable_fallback: true,
+    },
+  };
+
+  assert.equal(resolveInitialWebSearchEnabled(base), false);
+  assert.equal(
+    resolveInitialWebSearchEnabled({
+      ...base,
+      assistant_config: {
+        ...base.assistant_config,
+        enable_web_search: false,
+      },
+      search_config: {
+        ...base.search_config,
+        providers: [
+          {
+            ...base.search_config.providers[0],
+            api_key: "key",
+          },
+        ],
+      },
+    }),
+    true,
+  );
+});
+
+test("resolveInitialWebSearchEnabled: 默认引擎缺失但存在可用 provider 时默认开启", async () => {
+  const { resolveInitialWebSearchEnabled } = await import(
+    "../src/utils/searchRuntime"
+  );
+
+  assert.equal(
+    resolveInitialWebSearchEnabled({
+      assistant_config: {
+        enabled: true,
+        llm: { use_shared: true },
+        qa_system_prompt: "qa",
+        text_processing_system_prompt: "tp",
+        enable_web_search: false,
+        web_search_max_loops: 3,
+        web_search_in_text_mode: false,
+      },
+      search_config: {
+        providers: [
+          {
+            id: "usable",
+            provider_type: "tavily",
+            display_name: "Tavily",
+            enabled: true,
+            endpoint: "",
+            api_key: "key",
+          },
+        ],
+        default_provider_id: null,
+        max_results: 5,
+        timeout_secs: 6,
+        enable_fallback: true,
+      },
+    }),
+    true,
+  );
+});
+
+test("AssistantBubble: 联网搜索结果展示应克制呈现数量和条目", async () => {
+  const source = await readFile("src/windows/ResultPanelWindow.tsx", "utf8");
+  const assistantBubbleStart = source.indexOf("function AssistantBubble");
+  const loadingBubbleStart = source.indexOf("function LoadingBubble");
+  assert.notEqual(assistantBubbleStart, -1);
+  assert.notEqual(loadingBubbleStart, -1);
+  const assistantBubble = source.slice(assistantBubbleStart, loadingBubbleStart);
+
+  assert.match(source, /function SearchToolCallPanel/);
+  assert.match(source, /搜索到 \$\{totalResultCount\} 个结果/);
+  assert.match(source, /call\.results\.slice\(0, 3\)\.map/);
+  assert.match(source, /className="truncate text-\[11px\] font-medium"/);
+  assert.doesNotMatch(assistantBubble, /rgba\(59,130,246/);
+});
+
+test("TextInputBar: 底部追问栏控件保持同轴居中", async () => {
+  const source = await readFile("src/windows/ResultPanelWindow.tsx", "utf8");
+  const start = source.indexOf("function TextInputBar");
+  assert.notEqual(start, -1);
+  const textInputBar = source.slice(start);
+
+  assert.match(textInputBar, /const INPUT_BAR_CONTROL_HEIGHT = 42/);
+  assert.match(textInputBar, /className="flex items-center gap-3 px-6 py-3 shrink-0"/);
+  assert.match(textInputBar, /className="flex min-h-\[42px\] min-w-0 flex-1 items-center"/);
+  assert.match(textInputBar, /height: `\$\{INPUT_BAR_CONTROL_HEIGHT\}px`/);
+  assert.match(textInputBar, /minHeight: `\$\{INPUT_BAR_CONTROL_HEIGHT\}px`/);
+  assert.match(textInputBar, /Math\.max\(INPUT_BAR_CONTROL_HEIGHT, Math\.min\(el\.scrollHeight, 84\)\)/);
+  assert.match(textInputBar, /paddingTop: "10px"/);
+  assert.match(textInputBar, /paddingBottom: "10px"/);
+  assert.match(textInputBar, /lineHeight: "20px"/);
+});
+
+test("TextInputBar: 文本追问应把联网搜索开关传给后端命令", async () => {
+  const source = await readFile("src/windows/ResultPanelWindow.tsx", "utf8");
+  const start = source.indexOf("const handleTextSend");
+  assert.notEqual(start, -1);
+  const handleTextSend = source.slice(start, source.indexOf("// ==========================================", start + 1));
+
+  assert.match(handleTextSend, /invoke\("send_text_question", \{ text, webSearchEnabled \}\)/);
+  assert.match(handleTextSend, /\[webSearchEnabled\]/);
 });

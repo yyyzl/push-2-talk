@@ -20,6 +20,7 @@ import type {
   DualHotkeyConfig,
   LearningConfig,
   LlmConfig,
+  SearchConfig,
 } from "../types";
 
 export type ConfigSyncStatus = "idle" | "syncing" | "success" | "error";
@@ -33,6 +34,7 @@ export type ConfigOverrides = {
   enableDictionaryEnhancement?: boolean;
   llmConfig?: LlmConfig;
   assistantConfig?: AssistantConfig;
+  searchConfig?: SearchConfig;
   asrConfig?: AsrConfig;
   dualHotkeyConfig?: DualHotkeyConfig;
   learningConfig?: LearningConfig;

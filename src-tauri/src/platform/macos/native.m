@@ -242,6 +242,17 @@ char *ptt_read_text(uint64_t token) {
     }});
     return result;
 }
+char *ptt_read_selection(uint64_t token) {
+    initializeTargets(); __block char *result=NULL;
+    dispatch_sync(targetQueue, ^{ @autoreleasepool {
+        PTTTarget *target=targets[@(token)];
+        if (!focused(target) || secure(target.element)) return;
+        id value=attribute(target.element,kAXSelectedTextAttribute);
+        if ([value isKindOfClass:NSString.class] && focused(target) && !secure(target.element))
+            result=strdup([value UTF8String]);
+    }});
+    return result;
+}
 void ptt_free_string(char *value) { free(value); }
 bool ptt_key_down(uint16_t code) { return CGEventSourceKeyState(kCGEventSourceStateHIDSystemState,code); }
 

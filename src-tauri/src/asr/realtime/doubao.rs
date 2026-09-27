@@ -1,6 +1,9 @@
 // 豆包流式 ASR WebSocket 客户端（二进制协议）
 use crate::config::AsrLanguageMode;
-use crate::dictionary_utils::entries_to_words;
+use crate::personalization::hotword_compiler::{
+    compile_asr_pack_with_correction_pairs, render_doubao_hotwords, DOUBAO_REALTIME_MAX_HOTWORDS,
+};
+use crate::personalization::CorrectionPair;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
@@ -29,6 +32,43 @@ fn build_context_data(language_mode: AsrLanguageMode) -> serde_json::Value {
             {"text": "当前聊天的场景是日常聊天，因此保留语气词，去除尾部句号"},
         ]),
     }
+}
+
+#[cfg(test)]
+fn build_realtime_context_object(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+) -> serde_json::Value {
+    build_realtime_context_object_with_pairs(language_mode, dictionary, &[])
+}
+
+fn build_realtime_context_object_with_pairs(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+    correction_pairs: &[CorrectionPair],
+) -> serde_json::Value {
+    let context_data = build_context_data(language_mode);
+    let mut context_obj = serde_json::json!({
+        "context_type": "dialog_ctx",
+        "context_data": context_data
+    });
+
+    let hotword_pack = compile_asr_pack_with_correction_pairs(
+        dictionary,
+        correction_pairs,
+        DOUBAO_REALTIME_MAX_HOTWORDS,
+    );
+    if !hotword_pack.words.is_empty() {
+        context_obj["hotwords"] = serde_json::json!(render_doubao_hotwords(&hotword_pack));
+        tracing::info!(
+            "豆包流式 ASR 词库: {} 个词（已编译）",
+            hotword_pack.words.len()
+        );
+    } else {
+        tracing::info!("豆包流式 ASR 词库: 未配置");
+    }
+
+    context_obj
 }
 
 /// 生成随机的 Sec-WebSocket-Key
@@ -82,6 +122,7 @@ pub struct DoubaoRealtimeClient {
     app_id: String,
     access_key: String,
     dictionary: Vec<String>,
+    correction_pairs: Vec<CorrectionPair>,
     language_mode: AsrLanguageMode,
 }
 
@@ -92,10 +133,21 @@ impl DoubaoRealtimeClient {
         dictionary: Vec<String>,
         language_mode: AsrLanguageMode,
     ) -> Self {
+        Self::new_with_correction_pairs(app_id, access_key, dictionary, Vec::new(), language_mode)
+    }
+
+    pub fn new_with_correction_pairs(
+        app_id: String,
+        access_key: String,
+        dictionary: Vec<String>,
+        correction_pairs: Vec<CorrectionPair>,
+        language_mode: AsrLanguageMode,
+    ) -> Self {
         Self {
             app_id,
             access_key,
             dictionary,
+            correction_pairs,
             language_mode,
         }
     }
@@ -132,25 +184,12 @@ impl DoubaoRealtimeClient {
 
         // 添加词库支持和对话上下文
         {
-            let context_data = build_context_data(self.language_mode);
-            let mut context_obj = serde_json::json!({
-                "context_type": "dialog_ctx",
-                "context_data": context_data
-            });
-
-            if !self.dictionary.is_empty() {
-                let purified_words = entries_to_words(&self.dictionary);
-                let hotwords: Vec<serde_json::Value> = purified_words
-                    .iter()
-                    .map(|w| serde_json::json!({"word": w}))
-                    .collect();
-                context_obj["hotwords"] = serde_json::json!(hotwords);
-                tracing::info!("豆包流式 ASR 词库: {} 个词（已提纯）", purified_words.len());
-            } else {
-                tracing::info!("豆包流式 ASR 词库: 未配置");
-            }
-
-            let context = context_obj.to_string();
+            let context = build_realtime_context_object_with_pairs(
+                self.language_mode,
+                &self.dictionary,
+                &self.correction_pairs,
+            )
+            .to_string();
             tracing::debug!("豆包流式 ASR context={}", context);
             request_obj["corpus"] = serde_json::json!({"context": context});
         }
@@ -448,8 +487,12 @@ fn parse_response(data: &[u8]) -> Result<(String, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_context_data;
+    use super::{
+        build_context_data, build_realtime_context_object, build_realtime_context_object_with_pairs,
+    };
     use crate::config::AsrLanguageMode;
+    use crate::personalization::hotword_compiler::DOUBAO_REALTIME_MAX_HOTWORDS;
+    use crate::personalization::CorrectionPair;
 
     #[test]
     fn builds_mixed_language_context_for_auto_mode() {
@@ -475,5 +518,40 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(joined.contains("日常聊天"));
+    }
+
+    #[test]
+    fn builds_doubao_realtime_hotwords_with_compiler_limit_and_legacy_shape() {
+        let dictionary = (0..(DOUBAO_REALTIME_MAX_HOTWORDS + 5))
+            .map(|idx| format!("词{}|manual|product", idx))
+            .collect::<Vec<_>>();
+
+        let context = build_realtime_context_object(AsrLanguageMode::Auto, &dictionary);
+        let hotwords = context["hotwords"].as_array().unwrap();
+
+        assert_eq!(hotwords.len(), DOUBAO_REALTIME_MAX_HOTWORDS);
+        assert_eq!(hotwords[0], serde_json::json!({"word": "词0"}));
+        assert!(hotwords.iter().all(|item| item.get("weight").is_none()));
+    }
+
+    #[test]
+    fn omits_doubao_realtime_hotwords_when_dictionary_empty() {
+        let context = build_realtime_context_object(AsrLanguageMode::Zh, &[]);
+
+        assert!(context.get("hotwords").is_none());
+    }
+
+    #[test]
+    fn doubao_realtime_hotwords_include_runtime_correction_pairs() {
+        let dictionary = vec!["Rust|auto|tool".to_string()];
+        let pairs = vec![CorrectionPair::new("windsurf", "winds surf", "Windsurf")];
+
+        let context =
+            build_realtime_context_object_with_pairs(AsrLanguageMode::Auto, &dictionary, &pairs);
+        let hotwords = context["hotwords"].as_array().unwrap();
+
+        assert_eq!(hotwords[0], serde_json::json!({"word": "Windsurf"}));
+        assert_eq!(hotwords[1], serde_json::json!({"word": "Rust"}));
+        assert!(hotwords.iter().all(|item| item.get("weight").is_none()));
     }
 }

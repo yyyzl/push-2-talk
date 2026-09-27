@@ -7,25 +7,36 @@ import type {
   AsrConfig,
   AssistantConfig,
   DictionaryEntry,
+  DisfluencyMode,
   DualHotkeyConfig,
   HotkeyKey,
   LearningConfig,
   LlmConfig,
+  SearchConfig,
+  TnlConfig,
 } from "../types";
 import {
   DEFAULT_ASSISTANT_CONFIG,
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  normalizeQwenAsrProfile,
+  DEFAULT_SEARCH_CONFIG,
   FALLBACK_ASR_PROVIDER,
   VALID_ASR_PROVIDERS,
   normalizeLearningConfig,
+  normalizeTnlConfig,
 } from "../constants";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
-import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
+import {
+  entriesToRuntimeFormat,
+  parseEntry,
+  entriesToStorageFormat,
+  normalizeDictionaryEntry,
+} from "../utils/dictionaryUtils";
 import {
   fetchBuiltinDomains,
-  getBuiltinWordsForDomains,
+  getBuiltinRuntimeEntriesForDomains,
   normalizeBuiltinDictionaryDomains,
   setBuiltinDomainsSnapshot,
 } from "../utils/builtinDictionary";
@@ -35,28 +46,45 @@ const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
 const buildRuntimeDictionary = (
   dictionaryEntries: DictionaryEntry[],
   builtinDomains: string[],
+  recentHotwordEntries: string[] = [],
 ): string[] => {
-  const userWords = entriesToWords(dictionaryEntries);
-  const builtinWords = getBuiltinWordsForDomains(builtinDomains);
-  if (builtinWords.length === 0) return userWords;
+  const userEntries = entriesToRuntimeFormat(dictionaryEntries);
+  const builtinEntries = getBuiltinRuntimeEntriesForDomains(builtinDomains);
+  if (recentHotwordEntries.length === 0 && builtinEntries.length === 0) return userEntries;
 
   const merged = new Set<string>();
   const result: string[] = [];
 
-  for (const word of userWords) {
-    if (merged.has(word)) continue;
-    merged.add(word);
-    result.push(word);
+  for (const entry of userEntries) {
+    const word = runtimeEntryWord(entry);
+    const key = word.toLocaleLowerCase();
+    if (!word || merged.has(key)) continue;
+    merged.add(key);
+    result.push(entry);
   }
 
-  for (const word of builtinWords) {
-    if (merged.has(word)) continue;
-    merged.add(word);
-    result.push(word);
+  for (const entry of recentHotwordEntries) {
+    const word = runtimeEntryWord(entry);
+    const key = word.toLocaleLowerCase();
+    if (!word || merged.has(key)) continue;
+    merged.add(key);
+    result.push(entry);
+  }
+
+  for (const entry of builtinEntries) {
+    const word = runtimeEntryWord(entry);
+    const key = word.toLocaleLowerCase();
+    if (!word || merged.has(key)) continue;
+    merged.add(key);
+    result.push(entry);
   }
 
   return result;
 };
+
+function runtimeEntryWord(entry: string): string {
+  return (entry.split("|")[0] || "").trim();
+}
 
 type SaveConfigGatewayOverrides = {
   apiKey?: string;
@@ -66,6 +94,7 @@ type SaveConfigGatewayOverrides = {
   enableDictionaryEnhancement?: boolean;
   llmConfig?: LlmConfig;
   assistantConfig?: AssistantConfig;
+  searchConfig?: SearchConfig;
   asrConfig?: AsrConfig;
   closeAction?: "close" | "minimize" | null;
   dualHotkeyConfig?: DualHotkeyConfig;
@@ -82,6 +111,9 @@ type ConfigFieldPatchPayload = {
   theme?: string;
   enableMuteOtherApps?: boolean;
   closeAction?: "close" | "minimize" | null;
+  tnlConfig?: {
+    disfluencyMode?: DisfluencyMode;
+  };
 };
 
 type ResolvedSaveConfig = {
@@ -92,6 +124,7 @@ type ResolvedSaveConfig = {
   enableDictionaryEnhancement: boolean;
   llmConfig: LlmConfig;
   assistantConfig: AssistantConfig;
+  searchConfig: SearchConfig;
   asrConfig: AsrConfig;
   closeAction: "close" | "minimize" | null;
   dualHotkeyConfig: DualHotkeyConfig;
@@ -128,6 +161,9 @@ export type UseAppServiceControllerParams = {
   assistantConfig: AssistantConfig;
   setAssistantConfig: React.Dispatch<React.SetStateAction<AssistantConfig>>;
 
+  searchConfig: SearchConfig;
+  setSearchConfig: React.Dispatch<React.SetStateAction<SearchConfig>>;
+
   asrConfig: AsrConfig;
 
   dualHotkeyConfig: DualHotkeyConfig;
@@ -136,8 +172,11 @@ export type UseAppServiceControllerParams = {
   learningConfig: LearningConfig;
   setLearningConfig: React.Dispatch<React.SetStateAction<LearningConfig>>;
 
+  setTnlConfig: React.Dispatch<React.SetStateAction<TnlConfig>>;
+
   dictionary: DictionaryEntry[];
   setDictionary: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
+  recentHotwordEntries: string[];
 
   builtinDictionaryDomains: string[];
   setBuiltinDictionaryDomains: React.Dispatch<React.SetStateAction<string[]>>;
@@ -186,13 +225,17 @@ export function useAppServiceController({
   setLlmConfig,
   assistantConfig,
   setAssistantConfig,
+  searchConfig,
+  setSearchConfig,
   asrConfig,
   dualHotkeyConfig,
   setDualHotkeyConfig,
   learningConfig,
   setLearningConfig,
+  setTnlConfig,
   dictionary,
   setDictionary,
+  recentHotwordEntries,
   builtinDictionaryDomains,
   setBuiltinDictionaryDomains,
   status,
@@ -228,6 +271,7 @@ export function useAppServiceController({
       llmConfig: LlmConfig;
       smartCommandConfig: null;
       assistantConfig: AssistantConfig;
+      searchConfig?: SearchConfig;
       asrConfig: AsrConfig | null;
       dualHotkeyConfig: DualHotkeyConfig;
       enableMuteOtherApps: boolean;
@@ -262,7 +306,11 @@ export function useAppServiceController({
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
           dictionary: updates.dictionary
-            ? buildRuntimeDictionary(updates.dictionary, builtinDictionaryDomains)
+            ? buildRuntimeDictionary(
+              updates.dictionary,
+              builtinDictionaryDomains,
+              recentHotwordEntries,
+            )
             : undefined,
         });
         return true;
@@ -271,7 +319,7 @@ export function useAppServiceController({
         return false;
       }
     },
-    [builtinDictionaryDomains, status],
+    [builtinDictionaryDomains, recentHotwordEntries, status],
   );
 
   const resolveSaveConfig = useCallback(
@@ -305,6 +353,7 @@ export function useAppServiceController({
           overrides.enableDictionaryEnhancement ?? enableDictionaryEnhancement,
         llmConfig: overrides.llmConfig ?? llmConfig,
         assistantConfig: overrides.assistantConfig ?? assistantConfig,
+        searchConfig: overrides.searchConfig ?? searchConfig,
         asrConfig: finalAsrConfig,
         closeAction: overrides.closeAction ?? closeAction ?? null,
         dualHotkeyConfig: overrides.dualHotkeyConfig ?? dualHotkeyConfig,
@@ -315,6 +364,7 @@ export function useAppServiceController({
         runtimeDictionary: buildRuntimeDictionary(
           finalDictionaryEntries,
           finalBuiltinDictionaryDomains,
+          recentHotwordEntries,
         ),
         builtinDictionaryDomains: finalBuiltinDictionaryDomains,
         theme: finalTheme,
@@ -328,6 +378,7 @@ export function useAppServiceController({
       enableDictionaryEnhancement,
       llmConfig,
       assistantConfig,
+      searchConfig,
       asrConfig,
       closeAction,
       dualHotkeyConfig,
@@ -335,6 +386,7 @@ export function useAppServiceController({
       enableMuteOtherApps,
       dictionary,
       builtinDictionaryDomains,
+      recentHotwordEntries,
       theme,
     ],
   );
@@ -342,8 +394,9 @@ export function useAppServiceController({
   const saveConfigThroughGateway = useCallback(
     async (overrides: SaveConfigGatewayOverrides = {}) => {
       const resolved = resolveSaveConfig(overrides);
-
-      await invoke<string>("save_config", {
+      const shouldPersistDictionary =
+        overrides.dictionaryEntries !== undefined || overrides.storageDictionary !== undefined;
+      const saveConfigPayload: Record<string, unknown> = {
         apiKey: resolved.apiKey,
         fallbackApiKey: resolved.fallbackApiKey,
         useRealtime: resolved.useRealtime,
@@ -352,15 +405,21 @@ export function useAppServiceController({
         llmConfig: resolved.llmConfig,
         smartCommandConfig: null,
         assistantConfig: resolved.assistantConfig,
+        searchConfig: resolved.searchConfig,
         asrConfig: resolved.asrConfig,
         closeAction: resolved.closeAction,
         dualHotkeyConfig: resolved.dualHotkeyConfig,
         learningConfig: resolved.learningConfig,
         enableMuteOtherApps: resolved.enableMuteOtherApps,
-        dictionary: resolved.storageDictionary,
         builtinDictionaryDomains: resolved.builtinDictionaryDomains,
         theme: resolved.theme,
-      });
+      };
+
+      if (shouldPersistDictionary) {
+        saveConfigPayload.dictionary = resolved.storageDictionary;
+      }
+
+      await invoke<string>("save_config", saveConfigPayload);
 
       return resolved;
     },
@@ -421,6 +480,7 @@ export function useAppServiceController({
                 enable_fallback: false,
                 fallback_provider: null,
               },
+              qwen_profile: normalizeQwenAsrProfile(parsedCache.qwen?.profile),
               language_mode: parsedCache.language_mode === 'zh' ? 'zh' : 'auto',
             };
 
@@ -449,6 +509,7 @@ export function useAppServiceController({
               enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
               llmConfig: config.llm_config || DEFAULT_LLM_CONFIG,
               assistantConfig: config.assistant_config || DEFAULT_ASSISTANT_CONFIG,
+              searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
               asrConfig: migratedAsrConfig,
               closeAction: config.close_action ?? null,
               dualHotkeyConfig: config.dual_hotkey_config || DEFAULT_DUAL_HOTKEY_CONFIG,
@@ -526,6 +587,7 @@ export function useAppServiceController({
         loadedAssistantConfig = DEFAULT_ASSISTANT_CONFIG;
       }
       setAssistantConfig(loadedAssistantConfig);
+      setSearchConfig(config.search_config || DEFAULT_SEARCH_CONFIG);
 
       if (config.dual_hotkey_config) {
         setDualHotkeyConfig(config.dual_hotkey_config);
@@ -542,6 +604,7 @@ export function useAppServiceController({
         config.learning_config || DEFAULT_LEARNING_CONFIG,
       );
       setLearningConfig(loadedLearningConfig);
+      setTnlConfig(normalizeTnlConfig(config.tnl_config));
 
       if (config.close_action) {
         setCloseAction(config.close_action);
@@ -559,15 +622,29 @@ export function useAppServiceController({
 
       const configDictionary =
         config.dictionary && Array.isArray(config.dictionary) ? config.dictionary : [];
+      let dictionarySource: unknown[] = configDictionary;
+      try {
+        const sidecarDictionary = await invoke<string[]>("get_dictionary_entries");
+        if (Array.isArray(sidecarDictionary)) {
+          dictionarySource = sidecarDictionary;
+        }
+      } catch (error) {
+        console.warn(
+          "读取 user_terms sidecar 词库失败，回退配置词典:",
+          error,
+          `配置词典条数: ${config.dictionary?.length ?? 0}`,
+        );
+      }
 
-      // 处理词典：支持新格式 DictionaryEntry[] 和旧格式 string[]
+      // 处理词典：支持对象条目和 string[] 存储格式
       let loadedDictionary: DictionaryEntry[];
-      if (configDictionary.length > 0 && typeof configDictionary[0] === "object") {
-        // 新格式：DictionaryEntry[]
-        loadedDictionary = configDictionary as unknown as DictionaryEntry[];
+      if (dictionarySource.length > 0 && typeof dictionarySource[0] === "object") {
+        loadedDictionary = (dictionarySource as Array<Partial<DictionaryEntry>>)
+          .map(normalizeDictionaryEntry)
+          .filter((entry) => entry.word);
       } else {
-        // 旧格式：string[]，需要转换（支持 "word" 和 "word|auto" 格式）
-        const words = (configDictionary as unknown as string[]).filter(
+        // string[] 需要转换（支持 "word"、"word|auto" 和 "word|source|category" 格式）
+        const words = (dictionarySource as string[]).filter(
           (w) => typeof w === "string" && w.trim()
         );
         loadedDictionary = words.map(parseEntry);
@@ -597,12 +674,14 @@ export function useAppServiceController({
           llmConfig: loadedLlmConfig,
           smartCommandConfig: null,
           assistantConfig: loadedAssistantConfig,
+          searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
           asrConfig: effectiveAsrConfig,
           dualHotkeyConfig: loadedDualHotkeyConfig,
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
           dictionary: buildRuntimeDictionary(
             loadedDictionary,
-            loadedBuiltinDictionaryDomains
+            loadedBuiltinDictionaryDomains,
+            recentHotwordEntries,
           ),
           theme: config.theme || "light",
         });
@@ -620,12 +699,12 @@ export function useAppServiceController({
               enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
               llmConfig: loadedLlmConfig,
               assistantConfig: loadedAssistantConfig,
+              searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
               asrConfig: effectiveAsrConfig,
               closeAction: config.close_action ?? null,
               dualHotkeyConfig: loadedDualHotkeyConfig,
               learningConfig: loadedLearningConfig,
               enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-              dictionaryEntries: loadedDictionary,
               builtinDictionaryDomains: loadedBuiltinDictionaryDomains,
               theme: config.theme || "light",
             });
@@ -641,11 +720,13 @@ export function useAppServiceController({
     setApiKey,
     setAsrConfig,
     setAssistantConfig,
+    setSearchConfig,
     setCloseAction,
     setDictionary,
     setBuiltinDictionaryDomains,
     setDualHotkeyConfig,
     setLearningConfig,
+    setTnlConfig,
     setEnableAutostart,
     setEnableMuteOtherApps,
     setEnablePostProcess,
@@ -657,6 +738,7 @@ export function useAppServiceController({
     setUseRealtime,
     startApp,
     saveConfigThroughGateway,
+    recentHotwordEntries,
     showToast,
   ]);
 
@@ -681,6 +763,7 @@ export function useAppServiceController({
           llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
           assistantConfig: resolved.assistantConfig,
+          searchConfig: resolved.searchConfig,
           asrConfig: resolved.asrConfig,
           dualHotkeyConfig: resolved.dualHotkeyConfig,
           enableMuteOtherApps: resolved.enableMuteOtherApps,
@@ -693,6 +776,7 @@ export function useAppServiceController({
       flashSuccessToast();
     } catch (err) {
       setError(String(err));
+      throw err;
     }
   }, [
     theme,
@@ -716,6 +800,7 @@ export function useAppServiceController({
     enableDictionaryEnhancement?: boolean;
     llmConfig?: LlmConfig;
     assistantConfig?: AssistantConfig;
+    searchConfig?: SearchConfig;
     asrConfig?: AsrConfig;
     dualHotkeyConfig?: DualHotkeyConfig;
     learningConfig?: LearningConfig;
@@ -734,6 +819,7 @@ export function useAppServiceController({
         enableDictionaryEnhancement: overrides?.enableDictionaryEnhancement,
         llmConfig: overrides?.llmConfig,
         assistantConfig: overrides?.assistantConfig,
+        searchConfig: overrides?.searchConfig,
         asrConfig: overrides?.asrConfig,
         dualHotkeyConfig: overrides?.dualHotkeyConfig,
         learningConfig: overrides?.learningConfig,
@@ -760,6 +846,7 @@ export function useAppServiceController({
           llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
           assistantConfig: resolved.assistantConfig,
+          searchConfig: resolved.searchConfig,
           asrConfig: resolved.asrConfig,
           dualHotkeyConfig: resolved.dualHotkeyConfig,
           enableMuteOtherApps: resolved.enableMuteOtherApps,

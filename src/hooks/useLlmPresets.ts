@@ -31,6 +31,7 @@ export function useLlmPresets({
       id: nanoid(8),
       name: "新预设",
       system_prompt: "",
+      reasoning: { effort: "none" },
     };
 
     setLlmConfig((prev) => ({

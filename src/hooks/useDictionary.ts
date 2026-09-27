@@ -2,8 +2,8 @@ import type React from "react";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { DictionaryEntry } from "../types";
-import { parseEntry } from "../utils/dictionaryUtils";
+import type { DictionaryCategory, DictionaryEntry } from "../types";
+import { inferDictionaryCategory, parseEntry } from "../utils/dictionaryUtils";
 
 export type UseDictionaryResult = {
   dictionary: DictionaryEntry[];
@@ -25,6 +25,7 @@ export type UseDictionaryResult = {
   handleSaveEdit: () => void;
   handleCancelEdit: () => void;
   handleBatchDelete: (words: string[]) => void;
+  handleUpdateCategory: (word: string, category: DictionaryCategory) => void;
 
   refreshDictionary: () => Promise<void>;
 };
@@ -99,7 +100,11 @@ export function useDictionary(initialDictionary: string[] = []): UseDictionaryRe
     }
 
     try {
-      await invoke("add_learned_word", { word, source: "manual" });
+      await invoke("add_learned_word", {
+        word,
+        source: "manual",
+        category: inferDictionaryCategory(word),
+      });
       setNewWord("");
       // 不需要手动刷新，事件监听会自动刷新
     } catch (error) {
@@ -167,7 +172,11 @@ export function useDictionary(initialDictionary: string[] = []): UseDictionaryRe
       try {
         // 删除旧词条，添加新词条（保持来源）
         await invoke("delete_dictionary_entries", { words: [currentEntry.word] });
-        await invoke("add_learned_word", { word, source: currentEntry.source });
+        await invoke("add_learned_word", {
+          word,
+          source: currentEntry.source,
+          category: currentEntry.category,
+        });
         // 不需要手动刷新，事件监听会自动刷新
       } catch (error) {
         console.error("更新词汇失败:", error);
@@ -183,6 +192,29 @@ export function useDictionary(initialDictionary: string[] = []): UseDictionaryRe
     setEditingIndex(null);
     setEditingValue("");
   }, []);
+
+  const handleUpdateCategory = useCallback(async (
+    word: string,
+    category: DictionaryCategory,
+  ) => {
+    const entry = dictionary.find((item) => item.word === word);
+    if (!entry || entry.category === category) return;
+
+    try {
+      await invoke("add_learned_word", {
+        word: entry.word,
+        source: entry.source,
+        category,
+      });
+      setDictionary((prev) =>
+        prev.map((item) =>
+          item.word === entry.word ? { ...item, category } : item
+        )
+      );
+    } catch (error) {
+      console.error("更新词汇分类失败:", error);
+    }
+  }, [dictionary]);
 
   return {
     dictionary,
@@ -200,6 +232,7 @@ export function useDictionary(initialDictionary: string[] = []): UseDictionaryRe
     handleSaveEdit,
     handleCancelEdit,
     handleBatchDelete,
+    handleUpdateCategory,
     refreshDictionary,
   };
 }

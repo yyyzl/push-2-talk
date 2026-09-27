@@ -1,0 +1,33 @@
+{
+  "env": {
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1"
+  },
+  "enabledPlugins": {},
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "Grep",
+      "Glob",
+      "LS",
+      "WebFetch",
+      "WebSearch",
+      "NotebookRead",
+      "NotebookEdit",
+      "TodoRead",
+      "TodoWrite",
+      "mcp__sequential-thinking__*",
+      "mcp__context7__*",
+      "mcp__chrome-devtools__*",
+      "mcp__ace-tool__*",
+      "mcp__acemcp__*",
+      "mcp__contextweaver__*"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "defaultMode": "bypassPermissions"
+}

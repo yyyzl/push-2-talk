@@ -1,11 +1,5 @@
-//! Exercise the real judge/client boundary with provider-shaped HTTP responses.
-#![allow(dead_code)]
-#[path = "../src/learning/llm_judge.rs"]
-mod llm_judge;
-#[path = "../src/openai_client.rs"]
-mod openai_client;
-
-use llm_judge::LlmJudge;
+//! Exercise the production learning judge/client with provider-shaped HTTP responses.
+use super::llm_judge::LlmJudge;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -81,7 +75,7 @@ async fn ordinary_model_keeps_short_json_contract() {
         .await
         .unwrap();
     server.await.unwrap();
-    assert_eq!(result.category, "term");
+    assert_eq!(result.category, "domain_term");
 }
 
 #[tokio::test]

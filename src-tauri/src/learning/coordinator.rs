@@ -15,7 +15,7 @@ use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
 use crate::config::{AppConfig, LearningConfig};
-use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs};
+use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs, DiffResult};
 use crate::learning::llm_judge::LlmJudge;
 use crate::learning::observations::Observations;
 use crate::learning::validator::is_asr_text_present;
@@ -45,6 +45,13 @@ pub struct LearningSuggestion {
     pub context: String,
     pub category: String,
     pub reason: String,
+    pub already_in_dictionary: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LearningSuggestionRouting {
+    should_emit: bool,
+    already_in_dictionary: bool,
 }
 
 /// 启动学习观察流程
@@ -254,6 +261,11 @@ pub fn start_learning_observation(
                 continue;
             }
 
+            if record_existing_correction_reversion(&diff.original_segment, &diff.corrected_segment)
+            {
+                continue;
+            }
+
             tracing::info!(
                 "Learning [{}]: 请求 LLM 判断 - 原文: \"{}\" → 修正: \"{}\"",
                 &observation_id[..8],
@@ -322,7 +334,21 @@ pub fn start_learning_observation(
 
             // 检查词库是否已存在该词（使用预计算的 HashSet 进行 O(1) 查找）
             let normalized_word = crate::dictionary_utils::normalize_word(&word);
-            if dictionary_word_set.contains(&normalized_word) {
+            let routing = learning_suggestion_routing(
+                &normalized_word,
+                &diff.original_segment,
+                &diff.corrected_segment,
+                &dictionary_word_set,
+            );
+            if routing.already_in_dictionary
+                && record_existing_correction_observation(
+                    &diff.original_segment,
+                    &diff.corrected_segment,
+                )
+            {
+                continue;
+            }
+            if !routing.should_emit {
                 tracing::info!(
                     "Learning [{}]: 词汇 \"{}\" 已存在于词库，跳过通知",
                     &observation_id[..8],
@@ -330,18 +356,23 @@ pub fn start_learning_observation(
                 );
                 continue;
             }
+            if routing.already_in_dictionary {
+                tracing::info!(
+                    "Learning [{}]: 词汇 \"{}\" 已存在于词库，仍发送纠错建议以保存个性化纠错对",
+                    &observation_id[..8],
+                    normalized_word
+                );
+            }
 
             // 创建建议（使用规范化后的词汇，确保与词库比对一致）
-            let suggestion_id = uuid::Uuid::new_v4().to_string();
-            let suggestion = LearningSuggestion {
-                id: suggestion_id,
-                word: normalized_word.clone(),
-                original: diff.original_segment.clone(),
-                corrected: diff.corrected_segment.clone(),
-                context: diff.context.clone(),
-                category: result.category,
-                reason: result.reason,
-            };
+            let suggestion = build_learning_suggestion(
+                normalized_word.clone(),
+                &diff,
+                &extended_context,
+                result.category,
+                result.reason,
+                routing,
+            );
 
             tracing::info!(
                 "Learning [{}]: 发送学习建议到前端 - 词汇: \"{}\", 分类: \"{}\", 原因: \"{}\"",
@@ -562,6 +593,90 @@ mod acceptance_tests {
             }),
             "a real correction must reach the learning judge"
         );
+    }
+}
+
+fn learning_suggestion_routing(
+    normalized_word: &str,
+    original: &str,
+    corrected: &str,
+    dictionary_word_set: &HashSet<String>,
+) -> LearningSuggestionRouting {
+    let already_in_dictionary = dictionary_word_set.contains(normalized_word);
+    LearningSuggestionRouting {
+        should_emit: !already_in_dictionary || has_correction_pair_payload(original, corrected),
+        already_in_dictionary,
+    }
+}
+
+fn has_correction_pair_payload(original: &str, corrected: &str) -> bool {
+    let original = original.trim();
+    let corrected = corrected.trim();
+    !original.is_empty()
+        && !corrected.is_empty()
+        && crate::personalization::phonetic_keys::normalize_surface(original)
+            != crate::personalization::phonetic_keys::normalize_surface(corrected)
+}
+
+fn build_learning_suggestion(
+    normalized_word: String,
+    diff: &DiffResult,
+    extended_context: &str,
+    category: String,
+    reason: String,
+    routing: LearningSuggestionRouting,
+) -> LearningSuggestion {
+    LearningSuggestion {
+        id: Uuid::new_v4().to_string(),
+        word: normalized_word,
+        original: diff.original_segment.clone(),
+        corrected: diff.corrected_segment.clone(),
+        context: extended_context.to_string(),
+        category,
+        reason,
+        already_in_dictionary: routing.already_in_dictionary,
+    }
+}
+
+fn record_existing_correction_observation(original: &str, corrected: &str) -> bool {
+    match crate::personalization::record_observed_correction_pair(Some(original), Some(corrected)) {
+        Ok(Some(pair)) => {
+            tracing::info!(
+                "Learning: 已记录个性化纠错对再次观察: {} → {} (id: {}, confidence: {:.2}, frequency: {})",
+                pair.original_text,
+                pair.corrected_text,
+                pair.id,
+                pair.confidence,
+                pair.frequency
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("Learning: 记录个性化纠错对再次观察失败: {}", e);
+            false
+        }
+    }
+}
+
+fn record_existing_correction_reversion(original: &str, corrected: &str) -> bool {
+    match crate::personalization::record_reverted_correction_pair(Some(original), Some(corrected)) {
+        Ok(Some(pair)) => {
+            tracing::info!(
+                "Learning: 已记录个性化纠错对改回原文: {} → {} (id: {}, confidence: {:.2}, rejected: {})",
+                pair.corrected_text,
+                pair.original_text,
+                pair.id,
+                pair.confidence,
+                pair.rejected_count
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("Learning: 记录个性化纠错对改回原文失败: {}", e);
+            false
+        }
     }
 }
 
@@ -1002,5 +1117,84 @@ fn extract_extended_context(
         result.chars().take(MAX_CONTEXT_CHARS).collect()
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dictionary_words(words: &[&str]) -> HashSet<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn learning_suggestion_emits_existing_dictionary_word_when_correction_pair_is_useful() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "cloud code",
+            "Claude Code",
+            &dictionary_words(&["Claude Code"]),
+        );
+
+        assert!(routing.should_emit);
+        assert!(routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_skips_existing_dictionary_word_without_correction_pair() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "Claude Code",
+            "Claude Code",
+            &dictionary_words(&["Claude Code"]),
+        );
+
+        assert!(!routing.should_emit);
+        assert!(routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_emits_new_dictionary_word_normally() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "cloud code",
+            "Claude Code",
+            &HashSet::new(),
+        );
+
+        assert!(routing.should_emit);
+        assert!(!routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_uses_extended_context_for_persistence() {
+        let diff = crate::learning::diff_analyzer::DiffResult {
+            original_segment: "cloud code".to_string(),
+            corrected_segment: "Claude Code".to_string(),
+            context: "短上下文 cloud code".to_string(),
+            orig_start: 0,
+            orig_end: 10,
+            curr_start: 0,
+            curr_end: 11,
+        };
+        let routing = LearningSuggestionRouting {
+            should_emit: true,
+            already_in_dictionary: false,
+        };
+
+        let suggestion = build_learning_suggestion(
+            "Claude Code".to_string(),
+            &diff,
+            "在 JetBrains 项目里保存 Claude Code 的纠错上下文",
+            "proper_noun".to_string(),
+            "技术产品名".to_string(),
+            routing,
+        );
+
+        assert_eq!(
+            suggestion.context,
+            "在 JetBrains 项目里保存 Claude Code 的纠错上下文"
+        );
     }
 }

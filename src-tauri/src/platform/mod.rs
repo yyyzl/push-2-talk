@@ -84,6 +84,8 @@ pub trait DesktopBackend: TargetAccess + Send + Sync {
     fn paste(&self) -> Result<()>;
     fn release_modifiers(&self) -> Result<()>;
     fn read_text(&self, target: InputTarget) -> Result<String>;
+    /// Read only the selection of the captured, still-focused target, without copying.
+    fn read_selection(&self, target: InputTarget) -> Result<String>;
     fn status(&self) -> PlatformStatus;
     fn request_permission(&self, permission: &str) -> Result<()>;
 }

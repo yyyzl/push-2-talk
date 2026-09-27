@@ -19,6 +19,9 @@ export function VocabularyLearningToast({
   const [countdown, setCountdown] = useState(5);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const isCorrectionPairOnly = Boolean(suggestion.already_in_dictionary);
+  const title = isCorrectionPairOnly ? "纠错建议" : "学习建议";
+  const actionLabel = isCorrectionPairOnly ? "保存纠错" : "添加";
 
   // 处理添加
   const handleAdd = useCallback(async () => {
@@ -29,26 +32,43 @@ export function VocabularyLearningToast({
       await invoke("add_learned_word", {
         word: suggestion.word,
         source: "auto",
+        original: suggestion.original,
+        corrected: suggestion.corrected,
+        category: suggestion.category,
+        context: suggestion.context,
       });
-      console.log("词汇已添加:", suggestion.word);
+      console.log(isCorrectionPairOnly ? "纠错已保存:" : "词汇已添加:", suggestion.word);
       setIsExiting(true);
       setTimeout(onAdd, 300);
     } catch (error) {
       console.error("添加词汇失败:", error);
       setIsSubmitting(false);
     }
-  }, [suggestion.word, onAdd, isSubmitting]);
+  }, [
+    suggestion.word,
+    suggestion.original,
+    suggestion.corrected,
+    suggestion.category,
+    suggestion.context,
+    onAdd,
+    isSubmitting,
+    isCorrectionPairOnly,
+  ]);
 
   // 处理忽略
   const handleDismiss = useCallback(async () => {
     try {
-      await invoke("dismiss_learning_suggestion", { id: suggestion.id });
+      await invoke("dismiss_learning_suggestion", {
+        id: suggestion.id,
+        original: suggestion.original,
+        corrected: suggestion.corrected,
+      });
     } catch (error) {
       console.error("忽略建议失败:", error);
     }
     setIsExiting(true);
     setTimeout(onDismiss, 300);
-  }, [suggestion.id, onDismiss]);
+  }, [suggestion.id, suggestion.original, suggestion.corrected, onDismiss]);
 
   // 自动消失倒计时（鼠标悬停时暂停）
   useEffect(() => {
@@ -90,6 +110,15 @@ export function VocabularyLearningToast({
 
   // 分类标签
   const categoryLabels: Record<string, string> = {
+    person: "人名",
+    product: "产品",
+    tool: "工具",
+    phrase: "短语",
+    email: "邮箱",
+    url: "链接",
+    code_symbol: "代码",
+    domain_term: "术语",
+    generic: "通用",
     proper_noun: "专有名词",
     term: "专业术语",
     frequent: "高频词汇",
@@ -112,7 +141,7 @@ export function VocabularyLearningToast({
         <div className="flex items-center gap-2">
           <Sparkles size={16} className="text-[var(--sage)]" aria-hidden="true" />
           <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">
-            学习建议
+            {title}
           </span>
         </div>
         <span className="text-xs text-stone-400">{countdown}s</span>
@@ -150,10 +179,10 @@ export function VocabularyLearningToast({
           onClick={handleAdd}
           disabled={isSubmitting}
           className="flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold text-[var(--sage)] hover:bg-[rgba(120,140,93,0.08)] transition-colors rounded-br-2xl disabled:opacity-50"
-          aria-label="添加到词典"
+          aria-label={isCorrectionPairOnly ? "保存个性化纠错" : "添加到词典"}
         >
           <Check size={16} aria-hidden="true" />
-          添加
+          {actionLabel}
         </button>
       </div>
     </div>

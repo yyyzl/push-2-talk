@@ -1,0 +1,90 @@
+[
+  {
+    "audio_id": "mvp-claude-code-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我打开 cloud code",
+    "expected_text": "我打开 Claude Code",
+    "user_final_text": "我打开 Claude Code",
+    "category": "tech_mix",
+    "notes": "字面纠错对命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-claude-code-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我打开 claud code",
+    "expected_text": "我打开 Claude Code",
+    "user_final_text": "我打开 Claude Code",
+    "category": "tech_mix",
+    "notes": "英文音近错形命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-claude-code-003",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我打开 cloud coat",
+    "expected_text": "我打开 Claude Code",
+    "user_final_text": "我打开 Claude Code",
+    "category": "tech_mix",
+    "notes": "英文双词音近错形命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-claude-code-004",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我打开 克劳德 code",
+    "expected_text": "我打开 Claude Code",
+    "user_final_text": "我打开 Claude Code",
+    "category": "tech_mix",
+    "notes": "跨语言 alias key 命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-claude-code-005",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我打开克劳德 code",
+    "expected_text": "我打开Claude Code",
+    "user_final_text": "我打开Claude Code",
+    "category": "tech_mix",
+    "notes": "中文连续串内部切分后跨语言 alias key 命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-claude-code-006",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "I use cloud storage",
+    "expected_text": "I use cloud storage",
+    "user_final_text": "I use cloud storage",
+    "category": "false_positive_guard",
+    "notes": "常见词 cloud 不应被泛化误伤",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-claude-code-007",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "先说 cloud。code 再继续",
+    "expected_text": "先说 cloud。code 再继续",
+    "user_final_text": "先说 cloud。code 再继续",
+    "category": "false_positive_guard",
+    "notes": "音节窗口不能跨句读标点把 cloud 和 code 合并成短语",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-single-zh-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "麻烦打开设置",
+    "expected_text": "麻烦打开设置",
+    "user_final_text": "麻烦打开设置",
+    "category": "false_positive_guard",
+    "notes": "learned 中文单字纠错对不应自动应用",
+    "diagnostics": null
+  }
+]
