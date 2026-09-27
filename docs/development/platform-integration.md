@@ -27,6 +27,7 @@ Windows 分支相对主线有 180 个提交，Mac 分支有 29 个提交。6 处
 
 - `npm ci`、`npm run test:ts`：152 项通过。
 - `npm run build`：通过。
+- 浏览器预览可渲染主页、权限区、口语流畅化和助手搜索设置；没有 Tauri IPC 的浏览器会显示原生命令不可用，因此这仅是渲染检查，不算桌面功能验收。
 - `cargo test --locked --manifest-path src-tauri/Cargo.toml`：543 项通过，7 项忽略（含 2 项文档示例）。
 - `cargo check --locked --features atdd --manifest-path src-tauri/Cargo.toml`：通过。
 - `sh scripts/test-macos-hotkey-native.sh`：通过，新增选区读取的目标、密码框和焦点变化场景。
@@ -34,6 +35,8 @@ Windows 分支相对主线有 180 个提交，Mac 分支有 29 个提交。6 处
 新修复先验证失败再实现：目录目标被移动、并发纠错丢失更新、删除词条被旧快照恢复、Mac 原生选区读取。学习 HTTP 测试使用本地模拟服务，已改为复用真实生产模块，避免复制模块造成依赖漂移。
 
 Windows 本地编译、原生输入与桌面验收不能由这些 Mac 测试代替。双平台 CI 负责各自的编译、测试及原型打包，实机验收另行记录。
+
+集成代码提交 `8600483` 的双平台构建记录见 [Platform checks #36343536402](https://github.com/yyyzl/push-2-talk/actions/runs/36343536402)。后续仅更新文档的提交不改变这份被测代码。
 
 ## 合入 main 前的验收门槛
 

@@ -9,6 +9,7 @@ React / Tauri commands → 听写、助手、学习流程 → platform 能力接
 - `platform::desktop()` 是进程级、不可变的工厂入口，按编译目标选择 `DesktopBackend`。业务层不判断操作系统，不解释原生句柄。
 - `TargetAccess` 定义目标有效性、焦点判断和恢复契约。`prepare_target` 以失败关闭策略恢复并验证焦点；实际注入前再次检查，拒绝向未知目标发送按键。
 - `InputTarget` 是不透明且可比较的会话目标。Windows 内部映射 HWND；macOS 内部映射 AX 应用、窗口及输入元素。不得持久化目标或通过前端传入任意原生 ID。
+- `DesktopBackend::read_text` 读取目标文本，`read_selection` 只读取选区；两者读取前后均检查焦点。Windows 使用 UIA，Mac 使用 AX；Mac 的选区能力不回退到整个文档，也不读取密码框。剪贴板回退仍受 `prepare_target` 的目标恢复约束。
 - 热键服务和音频控制通过平台模块选择具体实现，保留现有调用外观。两端热键适配器使用同一个 `platform/hotkey_state.rs` 状态机：输入是听写/助手/松手模式的逻辑按键快照与启用状态，输出是带模式的开始/停止动作。采集、权限、恢复、线程和回调仍由各自适配器负责。
 - ASR、LLM、TNL、词库规则、历史记录与音频编码保持共用。
 - 学习观察以 `InputTarget` 去重：启动前原子替换取消标志，RAII 守卫只清理自身注册，旧任务完成不删除新任务。被替换后只保留此前取得的样本，不再把新录音插入的内容当作旧文本修正。
@@ -99,6 +100,8 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 尚未完成上述实机矩阵前，本实现是原型，不承诺跨应用兼容性或 Windows 零回归。
 
 ## 本轮验证记录（2026-09-25）
+
+下列记录属于 Mac 独立分支的历史验收。2026-09-28 与 Windows 功能分支的集成决策、当前验证及待办见 [平台集成审查](docs/development/platform-integration.md)，历史结果不能替代集成版本的验收。
 
 - 基于远端 main 的 `725aab0`，在独立 `codex/macos-platform` worktree 开发。
 - TypeScript 最新 86 项在 Windows/macOS CI 均通过，前端 production build 均通过；新增 LF/CRLF 参数化用例覆盖 Windows checkout 换行。

@@ -81,16 +81,16 @@ npm run test:ts               # Run TypeScript runtime tests in tests/*.test.ts
 npm run tauri dev             # Run dev server (requires admin rights on Windows)
 ```
 
-⚠️ **Critical**: Must run with administrator privileges on Windows for global keyboard hook (`rdev`) to function.
+Follow the existing administrator workflow on Windows. Production Windows hotkeys use native polling; the historical `rdev` fallback is not the active implementation. macOS requires microphone, Accessibility and Input Monitoring permissions instead.
 
 ### Building
 ```bash
-npm run tauri build           # Build production bundles (NSIS installer only)
+npm run tauri build           # Native bundles: Windows NSIS / macOS platform config
 ```
 
 Output location: `src-tauri/target/release/bundle/`
 
-**Note**: MSI installer support removed to prevent multiple instances during auto-update.
+**Note**: Windows MSI support is removed to prevent multiple instances during auto-update. Mac dependencies, prototype signing and packaging are documented in `PLATFORM_ARCHITECTURE.md`; Mac production distribution is not yet validated.
 
 ### Testing API Integration
 ```bash
@@ -113,14 +113,14 @@ cargo check                   # Fast compile check
 
 The Rust backend is organized into independent modules that communicate through the main lib.rs orchestrator:
 
-1. **hotkey_service.rs** - Custom dual-hotkey listener using `rdev`
+1. **platform/** - Native hotkey adapters with shared `hotkey_state.rs` rules
    - Supports **73 keys**: modifiers, letters, numbers, F1-F12, arrows, navigation keys
    - **Dual hotkey system**: Independent dictation and assistant mode bindings
-   - **Ghost key detection**: Windows Win32 API (`GetAsyncKeyState`) prevents stuck states from rdev event loss
+   - **Native input**: Windows `GetAsyncKeyState` polling; macOS native event snapshots and permission recovery
    - **500ms watchdog timer**: Automatic state recovery for reliability
    - Thread-safe state management with `Arc<Mutex<bool>>`
    - Callback-based: `on_start()` and `on_stop()` closures passed to `start()`
-   - **Platform requirement**: Windows admin rights mandatory
+   - **Platform requirement**: Follow Windows administrator workflow; macOS uses explicit native privacy permissions
 
 2. **audio_recorder.rs** - Real-time audio capture (non-streaming mode)
    - Uses `cpal` for cross-platform audio I/O
@@ -173,11 +173,11 @@ The Rust backend is organized into independent modules that communicate through 
    - Captures selected text via clipboard with **3 retry attempts** (exponential backoff)
    - **100ms delay** after hotkey release before Ctrl+C (prevents modifier key conflicts)
    - RAII `ClipboardGuard` ensures automatic restoration even on panic
-   - Uses `arboard` for clipboard operations + `win32_input` (Win32 SendInput API) for keyboard simulation
+   - Uses platform clipboard transactions and native keyboard simulation; target restoration failure must stop capture
 
 8. **text_inserter.rs** - Clipboard-based text injection
    - Strategy: Save clipboard → Copy text → Simulate Ctrl+V → Restore clipboard
-   - Uses `arboard` (clipboard) + `win32_input` (Win32 SendInput API)
+   - Uses `platform::ClipboardSession` and native input (Windows SendInput / macOS events), with target checks
    - **Focus management**: 150ms delay before text insertion to restore window focus (for toggle mode)
 
 9. **audio_utils.rs** - Audio processing utilities
@@ -225,13 +225,13 @@ The Rust backend is organized into independent modules that communicate through 
       - Uses configurable LLM provider from shared config
     - **learning/validator.rs** - ASR text presence validator
       - Verifies ASR text still exists in target window
-      - Uses UIA text reader for non-intrusive validation
+      - Uses the platform text reader for non-intrusive validation (Windows UIA / macOS AX)
     - **learning/store.rs** - Dictionary entry storage
       - Manages auto-learned vocabulary entries
       - Tracks word frequency and last used time
     - **Event emission**: `learning_suggestion` event for frontend toast notifications
 
-14. **uia_text_reader.rs** - Windows UI Automation text reader
+14. **platform/windows/uia_text_reader.rs** - Windows UI Automation text reader
     - Non-intrusive text capture from focused windows
     - Uses `IUIAutomationTextPattern` and `IUIAutomationValuePattern`
     - **COM initialization**: RAII `ComGuard` for proper cleanup

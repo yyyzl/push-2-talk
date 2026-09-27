@@ -33,8 +33,8 @@
 - `npm run build` type-checks and builds the frontend bundle.
 - `npm run preview` serves the built UI locally.
 - `npm run test:ts` runs TypeScript runtime tests in `tests/*.test.ts`.
-- `npm run tauri dev` runs the desktop app in dev mode; run as Administrator so global hotkeys work.
-- `npm run tauri build` builds the NSIS installer only; output in `src-tauri/target/release/bundle/`.
+- `npm run tauri dev` runs the desktop app in dev mode; follow the administrator workflow on Windows and grant native privacy permissions on macOS.
+- `npm run tauri build` builds the native platform bundles; Windows uses NSIS and macOS uses `tauri.macos.conf.json`. Output is in `src-tauri/target/release/bundle/`. See `PLATFORM_ARCHITECTURE.md` for Mac dependencies and prototype packaging.
 - `cd src-tauri` then `cargo build`, `cargo check`, or `cargo test` for the Rust backend.
 - `cd src-tauri` then `cargo run --bin test_api` to manually verify ASR API behavior.
 
@@ -58,7 +58,7 @@
 - Preserve Windows-native hotkeys/input (GetAsyncKeyState, SendInput), UIA and audio session behavior in `platform/windows/`. macOS may use different native APIs.
 - Follow the existing administrator workflow for Windows hotkeys; preserve ghost-key detection and the 500ms watchdog. macOS uses explicit system privacy permissions.
 - Keep clipboard/focus timing safeguards (100ms delay before capture, 150ms delay before insert) in assistant/overlay flows.
-- Config lives at `%APPDATA%\PushToTalk\config.json`; migration logic is in `src-tauri/src/config.rs`.
+- Config lives at `%APPDATA%\PushToTalk\config.json` on Windows or `~/Library/Application Support/PushToTalk/config.json` on macOS; migration logic is in `src-tauri/src/config.rs`. The SQLite user dictionary is authoritative after bootstrap; see `docs/development/database-guidelines.md`.
 - UIA text reader uses Windows UI Automation API; maintain COM initialization guards and timeout protection.
 - Learning module uses async observation tasks; respect deduplication per opaque `InputTarget`.
 
