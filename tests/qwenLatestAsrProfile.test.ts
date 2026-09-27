@@ -63,11 +63,11 @@ test("历史 qwen_audio3 别名保留 3.0，未知值回到默认值", () => {
   }
 });
 
-test("缺少 profile 的旧前端配置应归一化到最新版", () => {
+test("缺少 profile 的旧前端配置应保留原 Qwen3 模型", () => {
   const normalized = normalizeAsrConfigWithFallback(createLegacyRuntimeConfig());
 
   assert.equal(normalized.didFallback, false);
-  assert.equal(normalized.config.qwen_profile, DEFAULT_QWEN_ASR_PROFILE);
+  assert.equal(normalized.config.qwen_profile, "qwen3_legacy");
 });
 
 test("显式选择旧版时应保留兼容 profile", () => {

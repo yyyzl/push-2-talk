@@ -13,6 +13,7 @@ import { Check, Loader2 } from "lucide-react";
 export type ConfigSyncStatus = "idle" | "syncing" | "success" | "error";
 
 export type ConfigSelectProps<T extends string> = {
+  id?: string;
   value: T;
   onChange: (value: T) => void;
   onCommit?: (value: T) => Promise<void>;
@@ -24,6 +25,7 @@ export type ConfigSelectProps<T extends string> = {
 };
 
 export function ConfigSelect<T extends string>({
+  id,
   value,
   onChange,
   onCommit,
@@ -33,7 +35,6 @@ export function ConfigSelect<T extends string>({
   syncStatus: externalStatus,
 }: ConfigSelectProps<T>) {
   const [internalStatus, setInternalStatus] = useState<ConfigSyncStatus>("idle");
-  const [previousValue, setPreviousValue] = useState<T>(value);
   const successTimeoutRef = useRef<number | null>(null);
 
   const status = externalStatus ?? internalStatus;
@@ -51,7 +52,7 @@ export function ConfigSelect<T extends string>({
     if (disabled || status === "syncing") return;
 
     // 保存旧值用于回滚
-    setPreviousValue(value);
+    const previousValue = value;
 
     // 乐观更新
     onChange(newValue);
@@ -87,6 +88,7 @@ export function ConfigSelect<T extends string>({
   return (
     <div className={["relative group", className].filter(Boolean).join(" ")}>
       <select
+        id={id}
         value={value}
         disabled={disabled || isSyncing}
         onChange={(e) => void handleChange(e.target.value as T)}

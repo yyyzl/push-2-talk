@@ -1,0 +1,68 @@
+[
+  {
+    "id": "qwen-audio-3.1-asr-flash",
+    "label": "Audio 3.1 · 录音识别",
+    "mode": "http",
+    "protocol": "audio3"
+  },
+  {
+    "id": "qwen-audio-3.0-asr-flash",
+    "label": "Audio 3.0 · 录音识别",
+    "mode": "http",
+    "protocol": "audio3"
+  },
+  {
+    "id": "qwen3-asr-flash",
+    "label": "Qwen3 · 稳定版",
+    "mode": "http",
+    "protocol": "qwen3"
+  },
+  {
+    "id": "qwen3-asr-flash-2026-02-10",
+    "label": "Qwen3 · 2026-02-10",
+    "mode": "http",
+    "protocol": "qwen3"
+  },
+  {
+    "id": "qwen3-asr-flash-2025-09-08",
+    "label": "Qwen3 · 2025-09-08",
+    "mode": "http",
+    "protocol": "qwen3"
+  },
+  {
+    "id": "qwen-audio-3.1-asr-flash-message",
+    "label": "Audio 3.1 Message · 语音输入",
+    "mode": "realtime",
+    "protocol": "message"
+  },
+  {
+    "id": "qwen-audio-3.1-asr-flash-streaming",
+    "label": "Audio 3.1 · 流式",
+    "mode": "realtime",
+    "protocol": "audio3"
+  },
+  {
+    "id": "qwen-audio-3.0-asr-flash-streaming",
+    "label": "Audio 3.0 · 流式",
+    "mode": "realtime",
+    "protocol": "audio3"
+  },
+  {
+    "id": "qwen3-asr-flash-realtime",
+    "label": "Qwen3 · 稳定版",
+    "mode": "realtime",
+    "protocol": "qwen3"
+  },
+  {
+    "id": "qwen3-asr-flash-realtime-2026-02-10",
+    "label": "Qwen3 · 2026-02-10",
+    "mode": "realtime",
+    "protocol": "qwen3"
+  },
+  {
+    "id": "qwen3-asr-flash-realtime-2025-10-27",
+    "label": "Qwen3 · 2025-10-27",
+    "mode": "realtime",
+    "protocol": "qwen3"
+  }
+]

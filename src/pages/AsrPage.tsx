@@ -1,10 +1,9 @@
+import { selectedQwenModel, qwenModelOptions, withQwenModel, type QwenMode } from "../utils/qwenModels";
 import type { Dispatch, SetStateAction } from "react";
 import { AlertCircle, Sparkles } from "lucide-react";
-import type { AsrConfig, AsrProvider, QwenAsrProfile } from "../types";
+import type { AsrConfig, AsrProvider } from "../types";
 import {
   ASR_PROVIDERS,
-  normalizeQwenAsrProfile,
-  QWEN_ASR_PROFILES,
 } from "../constants";
 import { ApiKeyInput, Toggle, ConfigSelect } from "../components/common";
 import { useConfigSave } from "../contexts/ConfigSaveContext";
@@ -31,8 +30,6 @@ export function AsrPage({
   const externalOnlySyncStatus = isExternalSyncing
     ? ("syncing" as const)
     : undefined;
-  const qwenProfile = normalizeQwenAsrProfile(asrConfig.qwen_profile);
-  const qwenProfileMeta = QWEN_ASR_PROFILES[qwenProfile];
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 font-sans">
@@ -43,7 +40,7 @@ export function AsrPage({
 
         <div className="flex items-center gap-2 p-3 bg-[var(--panel)] border border-[var(--stone)] rounded-xl text-xs text-[var(--ink)]">
           <AlertCircle size={14} className="flex-shrink-0 text-[var(--steel)]" />
-          <span>ASR 用于语音转文字：千问 / 豆包 + 硅基备用。</span>
+          <span>选择识别服务，并为不同录音模式设置模型。</span>
         </div>
 
         <div className="space-y-4">
@@ -73,40 +70,40 @@ export function AsrPage({
                   { value: "qwen" as AsrProvider, label: ASR_PROVIDERS.qwen.name },
                   { value: "doubao" as AsrProvider, label: ASR_PROVIDERS.doubao.name },
                   { value: "doubao_ime" as AsrProvider, label: ASR_PROVIDERS.doubao_ime.name },
+                  { value: "siliconflow" as AsrProvider, label: ASR_PROVIDERS.siliconflow.name },
                 ]}
               />
             </div>
 
             {asrConfig.selection.active_provider === "qwen" && (
               <div className="space-y-3">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-stone-500">千问模型版本</label>
-                  <ConfigSelect<QwenAsrProfile>
-                    value={qwenProfile}
-                    onChange={(profile) => {
-                      setAsrConfig((prev) => ({
-                        ...prev,
-                        qwen_profile: profile,
-                      }));
-                    }}
-                    onCommit={async (profile) => {
-                      await saveImmediately({
-                        asrConfig: {
-                          ...asrConfig,
-                          qwen_profile: profile,
-                        },
-                      });
-                    }}
-                    syncStatus={externalOnlySyncStatus}
-                    disabled={isRunning}
-                    options={(Object.keys(QWEN_ASR_PROFILES) as QwenAsrProfile[]).map((profile) => ({
-                      value: profile,
-                      label: QWEN_ASR_PROFILES[profile].name,
-                    }))}
-                  />
-                  <p className="text-xs text-stone-400">
-                    {qwenProfileMeta.description}
+                <div className="space-y-4">
+                  {(["http", "realtime"] as QwenMode[]).map((mode) => (
+                    <div className="space-y-2" key={mode}>
+                      <label htmlFor={`qwen-model-${mode}`} className="text-xs font-bold text-stone-600">
+                        {mode === "http" ? "松开后识别的模型" : "边说边识别的模型"}
+                      </label>
+                      <ConfigSelect
+                        id={`qwen-model-${mode}`}
+                        value={selectedQwenModel(asrConfig, mode)}
+                        onChange={(id) => setAsrConfig((prev) => withQwenModel(prev, mode, id))}
+                        onCommit={async (id) => {
+                          await saveImmediately({ asrConfig: withQwenModel(asrConfig, mode, id) });
+                        }}
+                        syncStatus={externalOnlySyncStatus}
+                        disabled={isRunning}
+                        options={qwenModelOptions(asrConfig, mode)}
+                      />
+                      <p className="break-all font-mono text-xs text-stone-500">
+                        {selectedQwenModel(asrConfig, mode)}
+                      </p>
+                    </div>
+                  ))}
+                  <p className="text-xs leading-relaxed text-stone-500">
+                    两种模式分别保存。带日期的模型固定版本，升级应用不会替你切换。
+                    Message 适合语音输入，自动识别语言。使用阿里云北京地域的 API Key。
                   </p>
+                  {isRunning && <p className="text-xs text-stone-500">请先停止服务，再修改模型。</p>}
                 </div>
 
                 <div className="space-y-2">
@@ -124,6 +121,19 @@ export function AsrPage({
                     placeholder="sk-..."
                   />
                 </div>
+              </div>
+            )}
+
+            {asrConfig.selection.active_provider === "siliconflow" && (
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-stone-500">SiliconFlow API Key</label>
+                <ApiKeyInput
+                  value={asrConfig.credentials.sensevoice_api_key}
+                  onChange={(value) => setAsrConfig((prev) => ({ ...prev, credentials: { ...prev.credentials, sensevoice_api_key: value } }))}
+                  show={showApiKey}
+                  onToggleShow={() => setShowApiKey(!showApiKey)}
+                  placeholder="sk-..."
+                />
               </div>
             )}
 
@@ -171,15 +181,11 @@ export function AsrPage({
               </div>
             )}
 
-            <div className="text-xs text-stone-400 font-semibold">
-              {asrConfig.selection.active_provider === "qwen" ? (
-                <>
-                  HTTP：{qwenProfileMeta.httpModel}；实时：{qwenProfileMeta.realtimeModel}
-                </>
-              ) : (
-                <>模型：{ASR_PROVIDERS[asrConfig.selection.active_provider].model}</>
-              )}
-            </div>
+            {asrConfig.selection.active_provider !== "qwen" && (
+              <div className="text-xs text-stone-400 font-semibold">
+                模型：{ASR_PROVIDERS[asrConfig.selection.active_provider].model}
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-xs font-bold text-stone-500">识别语言</label>

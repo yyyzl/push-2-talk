@@ -1,5 +1,6 @@
 pub mod doubao_ime;
 pub mod http;
+pub mod qwen_models;
 mod race_strategy;
 pub mod realtime;
 mod utils;

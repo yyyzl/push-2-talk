@@ -1,3 +1,4 @@
+use push_to_talk_lib::asr::qwen_models::{profile_model, resolve_model, QwenMode, QwenModel};
 use std::env;
 use std::path::PathBuf;
 
@@ -13,6 +14,7 @@ struct TestArgs {
     file: PathBuf,
     profile: QwenAsrProfile,
     realtime: bool,
+    model: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<TestArgs> {
@@ -20,6 +22,7 @@ fn parse_args(args: &[String]) -> Result<TestArgs> {
     let mut file: Option<PathBuf> = None;
     let mut profile = QwenAsrProfile::default();
     let mut realtime = false;
+    let mut model = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -47,6 +50,14 @@ fn parse_args(args: &[String]) -> Result<TestArgs> {
                     anyhow!("--qwen-profile expects qwen_audio_3_1|qwen_audio_3|qwen3_legacy")
                 })?;
             }
+            "--model" => {
+                i += 1;
+                model = Some(
+                    args.get(i)
+                        .ok_or_else(|| anyhow!("missing value for --model"))?
+                        .clone(),
+                );
+            }
             "--mode" => {
                 i += 1;
                 realtime = match args.get(i).map(String::as_str) {
@@ -57,7 +68,7 @@ fn parse_args(args: &[String]) -> Result<TestArgs> {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: cargo run --bin test_api -- --asr <qwen|doubao_ime> --file <wav_path> [--qwen-profile <qwen_audio_3_1|qwen_audio_3|qwen3_legacy>] [--mode <http|realtime>]"
+                    "Usage: cargo run --bin test_api -- --asr <qwen|doubao_ime> --file <wav_path> [--qwen-profile <qwen_audio_3_1|qwen_audio_3|qwen3_legacy>] [--mode <http|realtime>] [--model <exact-model-id>]"
                 );
                 std::process::exit(0);
             }
@@ -77,10 +88,11 @@ fn parse_args(args: &[String]) -> Result<TestArgs> {
         file,
         profile,
         realtime,
+        model,
     })
 }
 
-async fn run_qwen(file: &PathBuf, profile: QwenAsrProfile, realtime: bool) -> Result<()> {
+async fn run_qwen(file: &PathBuf, model: &'static QwenModel, realtime: bool) -> Result<()> {
     let api_key = env::var("DASHSCOPE_API_KEY")
         .map_err(|_| anyhow!("DASHSCOPE_API_KEY is required for --asr qwen"))?;
     if api_key.is_empty() {
@@ -88,11 +100,6 @@ async fn run_qwen(file: &PathBuf, profile: QwenAsrProfile, realtime: bool) -> Re
     }
 
     let started = Instant::now();
-    let model = if realtime {
-        profile.realtime_model()
-    } else {
-        profile.http_model()
-    };
     let text = if realtime {
         let mut reader = hound::WavReader::open(file)?;
         let spec = reader.spec();
@@ -106,12 +113,12 @@ async fn run_qwen(file: &PathBuf, profile: QwenAsrProfile, realtime: bool) -> Re
         let samples = reader
             .samples::<i16>()
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let client = QwenRealtimeClient::new_with_profile_and_correction_pairs(
+        let client = QwenRealtimeClient::new_with_model_and_correction_pairs(
             api_key,
             Vec::new(),
             Vec::new(),
             AsrLanguageMode::Auto,
-            profile,
+            model,
         );
         let mut session = client.start_session().await?;
         let result = async {
@@ -127,19 +134,19 @@ async fn run_qwen(file: &PathBuf, profile: QwenAsrProfile, realtime: bool) -> Re
         result?
     } else {
         let audio_data = tokio::fs::read(file).await?;
-        QwenASRClient::new_with_profile_and_correction_pairs(
+        QwenASRClient::new_with_model_and_correction_pairs(
             api_key,
             Vec::new(),
             Vec::new(),
             AsrLanguageMode::Auto,
-            profile,
+            model,
         )
         .transcribe_from_memory(&audio_data)
         .await?
     };
     println!(
         "{}",
-        serde_json::json!({"model": model, "elapsed_ms": started.elapsed().as_millis(), "text": text})
+        serde_json::json!({"model": model.id, "elapsed_ms": started.elapsed().as_millis(), "text": text})
     );
     Ok(())
 }
@@ -164,15 +171,27 @@ async fn main() -> Result<()> {
         file,
         profile,
         realtime,
+        model,
     } = parse_args(&env::args().collect::<Vec<_>>())?;
     if !file.exists() {
         return Err(anyhow!("file not found: {}", file.display()));
     }
 
     match provider.as_str() {
-        "qwen" => tokio::time::timeout(Duration::from_secs(45), run_qwen(&file, profile, realtime))
-            .await
-            .map_err(|_| anyhow!("qwen API verification timed out after 45 seconds"))?,
+        "qwen" => {
+            let mode = if realtime {
+                QwenMode::Realtime
+            } else {
+                QwenMode::Http
+            };
+            let selected = match model {
+                Some(id) => resolve_model(&id, mode)?,
+                None => profile_model(profile, mode),
+            };
+            tokio::time::timeout(Duration::from_secs(45), run_qwen(&file, selected, realtime))
+                .await
+                .map_err(|_| anyhow!("qwen API verification timed out after 45 seconds"))?
+        }
         "doubao_ime" => run_doubao_ime(&file).await,
         _ => Err(anyhow!(
             "unsupported --asr provider: {} (expected qwen|doubao_ime)",

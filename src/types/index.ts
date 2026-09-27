@@ -51,6 +51,7 @@ export interface AsrConfig {
   credentials: AsrCredentials;
   selection: AsrSelection;
   qwen_profile: QwenAsrProfile;
+  qwen_models?: { http?: string | null; realtime?: string | null };
   language_mode: AsrLanguageMode;
 }
 

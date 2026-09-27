@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod asr;
+use asr::qwen_models::{profile_model, QwenMode, QwenModel};
 mod assistant_processor;
 mod audio_recorder;
 mod audio_utils;
@@ -2356,6 +2357,7 @@ mod save_config_merge_tests {
                 fallback_provider: Some(config::AsrProvider::Qwen),
             },
             qwen_profile: config::QwenAsrProfile::Qwen3Legacy,
+            qwen_models: config::QwenModelSelection::default(),
             language_mode: config::AsrLanguageMode::Zh,
         }
     }
@@ -2498,7 +2500,7 @@ async fn handle_recording_start(
     dictionary: Vec<String>,
     correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
-    qwen_profile: config::QwenAsrProfile,
+    qwen_model: &'static QwenModel,
 ) {
     tracing::info!("检测到快捷键按下");
 
@@ -2571,7 +2573,7 @@ async fn handle_recording_start(
                     dictionary,
                     correction_pairs,
                     language_mode,
-                    qwen_profile,
+                    qwen_model,
                 )
                 .await;
             }
@@ -2908,7 +2910,7 @@ async fn handle_qwen_realtime_start(
     dictionary: Vec<String>,
     correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
-    qwen_profile: config::QwenAsrProfile,
+    qwen_model: &'static QwenModel,
 ) {
     tracing::info!("启动千问实时流式转录...");
 
@@ -2927,12 +2929,12 @@ async fn handle_qwen_realtime_start(
         }
     }
 
-    let realtime_client = QwenRealtimeClient::new_with_profile_and_correction_pairs(
+    let realtime_client = QwenRealtimeClient::new_with_model_and_correction_pairs(
         api_key,
         dictionary,
         correction_pairs,
         language_mode,
-        qwen_profile,
+        qwen_model,
     );
     match realtime_client.start_session().await {
         Ok(session) => {
@@ -3072,6 +3074,10 @@ async fn start_app(
     if !platform::desktop().status().ready() {
         return Err("请在偏好设置中授权麦克风、辅助功能和输入监控，再启动服务".into());
     }
+    if let Some(cfg) = &asr_config {
+        cfg.validate_models(use_realtime.unwrap_or(true))
+            .map_err(|e| e.to_string())?;
+    }
     tracing::info!("启动应用...");
 
     // 获取应用状态
@@ -3098,21 +3104,14 @@ async fn start_app(
 
     tracing::info!("[DEBUG] 开始初始化...");
 
-    // 确定是否使用实时模式
-    let mut use_realtime_mode = use_realtime.unwrap_or(true);
-
-    // 强制覆盖：DoubaoIme 只支持流式模式
-    if let Some(ref cfg) = asr_config {
-        if matches!(
-            cfg.selection.active_provider,
-            config::AsrProvider::DoubaoIme
-        ) {
-            if !use_realtime_mode {
-                tracing::info!("豆包输入法只支持流式模式，已自动切换");
-            }
-            use_realtime_mode = true;
-        }
-    }
+    // The provider owns transport capabilities. Legacy use_realtime flags must
+    // never route a SenseVoice credential to the Qwen WebSocket implementation.
+    let requested_realtime = use_realtime.unwrap_or(true);
+    let use_realtime_mode = asr_config.as_ref().map_or(requested_realtime, |cfg| {
+        cfg.selection
+            .active_provider
+            .realtime_enabled(requested_realtime)
+    });
 
     *state.use_realtime_asr.lock().unwrap() = use_realtime_mode;
 
@@ -3166,14 +3165,18 @@ async fn start_app(
         if let Some(ref cfg) = asr_config {
             // 初始化所有有凭证的客户端
             if !cfg.credentials.qwen_api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() =
-                    Some(QwenASRClient::new_with_profile_and_correction_pairs(
-                        cfg.credentials.qwen_api_key.clone(),
-                        dict.clone(),
-                        correction_pairs.clone(),
-                        cfg.language_mode,
-                        cfg.qwen_profile,
-                    ));
+                // An unsupported saved HTTP model must not block an unrelated provider
+                // or an explicitly selected realtime model. Used paths were validated above.
+                if let Ok(model) = cfg.qwen_model(QwenMode::Http) {
+                    *state.qwen_client.lock().unwrap() =
+                        Some(QwenASRClient::new_with_model_and_correction_pairs(
+                            cfg.credentials.qwen_api_key.clone(),
+                            dict.clone(),
+                            correction_pairs.clone(),
+                            cfg.language_mode,
+                            model,
+                        ));
+                }
             }
             if !cfg.credentials.sensevoice_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() = Some(SenseVoiceClient::new(
@@ -3387,10 +3390,20 @@ async fn start_app(
         .as_ref()
         .map(|cfg| cfg.language_mode)
         .unwrap_or(config::AsrLanguageMode::Auto);
-    let qwen_profile_start = asr_config
-        .as_ref()
-        .map(|cfg| cfg.qwen_profile)
-        .unwrap_or_default();
+    let qwen_model_start = if use_realtime_mode
+        && asr_config
+            .as_ref()
+            .is_some_and(|cfg| cfg.selection.active_provider == config::AsrProvider::Qwen)
+    {
+        asr_config
+            .as_ref()
+            .unwrap()
+            .qwen_model(QwenMode::Realtime)
+            .map_err(|e| e.to_string())?
+    } else {
+        // Unused by non-Qwen or HTTP recording paths; keeps legacy callers compatible.
+        profile_model(config::QwenAsrProfile::Qwen3Legacy, QwenMode::Realtime)
+    };
 
     let app_handle_stop = app_handle.clone();
     let audio_recorder_stop = Arc::clone(&state.audio_recorder);
@@ -3501,7 +3514,7 @@ async fn start_app(
         let doubao_app_id = doubao_app_id_start.clone();
         let doubao_access_token = doubao_access_token_start.clone();
         let language_mode = asr_language_mode_start;
-        let qwen_profile = qwen_profile_start;
+        let qwen_model = qwen_model_start;
         let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
         let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
         let dictionary_state = Arc::clone(&dictionary_state_start);
@@ -3596,7 +3609,7 @@ async fn start_app(
                 dictionary,
                 correction_pairs,
                 language_mode,
-                qwen_profile,
+                qwen_model,
             )
             .await;
 

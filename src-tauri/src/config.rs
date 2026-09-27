@@ -1,9 +1,10 @@
 // src-tauri/src/config.rs
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // 词典相关函数已移至独立的 dictionary_utils 模块
@@ -482,6 +483,16 @@ pub enum AsrProvider {
     SiliconFlow,
 }
 
+impl AsrProvider {
+    pub fn realtime_enabled(&self, requested: bool) -> bool {
+        match self {
+            Self::DoubaoIme => true,
+            Self::SiliconFlow => false,
+            _ => requested,
+        }
+    }
+}
+
 impl Default for AsrProvider {
     fn default() -> Self {
         AsrProvider::DoubaoIme
@@ -564,12 +575,26 @@ impl QwenAsrProfile {
     }
 }
 
+fn legacy_qwen_profile() -> QwenAsrProfile {
+    QwenAsrProfile::Qwen3Legacy
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QwenModelSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
     pub credentials: AsrCredentials,
     pub selection: AsrSelection,
-    #[serde(default)]
+    #[serde(default = "legacy_qwen_profile")]
     pub qwen_profile: QwenAsrProfile,
+    #[serde(default)]
+    pub qwen_models: QwenModelSelection,
     #[serde(default)]
     pub language_mode: AsrLanguageMode,
 }
@@ -580,6 +605,7 @@ impl Default for AsrConfig {
             credentials: AsrCredentials::default(),
             selection: AsrSelection::default(),
             qwen_profile: QwenAsrProfile::default(),
+            qwen_models: QwenModelSelection::default(),
             language_mode: AsrLanguageMode::Auto,
         }
     }
@@ -695,7 +721,7 @@ pub struct TnlConfig {
     #[serde(default = "default_enable_tnl")]
     pub enabled: bool,
     /// 口语流畅化清洗模式
-    #[serde(default)]
+    #[serde(default = "legacy_disfluency_mode")]
     pub disfluency_mode: crate::tnl::DisfluencyMode,
     /// 个性化纠错对精确文本 Pass 开关
     #[serde(default = "default_enable_personalization_exact_text_pass")]
@@ -709,6 +735,10 @@ pub struct TnlConfig {
     /// 个性化本地自动应用阈值
     #[serde(default = "default_personalization_apply_threshold")]
     pub personalization_apply_threshold: f32,
+}
+
+fn legacy_disfluency_mode() -> crate::tnl::DisfluencyMode {
+    crate::tnl::DisfluencyMode::Off
 }
 
 fn default_enable_tnl() -> bool {
@@ -1599,54 +1629,57 @@ impl AppConfig {
     }
 
     pub fn load() -> Result<(Self, bool)> {
-        let path = Self::config_path()?;
+        Self::load_from_path(&Self::config_path()?)
+    }
+
+    pub(crate) fn load_from_path(path: &Path) -> Result<(Self, bool)> {
         tracing::info!("尝试从以下路径加载配置: {:?}", path);
 
         // 跟踪是否发生了迁移（调用者可根据此决定是否保存）
-        let mut migrated = false;
+        // The old writer moved the canonical file to .bak before replacing it.
+        // Recover only if the canonical file is absent; never hide its parse errors.
+        let backup_path = path.with_extension("json.bak");
+        let recovered_backup = !path.try_exists()? && backup_path.try_exists()?;
+        let source = if recovered_backup {
+            backup_path.as_path()
+        } else {
+            path
+        };
+        let mut migrated = recovered_backup;
 
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
+        if source.try_exists()? {
+            let content = std::fs::read_to_string(source)?;
 
             // 使用 serde_json::Value 先解析，以支持结构迁移
             let v: serde_json::Value = serde_json::from_str(&content)?;
 
-            // 尝试直接反序列化为 AppConfig
-            let mut config: AppConfig = match serde_json::from_value(v.clone()) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("直接解析配置失败，尝试手动迁移: {}", e);
-                    let mut cfg = AppConfig::new();
+            // Unknown/invalid fields must not silently reset unrelated settings or keys.
+            // Known historical fields are still accepted and migrated below.
+            let mut config: AppConfig = serde_json::from_value(v.clone())
+                .context("配置格式不受支持；原配置已保留，请检查配置字段")?;
 
-                    // 尝试从原始 JSON 提取未变更的字段
-                    if let Some(llm_config) = v.get("llm_config") {
-                        if let Ok(llm) = serde_json::from_value(llm_config.clone()) {
-                            tracing::info!("成功恢复 llm_config");
-                            cfg.llm_config = llm;
-                        }
-                    }
-                    if let Some(assistant_config) = v.get("assistant_config") {
-                        if let Ok(assistant) = serde_json::from_value(assistant_config.clone()) {
-                            tracing::info!("成功恢复 assistant_config");
-                            cfg.assistant_config = assistant;
-                        }
-                    }
-                    if let Some(dictionary) = v.get("dictionary") {
-                        if let Ok(dict) = serde_json::from_value(dictionary.clone()) {
-                            tracing::info!("成功恢复 dictionary");
-                            cfg.dictionary = dict;
-                        }
-                    }
-                    if let Some(builtin_domains) = v.get("builtin_dictionary_domains") {
-                        if let Ok(domains) = serde_json::from_value(builtin_domains.clone()) {
-                            tracing::info!("成功恢复 builtin_dictionary_domains");
-                            cfg.builtin_dictionary_domains = domains;
-                        }
-                    }
-
-                    cfg
+            if v.get("asr_config")
+                .and_then(|asr| asr.get("qwen_profile"))
+                .is_none()
+            {
+                config.asr_config.qwen_profile = legacy_qwen_profile();
+                migrated = true;
+            }
+            if v.get("tnl_config")
+                .and_then(|tnl| tnl.get("disfluency_mode"))
+                .is_none()
+            {
+                config.tnl_config.disfluency_mode = legacy_disfluency_mode();
+                migrated = true;
+            }
+            // Before provider selection existed, DashScope was the primary ASR.
+            if v.get("asr_config").is_none() {
+                if !config.dashscope_api_key.trim().is_empty() {
+                    config.asr_config.selection.active_provider = AsrProvider::Qwen;
+                } else if !config.siliconflow_api_key.trim().is_empty() {
+                    config.asr_config.selection.active_provider = AsrProvider::SiliconFlow;
                 }
-            };
+            }
 
             // ========== 迁移逻辑 ==========
 
@@ -2100,61 +2133,32 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::config_path()?;
+        self.save_to_path(&Self::config_path()?)
+    }
+
+    pub(crate) fn save_to_path(&self, path: &Path) -> Result<()> {
         let content = serde_json::to_string_pretty(self)?;
         tracing::info!("保存配置到: {:?}", path);
 
-        // 使用原子写入：先写临时文件，再原子替换
-        let temp_path = path.with_extension("json.tmp");
-        let backup_path = path.with_extension("json.bak");
-
-        tracing::info!("写入临时文件: {:?}", temp_path);
-        std::fs::write(&temp_path, &content).map_err(|e| {
-            tracing::error!("写入临时文件失败: {}", e);
-            e
-        })?;
-
-        // Windows 原子替换策略：
-        // 1. 如果目标文件存在，先备份到 .bak
-        // 2. 重命名临时文件到目标文件
-        // 3. 删除备份文件
-        // 这样即使在任何步骤崩溃，都能恢复：
-        // - 步骤 1 崩溃：原文件完好
-        // - 步骤 2 崩溃：.bak 文件可用于恢复
-        // - 步骤 3 崩溃：配置已保存成功，.bak 只是残留
-        tracing::info!("执行原子替换");
-        if path.exists() {
-            // 先备份旧文件
-            if backup_path.exists() {
-                let _ = std::fs::remove_file(&backup_path);
-            }
-            std::fs::rename(&path, &backup_path).map_err(|e| {
-                tracing::error!("备份旧配置文件失败: {}", e);
-                e
-            })?;
+        // Keep the old file in place until the native atomic replacement succeeds.
+        // Unique siblings also prevent independent writers from sharing a temp file.
+        anyhow::ensure!(!path.is_dir(), "配置路径是目录，无法保存");
+        let temp_path = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            crate::platform::replace_file(&temp_path, path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
         }
-
-        // 重命名临时文件到目标文件
-        match std::fs::rename(&temp_path, &path) {
-            Ok(_) => {
-                // 成功后删除备份文件
-                let _ = std::fs::remove_file(&backup_path);
-                tracing::info!("配置保存成功");
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("重命名临时文件失败: {}", e);
-                // 尝试恢复备份
-                if backup_path.exists() {
-                    if let Err(restore_err) = std::fs::rename(&backup_path, &path) {
-                        tracing::error!("恢复备份失败: {}", restore_err);
-                    } else {
-                        tracing::info!("已从备份恢复配置");
-                    }
-                }
-                Err(e.into())
-            }
-        }
+        result
     }
 }
 
@@ -2173,7 +2177,7 @@ mod tests {
     }
 
     #[test]
-    fn asr_config_defaults_legacy_payloads_to_qwen_audio_3() {
+    fn asr_config_preserves_legacy_qwen3_when_profile_is_absent() {
         let config: AsrConfig = serde_json::from_value(serde_json::json!({
             "credentials": {},
             "selection": {}
@@ -2182,9 +2186,9 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(config.qwen_profile).unwrap(),
-            "qwen_audio_3_1"
+            "qwen3_legacy"
         );
-        assert_eq!(config.qwen_profile, QwenAsrProfile::default());
+        assert_eq!(config.qwen_profile, QwenAsrProfile::Qwen3Legacy);
     }
 
     #[test]
@@ -2401,7 +2405,7 @@ mod tests {
 
         assert_eq!(
             cfg.tnl_config.disfluency_mode,
-            crate::tnl::DisfluencyMode::Conservative
+            crate::tnl::DisfluencyMode::Off
         );
         assert!(cfg.tnl_config.enable_personalization_exact_text_pass);
         assert!(cfg.tnl_config.enable_personalization_syllable_match_pass);
@@ -2605,3 +2609,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod compatibility_tests;

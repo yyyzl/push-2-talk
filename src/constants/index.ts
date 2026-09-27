@@ -157,7 +157,7 @@ export function normalizeTnlConfig(
     ...tnlConfig,
     disfluency_mode: isDisfluencyMode(tnlConfig.disfluency_mode)
       ? tnlConfig.disfluency_mode
-      : DEFAULT_TNL_CONFIG.disfluency_mode,
+      : tnlConfig.disfluency_mode == null ? "off" : DEFAULT_TNL_CONFIG.disfluency_mode,
     personalization_max_window_tokens:
       Number.isFinite(maxWindowTokens) && maxWindowTokens > 0
         ? maxWindowTokens
@@ -203,6 +203,7 @@ export const QWEN_ASR_PROFILES: Record<
 
 /** 保留明确选择的版本，并兼容修复前落盘的 3.0 名称。 */
 export function normalizeQwenAsrProfile(profile: unknown): QwenAsrProfile {
+  if (profile == null) return 'qwen3_legacy';
   if (profile === 'qwen_audio3') return 'qwen_audio_3';
   return typeof profile === 'string' && Object.prototype.hasOwnProperty.call(QWEN_ASR_PROFILES, profile)
     ? profile as QwenAsrProfile

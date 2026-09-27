@@ -1,3 +1,4 @@
+use crate::asr::qwen_models::{profile_model, QwenMode, QwenModel, QwenProtocol};
 // 千问 ASR WebSocket 客户端
 // 同时支持 Qwen Audio 3.1 / 3.0 协议与 Qwen3 旧版兼容协议
 
@@ -27,13 +28,6 @@ const IDLE_TIMEOUT_SECS: u64 = 180; // 3 分钟空闲超时
 const TRANSCRIPTION_TIMEOUT_SECS: u64 = 10; // 转录结果等待超时（秒）
 const TASK_START_TIMEOUT_SECS: u64 = 10;
 
-fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
-    match language_mode {
-        AsrLanguageMode::Auto => "auto",
-        AsrLanguageMode::Zh => "zh",
-    }
-}
-
 #[cfg(test)]
 fn build_input_audio_transcription(
     language_mode: AsrLanguageMode,
@@ -47,9 +41,11 @@ fn build_input_audio_transcription_with_pairs(
     dictionary: &[String],
     correction_pairs: &[CorrectionPair],
 ) -> serde_json::Value {
-    let mut input_audio_transcription = serde_json::json!({
-        "language": asr_language_code(language_mode)
-    });
+    // Qwen3 accepts real language codes only. Omission enables automatic detection.
+    let mut input_audio_transcription = serde_json::json!({});
+    if language_mode == AsrLanguageMode::Zh {
+        input_audio_transcription["language"] = serde_json::json!("zh");
+    }
 
     let hotword_pack = compile_asr_pack_with_correction_pairs(
         dictionary,
@@ -73,7 +69,7 @@ fn build_input_audio_transcription_with_pairs(
 }
 
 fn build_qwen_audio_3_run_task(
-    profile: QwenAsrProfile,
+    model: &QwenModel,
     task_id: &str,
     language_mode: AsrLanguageMode,
     dictionary: &[String],
@@ -104,7 +100,7 @@ fn build_qwen_audio_3_run_task(
         tracing::info!("Qwen Audio 3.x 流式 ASR 词库: 未配置");
     }
 
-    if language_mode == AsrLanguageMode::Zh {
+    if language_mode == AsrLanguageMode::Zh && model.protocol != QwenProtocol::Message {
         parameters["language_hints"] = serde_json::json!(["zh"]);
     }
 
@@ -118,7 +114,7 @@ fn build_qwen_audio_3_run_task(
             "task_group": "audio",
             "task": "asr",
             "function": "recognition",
-            "model": profile.realtime_model(),
+            "model": model.id,
             "parameters": parameters,
             "input": {}
         }
@@ -244,7 +240,7 @@ pub struct ConnectionPool {
     dictionary: Vec<String>,
     correction_pairs: Vec<CorrectionPair>,
     language_mode: AsrLanguageMode,
-    profile: QwenAsrProfile,
+    model: &'static QwenModel,
 }
 
 struct PooledConnection {
@@ -267,7 +263,7 @@ impl ConnectionPool {
             dictionary,
             correction_pairs,
             language_mode,
-            QwenAsrProfile::default(),
+            QwenAsrProfile::Qwen3Legacy,
         )
     }
 
@@ -278,13 +274,29 @@ impl ConnectionPool {
         language_mode: AsrLanguageMode,
         profile: QwenAsrProfile,
     ) -> Self {
+        Self::new_with_model_and_correction_pairs(
+            api_key,
+            dictionary,
+            correction_pairs,
+            language_mode,
+            profile_model(profile, QwenMode::Realtime),
+        )
+    }
+
+    pub fn new_with_model_and_correction_pairs(
+        api_key: String,
+        dictionary: Vec<String>,
+        correction_pairs: Vec<CorrectionPair>,
+        language_mode: AsrLanguageMode,
+        model: &'static QwenModel,
+    ) -> Self {
         Self {
             api_key,
             connection: Arc::new(Mutex::new(None)),
             dictionary,
             correction_pairs,
             language_mode,
-            profile,
+            model,
         }
     }
 
@@ -309,29 +321,32 @@ impl ConnectionPool {
     }
 
     async fn create_new_session(&self) -> Result<RealtimeSession> {
-        let profile = self.profile;
-        let url = match profile {
-            QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => {
-                QWEN_AUDIO_3_WEBSOCKET_URL.to_string()
-            }
-            QwenAsrProfile::Qwen3Legacy => {
-                format!(
-                    "{}?model={}",
-                    QWEN3_LEGACY_WEBSOCKET_URL,
-                    profile.realtime_model()
-                )
+        let model = self.model;
+        let protocol = model.protocol;
+        let url = match protocol {
+            QwenProtocol::Audio3 | QwenProtocol::Message => QWEN_AUDIO_3_WEBSOCKET_URL.to_string(),
+            QwenProtocol::Qwen3 => {
+                format!("{}?model={}", QWEN3_LEGACY_WEBSOCKET_URL, model.id)
             }
         };
-        tracing::info!(
-            "创建 WebSocket 连接: {}, 模型: {}",
-            url,
-            profile.realtime_model()
-        );
+        tracing::info!("创建 WebSocket 连接: {}, 模型: {}", url, model.id);
 
+        self.create_session_at(&url).await
+    }
+
+    async fn create_session_at(&self, url: &str) -> Result<RealtimeSession> {
+        let model = self.model;
+        let protocol = model.protocol;
+        let uri: http::Uri = url.parse()?;
         let mut request_builder = http::Request::builder()
-            .uri(&url)
+            .uri(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Host", "dashscope.aliyuncs.com")
+            .header(
+                "Host",
+                uri.authority()
+                    .ok_or_else(|| anyhow::anyhow!("无效的 WebSocket 地址"))?
+                    .as_str(),
+            )
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
             .header("Sec-WebSocket-Version", "13")
@@ -339,7 +354,7 @@ impl ConnectionPool {
                 "Sec-WebSocket-Key",
                 tokio_tungstenite::tungstenite::handshake::client::generate_key(),
             );
-        if profile == QwenAsrProfile::Qwen3Legacy {
+        if protocol == QwenProtocol::Qwen3 {
             request_builder = request_builder.header("OpenAI-Beta", "realtime=v1");
         }
         let request = request_builder.body(())?;
@@ -362,17 +377,15 @@ impl ConnectionPool {
             &self.correction_pairs,
             QWEN_REALTIME_MAX_HOTWORDS,
         ));
-        let task_id = match profile {
-            QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => {
-                Some(uuid::Uuid::new_v4().to_string())
-            }
-            QwenAsrProfile::Qwen3Legacy => None,
+        let task_id = match protocol {
+            QwenProtocol::Audio3 | QwenProtocol::Message => Some(uuid::Uuid::new_v4().to_string()),
+            QwenProtocol::Qwen3 => None,
         };
 
-        match profile {
-            QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => {
+        match protocol {
+            QwenProtocol::Audio3 | QwenProtocol::Message => {
                 let run_task = build_qwen_audio_3_run_task(
-                    profile,
+                    model,
                     task_id.as_deref().expect("最新版协议必须有 task_id"),
                     self.language_mode,
                     &self.dictionary,
@@ -420,7 +433,7 @@ impl ConnectionPool {
                     anyhow::anyhow!("等待 task-started 超时（{} 秒）", TASK_START_TIMEOUT_SECS)
                 })??;
             }
-            QwenAsrProfile::Qwen3Legacy => {
+            QwenProtocol::Qwen3 => {
                 let input_audio_transcription = build_input_audio_transcription_with_pairs(
                     self.language_mode,
                     &self.dictionary,
@@ -459,11 +472,11 @@ impl ConnectionPool {
                 match cmd {
                     SessionCommand::SendAudio(pcm_bytes) => {
                         let mut w = write_clone.lock().await;
-                        let send_result = match profile {
-                            QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => {
+                        let send_result = match protocol {
+                            QwenProtocol::Audio3 | QwenProtocol::Message => {
                                 w.send(Message::Binary(pcm_bytes.into())).await
                             }
-                            QwenAsrProfile::Qwen3Legacy => {
+                            QwenProtocol::Qwen3 => {
                                 let encoded = general_purpose::STANDARD.encode(&pcm_bytes);
                                 let event = serde_json::json!({
                                     "event_id": format!("event_{}", std::time::SystemTime::now()
@@ -482,13 +495,13 @@ impl ConnectionPool {
                         }
                     }
                     SessionCommand::Commit => {
-                        let event = match profile {
-                            QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => {
+                        let event = match protocol {
+                            QwenProtocol::Audio3 | QwenProtocol::Message => {
                                 build_qwen_audio_3_finish_task(
                                     sender_task_id.as_deref().expect("最新版协议必须有 task_id"),
                                 )
                             }
-                            QwenAsrProfile::Qwen3Legacy => serde_json::json!({
+                            QwenProtocol::Qwen3 => serde_json::json!({
                                 "event_id": format!("event_{}", std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
@@ -521,8 +534,8 @@ impl ConnectionPool {
                 match msg {
                     Ok(Message::Text(text)) => {
                         match serde_json::from_str::<serde_json::Value>(&text) {
-                            Ok(data) => match profile {
-                                QwenAsrProfile::QwenAudio3_1 | QwenAsrProfile::QwenAudio3 => {
+                            Ok(data) => match protocol {
+                                QwenProtocol::Audio3 | QwenProtocol::Message => {
                                     let event_type = data["header"]["event"].as_str().unwrap_or("");
                                     tracing::debug!("收到 Qwen Audio 3.x 事件: {}", event_type);
 
@@ -550,7 +563,7 @@ impl ConnectionPool {
                                         | QwenAudio3ServerEvent::Ignore => {}
                                     }
                                 }
-                                QwenAsrProfile::Qwen3Legacy => {
+                                QwenProtocol::Qwen3 => {
                                     let event_type = data["type"].as_str().unwrap_or("");
                                     tracing::debug!("收到 Qwen3 旧版事件: {}", event_type);
 
@@ -666,6 +679,24 @@ pub struct QwenRealtimeClient {
 }
 
 impl QwenRealtimeClient {
+    pub fn new_with_model_and_correction_pairs(
+        api_key: String,
+        dictionary: Vec<String>,
+        correction_pairs: Vec<CorrectionPair>,
+        language_mode: AsrLanguageMode,
+        model: &'static QwenModel,
+    ) -> Self {
+        Self {
+            pool: ConnectionPool::new_with_model_and_correction_pairs(
+                api_key,
+                dictionary,
+                correction_pairs,
+                language_mode,
+                model,
+            ),
+        }
+    }
+
     pub fn new(api_key: String, dictionary: Vec<String>, language_mode: AsrLanguageMode) -> Self {
         Self {
             pool: ConnectionPool::new(api_key, dictionary, language_mode),
@@ -683,7 +714,7 @@ impl QwenRealtimeClient {
             dictionary,
             correction_pairs,
             language_mode,
-            QwenAsrProfile::default(),
+            QwenAsrProfile::Qwen3Legacy,
         )
     }
 
@@ -718,6 +749,7 @@ mod tests {
         build_qwen_audio_3_finish_task, build_qwen_audio_3_run_task,
         parse_qwen_audio_3_server_event, QwenAudio3ServerEvent,
     };
+    use crate::asr::qwen_models::{profile_model, QwenMode};
     use crate::config::{AsrLanguageMode, QwenAsrProfile};
     use crate::personalization::hotword_compiler::QWEN_REALTIME_MAX_HOTWORDS;
     use crate::personalization::CorrectionPair;
@@ -725,7 +757,7 @@ mod tests {
     #[test]
     fn qwen_audio_3_1_realtime_uses_selected_model() {
         let event = build_qwen_audio_3_run_task(
-            QwenAsrProfile::QwenAudio3_1,
+            profile_model(QwenAsrProfile::QwenAudio3_1, QwenMode::Realtime),
             "00000000-0000-4000-8000-000000000000",
             AsrLanguageMode::Auto,
             &[],
@@ -748,7 +780,10 @@ mod tests {
     fn builds_auto_language_for_qwen_session_update() {
         let dictionary: Vec<String> = vec![];
         let transcription = build_input_audio_transcription(AsrLanguageMode::Auto, &dictionary);
-        assert_eq!(transcription["language"], "auto");
+        assert!(
+            transcription.get("language").is_none(),
+            "Qwen3 rejects the literal language code auto"
+        );
     }
 
     #[test]
@@ -791,7 +826,7 @@ mod tests {
         let pairs = vec![CorrectionPair::new("windsurf", "winds surf", "Windsurf")];
 
         let event = build_qwen_audio_3_run_task(
-            QwenAsrProfile::QwenAudio3,
+            profile_model(QwenAsrProfile::QwenAudio3, QwenMode::Realtime),
             "00000000-0000-4000-8000-000000000000",
             AsrLanguageMode::Auto,
             &dictionary,
@@ -816,7 +851,7 @@ mod tests {
     #[test]
     fn builds_qwen_audio_3_zh_language_hint_and_finish_task() {
         let run_task = build_qwen_audio_3_run_task(
-            QwenAsrProfile::QwenAudio3,
+            profile_model(QwenAsrProfile::QwenAudio3, QwenMode::Realtime),
             "00000000-0000-4000-8000-000000000000",
             AsrLanguageMode::Zh,
             &[],
@@ -865,3 +900,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "qwen_wire_tests.rs"]
+mod wire_tests;

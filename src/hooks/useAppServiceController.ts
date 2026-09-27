@@ -1,3 +1,5 @@
+import { normalizeLoadedAssistant, normalizeLoadedLlm } from "../utils/loadedConfig";
+import { hasBackendAsrCredentials } from "../utils/asrMigration";
 import type React from "react";
 import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -445,12 +447,7 @@ export function useAppServiceController({
 
       // ========== 迁移逻辑：从 localStorage 迁移到后端 (幂等) ==========
       const backendCreds = config.asr_config?.credentials;
-      const backendHasAnyCredential = Boolean(
-        backendCreds?.qwen_api_key?.trim() ||
-        backendCreds?.sensevoice_api_key?.trim() ||
-        backendCreds?.doubao_app_id?.trim() ||
-        backendCreds?.doubao_access_token?.trim()
-      );
+      const backendHasAnyCredential = hasBackendAsrCredentials(backendCreds);
 
       if (!backendHasAnyCredential) {
         try {
@@ -564,28 +561,9 @@ export function useAppServiceController({
       setEnablePostProcess(config.enable_llm_post_process ?? false);
       setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? false);
 
-      // 智能补齐 llm_config
-      const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
-      if (!loadedLlmConfig.presets || loadedLlmConfig.presets.length === 0) {
-        console.warn('[配置修复] 检测到空 presets，使用默认值');
-        loadedLlmConfig.presets = DEFAULT_LLM_CONFIG.presets;
-        loadedLlmConfig.active_preset_id = DEFAULT_LLM_CONFIG.active_preset_id;
-      } else {
-        const activeExists = loadedLlmConfig.presets.find(
-          (p) => p.id === loadedLlmConfig.active_preset_id,
-        );
-        if (!activeExists) {
-          loadedLlmConfig.active_preset_id = loadedLlmConfig.presets[0].id;
-        }
-      }
+      const loadedLlmConfig = normalizeLoadedLlm(config.llm_config);
       setLlmConfig(loadedLlmConfig);
-
-      // 智能补齐 assistant_config
-      let loadedAssistantConfig = config.assistant_config || DEFAULT_ASSISTANT_CONFIG;
-      if (!loadedAssistantConfig.qa_system_prompt || !loadedAssistantConfig.text_processing_system_prompt) {
-        console.warn('[配置修复] 检测到不完整的 assistant_config，使用默认值');
-        loadedAssistantConfig = DEFAULT_ASSISTANT_CONFIG;
-      }
+      const loadedAssistantConfig = normalizeLoadedAssistant(config.assistant_config);
       setAssistantConfig(loadedAssistantConfig);
       setSearchConfig(config.search_config || DEFAULT_SEARCH_CONFIG);
 
@@ -665,28 +643,33 @@ export function useAppServiceController({
 
       if (effectiveAsrConfig && isAsrConfigValid(effectiveAsrConfig)) {
         await new Promise((resolve) => window.setTimeout(resolve, 100));
-        await startApp({
-          apiKey: config.dashscope_api_key,
-          fallbackApiKey: config.siliconflow_api_key || "",
-          useRealtime: config.use_realtime_asr ?? true,
-          enablePostProcess: config.enable_llm_post_process ?? false,
-          enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
-          llmConfig: loadedLlmConfig,
-          smartCommandConfig: null,
-          assistantConfig: loadedAssistantConfig,
-          searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
-          asrConfig: effectiveAsrConfig,
-          dualHotkeyConfig: loadedDualHotkeyConfig,
-          enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-          dictionary: buildRuntimeDictionary(
-            loadedDictionary,
-            loadedBuiltinDictionaryDomains,
-            recentHotwordEntries,
-          ),
-          theme: config.theme || "light",
-        });
-        setStatus("running");
-        setError(null);
+        try {
+          await startApp({
+            apiKey: config.dashscope_api_key,
+            fallbackApiKey: config.siliconflow_api_key || "",
+            useRealtime: config.use_realtime_asr ?? true,
+            enablePostProcess: config.enable_llm_post_process ?? false,
+            enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
+            llmConfig: loadedLlmConfig,
+            smartCommandConfig: null,
+            assistantConfig: loadedAssistantConfig,
+            searchConfig: config.search_config || DEFAULT_SEARCH_CONFIG,
+            asrConfig: effectiveAsrConfig,
+            dualHotkeyConfig: loadedDualHotkeyConfig,
+            enableMuteOtherApps: config.enable_mute_other_apps ?? false,
+            dictionary: buildRuntimeDictionary(
+              loadedDictionary,
+              loadedBuiltinDictionaryDomains,
+              recentHotwordEntries,
+            ),
+            theme: config.theme || "light",
+          });
+          setStatus("running");
+          setError(null);
+        } catch (err) {
+          setStatus("idle");
+          setError(String(err));
+        }
 
         // 回退后持久化修正后的配置，避免下次启动重复回退
         if (asrDidFallback) {
@@ -714,7 +697,9 @@ export function useAppServiceController({
         }
       }
     } catch (err) {
+      setError(String(err));
       console.error("加载配置失败:", err);
+      throw err;
     }
   }, [
     setApiKey,
@@ -753,7 +738,7 @@ export function useAppServiceController({
       // 不需要更新 dictionary 状态，因为它已经是正确的格式
 
       if (status === "running") {
-        await stopApp();
+        // The backend validates the requested model before restarting its running service.
         await startApp({
           apiKey: resolved.apiKey,
           fallbackApiKey: resolved.fallbackApiKey,
@@ -836,7 +821,7 @@ export function useAppServiceController({
       if (overrides?.theme) setTheme(resolved.theme);
 
       if (status === "running") {
-        await stopApp();
+        // The backend validates the requested model before restarting its running service.
         await startApp({
           apiKey: resolved.apiKey,
           fallbackApiKey: resolved.fallbackApiKey,

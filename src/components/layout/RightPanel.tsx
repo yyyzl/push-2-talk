@@ -1,3 +1,4 @@
+import { selectedQwenModel } from "../../utils/qwenModels";
 import type { Dispatch, SetStateAction } from "react";
 import { ArrowRight, Plus, HelpCircle, Sparkles } from "lucide-react";
 import type {
@@ -11,8 +12,6 @@ import type {
 import type { AppPage } from "../../pages/types";
 import {
   ASR_PROVIDERS,
-  DEFAULT_QWEN_ASR_PROFILE,
-  QWEN_ASR_PROFILES,
 } from "../../constants";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../../utils";
 import { ConfigSelect, ConfigToggle, Tooltip } from "../common";
@@ -75,7 +74,7 @@ export function RightPanel({
   const externalOnlySyncStatus = isExternalSyncing
     ? ("syncing" as const)
     : undefined;
-  const qwenProfile = asrConfig.qwen_profile ?? DEFAULT_QWEN_ASR_PROFILE;
+  const qwenModel = selectedQwenModel(asrConfig, useRealtime ? "realtime" : "http");
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
@@ -107,7 +106,7 @@ export function RightPanel({
           options={[
             {
               value: "qwen" as AsrProvider,
-              label: `${ASR_PROVIDERS.qwen.name} · ${QWEN_ASR_PROFILES[qwenProfile].httpModel}`,
+              label: `${ASR_PROVIDERS.qwen.name} · ${qwenModel}`,
             },
             {
               value: "doubao" as AsrProvider,
@@ -116,6 +115,10 @@ export function RightPanel({
             {
               value: "doubao_ime" as AsrProvider,
               label: `${ASR_PROVIDERS.doubao_ime.name} · ${ASR_PROVIDERS.doubao_ime.model}`,
+            },
+            {
+              value: "siliconflow" as AsrProvider,
+              label: `${ASR_PROVIDERS.siliconflow.name} · ${ASR_PROVIDERS.siliconflow.model}`,
             },
           ]}
         />
@@ -231,6 +234,11 @@ export function RightPanel({
                 </div>
               </div>
             </div>
+          </div>
+        ) : asrConfig.selection.active_provider === "siliconflow" ? (
+          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
+            <div className="text-xs font-bold text-stone-700">SenseVoice 录音识别</div>
+            <div className="mt-1 text-xs text-stone-500">松开快捷键后上传录音，不使用流式接口。</div>
           </div>
         ) : (
           <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm flex items-center justify-between">
