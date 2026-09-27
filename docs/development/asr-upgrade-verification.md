@@ -27,7 +27,7 @@
 - 本地 HTTP / WebSocket 服务遍历 11 个模型，检查实际请求模型、认证、各自协议、音频帧、提交、分句拼接和响应解析。
 - 浏览器中的正式 AsrPage 组件通过：旧模型展示、两种模式独立保存、重载保留、连续选择后失败回滚、未知模型可见并可修复、服务运行时禁改、SenseVoice 旧选择与凭据输入可见。
 - 界面测试使用 `tests/ui/asr-model-selection.html` 隔离保存夹具；不冒充已安装桌面应用的全链路实测。
-- Windows / macOS CI：提交后由 Platform checks 运行原生构建、测试和打包；结果链接见本次提交的 Actions。
+- Windows / macOS CI：代码提交 `cd634ad54b64590b3c730d55aea6fae585a8a1a8` 的 [Platform checks](https://github.com/yyyzl/push-2-talk/actions/runs/36346964040) 两端均成功。包含前端测试/构建、Cargo 编译/测试、Mac 原生快捷键验收，以及 Windows NSIS / macOS app 打包；Mac 签名与静态依赖检查也通过。
 
 ## 千问真实云端冒烟
 
