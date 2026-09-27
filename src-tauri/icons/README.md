@@ -12,7 +12,7 @@ then regenerate the platform assets; do not draw each platform's mark separately
 | Surface | Assets | Presentation |
 | --- | --- | --- |
 | Windows EXE, shortcuts, taskbar, installer | `icon.svg`, PNG sizes, `icon.ico` | White 05A on a near-black rounded tile |
-| macOS Dock, Finder, app switcher | `icon-macos.svg`, `icon-macos.png`, `icon.icns` | Same tile with Mac-specific outer margins and optical alignment |
+| macOS Dock, Finder, app switcher | `icon-macos.svg`, `icon-macos.png`, `icon.icns` | Near-black 05A on a warm-white tile, with Mac-specific outer margins and optical alignment |
 | macOS menu bar | `tray-template.svg`, 1x/2x PNGs | Transparent 22×18pt silhouette, tinted by AppKit in light/dark/selected states |
 | Windows notification area | `tray-windows.svg`, `tray-windows.png` | Same mark with reduced padding for small sizes |
 

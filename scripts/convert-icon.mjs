@@ -32,8 +32,8 @@ async function convert() {
     symbol(122, 224, 760, '#fff'));
   // A native Mac tile needs outer breathing room so it matches its Dock neighbours.
   const macSvg = document(1024, 1024, 'PushToTalk 05A macOS application icon',
-    '<rect x="100" y="100" width="824" height="824" rx="185" fill="#171717"/>\n' +
-    symbol(175, 262, 650, '#fff'));
+    '<rect x="100" y="100" width="824" height="824" rx="185" fill="#FAF9F5"/>\n' +
+    symbol(175, 262, 650, '#171717'));
   const template = document(22, 18, 'PushToTalk 05A menu bar template',
     symbol(1, 1.8, 20, '#000', 16));
   const windowsTray = document(32, 32, 'PushToTalk 05A Windows tray icon',
