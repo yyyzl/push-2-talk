@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, Submenu},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
 
@@ -4752,8 +4752,7 @@ pub fn run() {
             });
 
             // 创建系统托盘图标
-            let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+            let _tray = platform::tray::builder()
                 .menu(&menu)
                 .tooltip("PushToTalk - AI 语音转写助手")
                 .on_menu_event(move |app, event| match event.id.as_ref() {

@@ -2,6 +2,7 @@
   "app": { "macOSPrivateApi": true },
   "bundle": {
     "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns", "icons/icon-macos.png"],
     "macOS": {
       "minimumSystemVersion": "12.0",
       "infoPlist": "Info.plist",
