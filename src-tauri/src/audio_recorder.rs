@@ -351,10 +351,20 @@ impl AudioRecorder {
 
     /// 检查是否正在录音
     pub fn is_recording(&self) -> bool {
-        *self.is_recording.lock().unwrap()
+        self.stream.is_some() && *self.is_recording.lock().unwrap()
     }
 }
 
 // 实现 Send 和 Sync traits
 unsafe impl Send for AudioRecorder {}
 unsafe impl Sync for AudioRecorder {}
+
+#[cfg(test)]
+mod readiness_tests {
+    #[test]
+    fn incomplete_device_start_is_not_a_recording() {
+        let recorder = super::AudioRecorder::new().unwrap();
+        *recorder.is_recording.lock().unwrap() = true;
+        assert!(!recorder.is_recording());
+    }
+}

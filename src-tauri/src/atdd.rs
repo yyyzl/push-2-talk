@@ -96,19 +96,19 @@ async fn cancel_owned_recording(app: &tauri::AppHandle, id: u64) -> Result<(), S
     if !state.hotkey_service.atdd_owns(id) {
         return Ok(());
     }
-    let result = if state.is_recording_locked.load(Ordering::SeqCst) {
+    let result = if state.recording.is_recording_locked.load(Ordering::SeqCst) {
         crate::cancel_locked_recording(app.clone()).await
     } else {
         let result = crate::cancel_transcription(app.clone()).await;
-        *state.current_trigger_mode.lock().unwrap() = None;
-        if let Some(manager) = state.audio_mute_manager.lock().unwrap().as_ref() {
+        *state.recording.current_trigger_mode.lock().unwrap() = None;
+        if let Some(manager) = state.recording.audio_mute_manager.lock().unwrap().as_ref() {
             manager.end_session();
             let _ = manager.restore_volumes();
         }
         result
     };
     state.hotkey_service.atdd_abort(id);
-    *state.recording_start_instant.lock().unwrap() = None;
+    *state.recording.recording_start_instant.lock().unwrap() = None;
     result.map(|_| ())
 }
 
@@ -157,15 +157,22 @@ pub(crate) async fn run(
         return Err("请先结束现有助手会话，再开始独立验收".into());
     }
     if inspect_only
-        && (state.current_trigger_mode.lock().unwrap().is_some()
-            || state.is_processing_stop.load(Ordering::SeqCst)
+        && (state
+            .recording
+            .current_trigger_mode
+            .lock()
+            .unwrap()
+            .is_some()
+            || state.recording_session.is_active()
             || state
+                .recording
                 .streaming_recorder
                 .lock()
                 .unwrap()
                 .as_ref()
                 .is_some_and(|r| r.is_recording())
             || state
+                .recording
                 .audio_recorder
                 .lock()
                 .unwrap()
@@ -263,12 +270,14 @@ pub(crate) async fn run(
         }
     }
     let recording = state
+        .recording
         .streaming_recorder
         .lock()
         .unwrap()
         .as_ref()
         .is_some_and(|r| r.is_recording())
         || state
+            .recording
             .audio_recorder
             .lock()
             .unwrap()
@@ -278,7 +287,7 @@ pub(crate) async fn run(
         cancel_owned_recording(&app, id).await?;
         return Err("录音未成功初始化，请查看应用错误提示".into());
     }
-    let target = *state.target_window.lock().unwrap();
+    let target = *state.recording.target_window.lock().unwrap();
     let before = crate::platform::atdd_target_description(target);
     if !lifecycle::wait_delay(Duration::from_secs(18), &mut cancelled).await {
         cancel_owned_recording(&app, id).await?;

@@ -85,8 +85,8 @@ fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monito
 
 // 全局应用状态
 struct AppState {
-    audio_recorder: Arc<Mutex<Option<AudioRecorder>>>,
-    streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
+    recording_session: Arc<application::recording::RecordingSession>,
+    recording: application::recording_resources::RecordingResources,
     text_inserter: Arc<Mutex<Option<TextInserter>>>,
     post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
     /// AI 助手处理器（支持双系统提示词）
@@ -100,30 +100,10 @@ struct AppState {
     qwen_client: Arc<Mutex<Option<QwenASRClient>>>,
     sensevoice_client: Arc<Mutex<Option<SenseVoiceClient>>>,
     doubao_client: Arc<Mutex<Option<DoubaoASRClient>>>,
-    // 活跃的实时转录会话（用于真正的流式传输）
-    active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
-    doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
-    doubao_ime_session: Arc<tokio::sync::Mutex<Option<DoubaoImeRealtimeSession>>>,
     realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
     fallback_provider: Arc<Mutex<Option<config::AsrProvider>>>,
-    // 音频发送任务句柄
-    audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     // 单例热键服务
     hotkey_service: Arc<HotkeyService>,
-    /// 当前触发模式（听写/AI助手）
-    current_trigger_mode: Arc<Mutex<Option<config::TriggerMode>>>,
-    /// 松手模式：录音是否已锁定
-    is_recording_locked: Arc<AtomicBool>,
-    /// 松手模式：长按检测定时器句柄
-    lock_timer_handle: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
-    /// 松手模式：录音开始时间（用于竞态条件检查）
-    recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
-    /// 松手模式：正在处理停止中（防止重复触发）
-    is_processing_stop: Arc<AtomicBool>,
-    /// 录音时静音其他应用的管理器
-    audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
-    /// 目标窗口句柄（热键按下时保存，用于焦点恢复）
-    target_window: Arc<Mutex<Option<InputTarget>>>,
     /// 词库（用于 Realtime 模式热更新）
     dictionary: Arc<Mutex<Vec<String>>>,
     /// 个性化纠错对（用于 ASR 热词编译，录音开始前读取快照）
@@ -132,8 +112,6 @@ struct AppState {
     doubao_ime_credentials: Arc<Mutex<Option<DoubaoImeCredentials>>>,
     /// 使用统计数据
     usage_stats: Arc<Mutex<UsageStats>>,
-    /// 录音开始时间（用于计算录音时长）
-    recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
     /// 内置词库原始内容（用于前端动态解析）
     builtin_hotwords_raw: Arc<Mutex<String>>,
     /// 内置词库后台更新任务是否已启动（进程级单例）
@@ -1983,21 +1961,12 @@ async fn handle_recording_start(
     api_key: String,
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
-    audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
     dictionary: Vec<String>,
     correction_pairs: Vec<CorrectionPair>,
     language_mode: config::AsrLanguageMode,
     qwen_model: &'static QwenModel,
 ) {
     tracing::info!("检测到快捷键按下");
-
-    // 录音开始时：增加会话计数并静音其他应用
-    if let Some(ref manager) = *audio_mute_manager.lock().unwrap() {
-        manager.begin_session();
-        if let Err(e) = manager.mute_other_apps() {
-            tracing::warn!("静音其他应用失败: {}", e);
-        }
-    }
 
     let _ = app.emit("recording_started", ());
 
@@ -2772,7 +2741,7 @@ async fn start_app(
     // 初始化或更新音频静音管理器
     {
         let should_mute = enable_mute_other_apps.unwrap_or(false);
-        let mut manager_lock = state.audio_mute_manager.lock().unwrap();
+        let mut manager_lock = state.recording.audio_mute_manager.lock().unwrap();
         if let Some(ref manager) = *manager_lock {
             // 如果已经存在，直接更新开关状态
             manager.set_enabled(should_mute);
@@ -2785,17 +2754,17 @@ async fn start_app(
     }
 
     // 根据模式初始化录音器
-    *state.audio_recorder.lock().unwrap() = None;
-    *state.streaming_recorder.lock().unwrap() = None;
+    *state.recording.audio_recorder.lock().unwrap() = None;
+    *state.recording.streaming_recorder.lock().unwrap() = None;
 
     if use_realtime_mode {
         let streaming_recorder =
             StreamingRecorder::new().map_err(|e| format!("初始化流式录音器失败: {}", e))?;
-        *state.streaming_recorder.lock().unwrap() = Some(streaming_recorder);
+        *state.recording.streaming_recorder.lock().unwrap() = Some(streaming_recorder);
     } else {
         let audio_recorder =
             AudioRecorder::new().map_err(|e| format!("初始化音频录制器失败: {}", e))?;
-        *state.audio_recorder.lock().unwrap() = Some(audio_recorder);
+        *state.recording.audio_recorder.lock().unwrap() = Some(audio_recorder);
     }
 
     // 启动全局快捷键监听（双模式支持）
@@ -2819,22 +2788,22 @@ async fn start_app(
 
     // 克隆状态用于回调（听写模式）
     let app_handle_start = app_handle.clone();
-    let audio_recorder_start = Arc::clone(&state.audio_recorder);
-    let streaming_recorder_start = Arc::clone(&state.streaming_recorder);
-    let active_session_start = Arc::clone(&state.active_session);
-    let doubao_session_start = Arc::clone(&state.doubao_session);
-    let doubao_ime_session_start = Arc::clone(&state.doubao_ime_session);
+    let audio_recorder_start = Arc::clone(&state.recording.audio_recorder);
+    let streaming_recorder_start = Arc::clone(&state.recording.streaming_recorder);
+    let active_session_start = Arc::clone(&state.recording.active_session);
+    let doubao_session_start = Arc::clone(&state.recording.doubao_session);
+    let doubao_ime_session_start = Arc::clone(&state.recording.doubao_ime_session);
     let doubao_ime_credentials_start = Arc::clone(&state.doubao_ime_credentials);
     let realtime_provider_start = Arc::clone(&state.realtime_provider);
-    let audio_sender_handle_start = Arc::clone(&state.audio_sender_handle);
+    let audio_sender_handle_start = Arc::clone(&state.recording.audio_sender_handle);
     let use_realtime_start = use_realtime_mode;
     let dictionary_state_start = Arc::clone(&state.dictionary);
     let asr_correction_pairs_start = Arc::clone(&state.asr_correction_pairs);
     let is_running_start = Arc::clone(&state.is_running);
     // AI 助手模式专用
-    let current_trigger_mode_start = Arc::clone(&state.current_trigger_mode);
+    let current_trigger_mode_start = Arc::clone(&state.recording.current_trigger_mode);
     // 统计数据相关
-    let recording_start_instant_start = Arc::clone(&state.recording_start_instant);
+    let recording_start_instant_start = Arc::clone(&state.recording.recording_start_instant);
 
     // 保存当前的 provider 配置和凭证
     // 从 asr_config 中提取正确的 API Key（用于实时ASR）
@@ -2893,18 +2862,18 @@ async fn start_app(
     };
 
     let app_handle_stop = app_handle.clone();
-    let audio_recorder_stop = Arc::clone(&state.audio_recorder);
-    let streaming_recorder_stop = Arc::clone(&state.streaming_recorder);
-    let active_session_stop = Arc::clone(&state.active_session);
-    let audio_sender_handle_stop = Arc::clone(&state.audio_sender_handle);
+    let audio_recorder_stop = Arc::clone(&state.recording.audio_recorder);
+    let streaming_recorder_stop = Arc::clone(&state.recording.streaming_recorder);
+    let active_session_stop = Arc::clone(&state.recording.active_session);
+    let audio_sender_handle_stop = Arc::clone(&state.recording.audio_sender_handle);
     let post_processor_stop = Arc::clone(&state.post_processor);
     let assistant_processor_stop = Arc::clone(&state.assistant_processor);
     let text_inserter_stop = Arc::clone(&state.text_inserter);
     let qwen_client_stop = Arc::clone(&state.qwen_client);
     let sensevoice_client_stop = Arc::clone(&state.sensevoice_client);
     let doubao_client_stop = Arc::clone(&state.doubao_client);
-    let doubao_session_stop = Arc::clone(&state.doubao_session);
-    let doubao_ime_session_stop = Arc::clone(&state.doubao_ime_session);
+    let doubao_session_stop = Arc::clone(&state.recording.doubao_session);
+    let doubao_ime_session_stop = Arc::clone(&state.recording.doubao_ime_session);
     let realtime_provider_stop = Arc::clone(&state.realtime_provider);
     let use_realtime_stop = use_realtime_mode;
     let is_running_stop = Arc::clone(&state.is_running);
@@ -2914,31 +2883,29 @@ async fn start_app(
     let is_assistant_processing_start = Arc::clone(&state.is_assistant_processing);
 
     // 松手模式相关变量（用于 on_start）
-    let is_recording_locked_start = Arc::clone(&state.is_recording_locked);
-    let _lock_timer_handle_start = Arc::clone(&state.lock_timer_handle);
-    let _recording_start_time_start = Arc::clone(&state.recording_start_time);
+    let is_recording_locked_start = Arc::clone(&state.recording.is_recording_locked);
     let _dual_hotkey_cfg_start = dual_hotkey_cfg.clone();
 
     // 松手模式相关变量（用于 on_stop）
-    let is_recording_locked_stop = Arc::clone(&state.is_recording_locked);
-    let lock_timer_handle_stop = Arc::clone(&state.lock_timer_handle);
-    let recording_start_time_stop = Arc::clone(&state.recording_start_time);
-    let is_processing_stop_stop = Arc::clone(&state.is_processing_stop);
+    let is_recording_locked_stop = Arc::clone(&state.recording.is_recording_locked);
 
     // 音频静音管理器（用于 on_start 和 on_stop）
-    let audio_mute_manager_start = Arc::clone(&state.audio_mute_manager);
-    let audio_mute_manager_stop = Arc::clone(&state.audio_mute_manager);
 
     // 目标窗口句柄（用于焦点恢复）
-    let target_window_start = Arc::clone(&state.target_window);
-    let target_window_stop = Arc::clone(&state.target_window);
+    let target_window_start = Arc::clone(&state.recording.target_window);
+    let target_window_stop = Arc::clone(&state.recording.target_window);
     let assistant_selected_text_snapshot = Arc::new(Mutex::new(None::<String>));
     let assistant_selected_text_snapshot_start = Arc::clone(&assistant_selected_text_snapshot);
     let assistant_selected_text_snapshot_stop = Arc::clone(&assistant_selected_text_snapshot);
 
     // 统计数据相关（用于 on_stop）
     let usage_stats_stop = Arc::clone(&state.usage_stats);
-    let recording_start_instant_stop = Arc::clone(&state.recording_start_instant);
+    let recording_start_instant_stop = Arc::clone(&state.recording.recording_start_instant);
+
+    let recording_session_start = state.recording_session.clone();
+    let recording_session_stop = state.recording_session.clone();
+    let recording_resources_start = state.recording.clone();
+    let recording_resources_stop = state.recording.clone();
 
     // 按键按下回调（支持双模式 + 松手模式）
     let on_start = move |trigger_mode: config::TriggerMode, is_release_mode: bool| {
@@ -2962,158 +2929,201 @@ async fn start_app(
             return;
         }
 
-        // === 保存目标窗口句柄（通过防重入检查后才保存） ===
-        // 这是用户触发热键时的前台窗口，用于后续焦点恢复
-        let target_hwnd = platform::desktop().capture_target();
-        *target_window_start.lock().unwrap() = target_hwnd;
-        *assistant_selected_text_snapshot_start.lock().unwrap() = None;
-        if let Some(hwnd) = target_hwnd {
-            tracing::info!("已保存目标输入位置: {}", hwnd);
-        } else {
-            tracing::warn!("未能获取目标窗口句柄");
-        }
+        let accepted = recording_session_start.start(|| {
+            // === 保存目标窗口句柄（通过防重入检查后才保存） ===
+            // 这是用户触发热键时的前台窗口，用于后续焦点恢复
+            let target_hwnd = platform::desktop().capture_target();
+            *target_window_start.lock().unwrap() = target_hwnd;
+            *assistant_selected_text_snapshot_start.lock().unwrap() = None;
+            if let Some(hwnd) = target_hwnd {
+                tracing::info!("已保存目标输入位置: {}", hwnd);
+            } else {
+                tracing::warn!("未能获取目标窗口句柄");
+            }
 
-        // 保存当前触发模式
-        *current_trigger_mode_start.lock().unwrap() = Some(trigger_mode);
-        let mode_desc = if is_release_mode {
-            "松手模式"
-        } else {
-            "普通模式"
-        };
-        tracing::info!("触发模式: {:?} ({})", trigger_mode, mode_desc);
+            // 保存当前触发模式
+            *current_trigger_mode_start.lock().unwrap() = Some(trigger_mode);
+            let mode_desc = if is_release_mode {
+                "松手模式"
+            } else {
+                "普通模式"
+            };
+            tracing::info!("触发模式: {:?} ({})", trigger_mode, mode_desc);
 
-        // 注意：剪贴板捕获已移至 on_stop 回调
-        // 原因：在 on_start 时物理按键仍被按住，模拟 Ctrl+C 会与 Alt/Meta 等修饰键冲突
+            // 注意：剪贴板捕获已移至 on_stop 回调
+            // 原因：在 on_start 时物理按键仍被按住，模拟 Ctrl+C 会与 Alt/Meta 等修饰键冲突
 
-        beep_player::play_start_beep();
+            beep_player::play_start_beep();
 
-        let app = app_handle_start.clone();
-        let recorder = Arc::clone(&audio_recorder_start);
-        let streaming_recorder = Arc::clone(&streaming_recorder_start);
-        let active_session = Arc::clone(&active_session_start);
-        let doubao_session = Arc::clone(&doubao_session_start);
-        let doubao_ime_session = Arc::clone(&doubao_ime_session_start);
-        let doubao_ime_credentials = Arc::clone(&doubao_ime_credentials_start);
-        let realtime_provider = Arc::clone(&realtime_provider_start);
-        let audio_sender_handle = Arc::clone(&audio_sender_handle_start);
-        let use_realtime = use_realtime_start;
-        let api_key = api_key_start.clone();
-        let doubao_app_id = doubao_app_id_start.clone();
-        let doubao_access_token = doubao_access_token_start.clone();
-        let language_mode = asr_language_mode_start;
-        let qwen_model = qwen_model_start;
-        let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
-        let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
-        let dictionary_state = Arc::clone(&dictionary_state_start);
-        let asr_correction_pairs = Arc::clone(&asr_correction_pairs_start);
-        let recording_start_instant_spawn = Arc::clone(&recording_start_instant_start);
-        let selected_text_snapshot = Arc::clone(&assistant_selected_text_snapshot_start);
+            let app = app_handle_start.clone();
+            let recorder = Arc::clone(&audio_recorder_start);
+            let streaming_recorder = Arc::clone(&streaming_recorder_start);
+            let active_session = Arc::clone(&active_session_start);
+            let doubao_session = Arc::clone(&doubao_session_start);
+            let doubao_ime_session = Arc::clone(&doubao_ime_session_start);
+            let doubao_ime_credentials = Arc::clone(&doubao_ime_credentials_start);
+            let realtime_provider = Arc::clone(&realtime_provider_start);
+            let audio_sender_handle = Arc::clone(&audio_sender_handle_start);
+            let use_realtime = use_realtime_start;
+            let api_key = api_key_start.clone();
+            let doubao_app_id = doubao_app_id_start.clone();
+            let doubao_access_token = doubao_access_token_start.clone();
+            let language_mode = asr_language_mode_start;
+            let qwen_model = qwen_model_start;
+            let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
+            let dictionary_state = Arc::clone(&dictionary_state_start);
+            let asr_correction_pairs = Arc::clone(&asr_correction_pairs_start);
+            let recording_start_instant_spawn = Arc::clone(&recording_start_instant_start);
+            let selected_text_snapshot = Arc::clone(&assistant_selected_text_snapshot_start);
 
-        let _start_task = tauri::async_runtime::spawn(async move {
-            // 记录录音开始时间（包含录音准备时间：静音、显示窗口等）
-            // 注意：这个时间略早于实际音频采集开始，但包含了用户感知到的准备时间
-            *recording_start_instant_spawn.lock().unwrap() = Some(std::time::Instant::now());
+            let resources = recording_resources_start.clone();
+            let cleanup_resources = recording_resources_start.clone();
+            let cleanup_app = app.clone();
+            let assistant_busy = is_assistant_processing_start.clone();
+            is_recording_locked_spawn.store(
+                is_release_mode && trigger_mode == config::TriggerMode::Dictation,
+                Ordering::SeqCst,
+            );
+            (
+                async move {
+                    resources.begin_audio();
 
-            if trigger_mode == config::TriggerMode::AiAssistant {
-                if let Some(hwnd) = target_hwnd {
-                    let selection_read_start = std::time::Instant::now();
-                    match tokio::task::spawn_blocking(move || {
-                        platform::desktop().read_selection(hwnd)
-                    })
-                    .await
-                    {
-                        Ok(Ok(text)) => {
-                            if let Some(text) = non_empty_selected_text(Some(text)) {
-                                tracing::info!(
-                                    "AI 助手预捕获选中文本: {} 字符（原生读取 {}ms）",
-                                    text.len(),
-                                    selection_read_start.elapsed().as_millis()
-                                );
-                                *selected_text_snapshot.lock().unwrap() = Some(text);
-                            } else {
-                                tracing::debug!("AI 助手预捕获未检测到选中文本");
+                    // 记录录音开始时间（包含录音准备时间：静音、显示窗口等）
+                    // 注意：这个时间略早于实际音频采集开始，但包含了用户感知到的准备时间
+                    *recording_start_instant_spawn.lock().unwrap() =
+                        Some(std::time::Instant::now());
+
+                    if trigger_mode == config::TriggerMode::AiAssistant {
+                        if let Some(hwnd) = target_hwnd {
+                            let selection_read_start = std::time::Instant::now();
+                            match tokio::task::spawn_blocking(move || {
+                                platform::desktop().read_selection(hwnd)
+                            })
+                            .await
+                            {
+                                Ok(Ok(text)) => {
+                                    if let Some(text) = non_empty_selected_text(Some(text)) {
+                                        tracing::info!(
+                                            "AI 助手预捕获选中文本: {} 字符（原生读取 {}ms）",
+                                            text.len(),
+                                            selection_read_start.elapsed().as_millis()
+                                        );
+                                        *selected_text_snapshot.lock().unwrap() = Some(text);
+                                    } else {
+                                        tracing::debug!("AI 助手预捕获未检测到选中文本");
+                                    }
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::debug!("AI 助手预捕获选中文本失败: {}", e);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("AI 助手预捕获选中文本任务异常: {}", e);
+                                }
                             }
                         }
-                        Ok(Err(e)) => {
-                            tracing::debug!("AI 助手预捕获选中文本失败: {}", e);
-                        }
-                        Err(e) => {
-                            tracing::warn!("AI 助手预捕获选中文本任务异常: {}", e);
-                        }
                     }
-                }
-            }
 
-            // 从 state 获取最新词库（支持热更新），并为本次录音追加临时上下文热词。
-            let mut dictionary = dictionary_state.lock().unwrap().clone();
-            let context_hotwords_enabled =
-                crate::application::configuration::load_persisted_config()
-                    .map(|config| config.tnl_config.enable_context_hotwords)
-                    .unwrap_or(false);
-            if let Some(hwnd) = target_hwnd.filter(|_| context_hotwords_enabled) {
-                let context_read_start = std::time::Instant::now();
-                match tokio::task::spawn_blocking(move || platform::desktop().read_text(hwnd)).await
-                {
-                    Ok(Ok(context_text)) if !context_text.trim().is_empty() => {
-                        let before_len = dictionary.len();
-                        dictionary = personalization::augment_dictionary_with_app_context_hotwords(
-                            dictionary,
-                            &context_text,
-                        );
-                        let added_count = dictionary.len().saturating_sub(before_len);
-                        if added_count > 0 {
-                            tracing::debug!(
-                                "已追加当前 App 上下文 ASR 热词: {}（原生读取 {}ms）",
-                                added_count,
-                                context_read_start.elapsed().as_millis()
-                            );
+                    // 从 state 获取最新词库（支持热更新），并为本次录音追加临时上下文热词。
+                    let mut dictionary = dictionary_state.lock().unwrap().clone();
+                    let context_hotwords_enabled =
+                        crate::application::configuration::load_persisted_config()
+                            .map(|config| config.tnl_config.enable_context_hotwords)
+                            .unwrap_or(false);
+                    if let Some(hwnd) = target_hwnd.filter(|_| context_hotwords_enabled) {
+                        let context_read_start = std::time::Instant::now();
+                        match tokio::task::spawn_blocking(move || {
+                            platform::desktop().read_text(hwnd)
+                        })
+                        .await
+                        {
+                            Ok(Ok(context_text)) if !context_text.trim().is_empty() => {
+                                let before_len = dictionary.len();
+                                dictionary =
+                                    personalization::augment_dictionary_with_app_context_hotwords(
+                                        dictionary,
+                                        &context_text,
+                                    );
+                                let added_count = dictionary.len().saturating_sub(before_len);
+                                if added_count > 0 {
+                                    tracing::debug!(
+                                        "已追加当前 App 上下文 ASR 热词: {}（原生读取 {}ms）",
+                                        added_count,
+                                        context_read_start.elapsed().as_millis()
+                                    );
+                                }
+                            }
+                            Ok(Ok(_)) => {
+                                tracing::debug!("当前 App 上下文为空，跳过临时 ASR 热词追加");
+                            }
+                            Ok(Err(e)) => {
+                                tracing::debug!(
+                                    "读取当前 App 上下文失败，跳过临时 ASR 热词追加: {}",
+                                    e
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "当前 App 上下文读取任务异常，跳过临时 ASR 热词追加: {}",
+                                    e
+                                );
+                            }
                         }
                     }
-                    Ok(Ok(_)) => {
-                        tracing::debug!("当前 App 上下文为空，跳过临时 ASR 热词追加");
+                    let correction_pairs = asr_correction_pairs.lock().unwrap().clone();
+                    // 1. 先执行开始录音逻辑 (内部会发送 recording_started 事件)
+                    handle_recording_start(
+                        app.clone(),
+                        recorder,
+                        streaming_recorder,
+                        active_session,
+                        doubao_session,
+                        doubao_ime_session,
+                        doubao_ime_credentials,
+                        realtime_provider,
+                        audio_sender_handle,
+                        use_realtime,
+                        api_key,
+                        doubao_app_id,
+                        doubao_access_token,
+                        dictionary,
+                        correction_pairs,
+                        language_mode,
+                        qwen_model,
+                    )
+                    .await;
+
+                    if !resources.is_recording(use_realtime) {
+                        return Err("麦克风未成功启动".into());
                     }
-                    Ok(Err(e)) => {
-                        tracing::debug!("读取当前 App 上下文失败，跳过临时 ASR 热词追加: {}", e);
+                    if is_recording_locked_spawn.load(Ordering::SeqCst) {
+                        let _ = app.emit("recording_locked", ());
                     }
-                    Err(e) => {
-                        tracing::warn!("当前 App 上下文读取任务异常，跳过临时 ASR 热词追加: {}", e);
+                    Ok(())
+                },
+                async move {
+                    cleanup_resources.cleanup().await;
+                    if trigger_mode == config::TriggerMode::AiAssistant
+                        && assistant_busy.load(Ordering::SeqCst)
+                    {
+                        let state = cleanup_app.state::<AppState>();
+                        let _ = cancel_assistant_generation(cleanup_app.clone(), state).await;
                     }
-                }
-            }
-            let correction_pairs = asr_correction_pairs.lock().unwrap().clone();
-            // 1. 先执行开始录音逻辑 (内部会发送 recording_started 事件)
-            handle_recording_start(
-                app.clone(),
-                recorder,
-                streaming_recorder,
-                active_session,
-                doubao_session,
-                doubao_ime_session,
-                doubao_ime_credentials,
-                realtime_provider,
-                audio_sender_handle,
-                use_realtime,
-                api_key,
-                doubao_app_id,
-                doubao_access_token,
-                audio_mute_manager,
-                dictionary,
-                correction_pairs,
-                language_mode,
-                qwen_model,
+                    if let Some(overlay) = cleanup_app.get_webview_window("overlay") {
+                        let _ = overlay.hide();
+                    }
+                },
             )
-            .await;
-
-            // 2. 录音初始化完成后，再发送锁定事件
-            // 这样前端会先收到 started (重置UI)，再收到 locked (切换为蓝色UI)
-            if is_release_mode && trigger_mode == config::TriggerMode::Dictation {
-                is_recording_locked_spawn.store(true, Ordering::SeqCst);
-                let _ = app.emit("recording_locked", ());
-                tracing::info!("通过松手模式快捷键启动，直接进入锁定状态");
-            }
         });
+        if !accepted {
+            tracing::debug!("上一轮录音仍在处理或收尾，忽略重复触发");
+        }
         #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
-        atdd::track_start_task(_start_task);
+        if accepted {
+            let session = recording_session_start.clone();
+            atdd::track_start_task(tauri::async_runtime::spawn(async move {
+                let _ = session.wait_started().await;
+            }));
+        }
     };
 
     // 按键释放回调（支持双模式）
@@ -3130,17 +3140,7 @@ async fn start_app(
             tracing::info!("松手模式完成：用户再次按下快捷键，结束录音并转写");
             // 清除锁定状态，让代码继续执行正常的停止和转写流程
             is_recording_locked_stop.store(false, Ordering::SeqCst);
-            *recording_start_time_stop.lock().unwrap() = None;
-            if let Some(handle) = lock_timer_handle_stop.lock().unwrap().take() {
-                handle.abort();
-            }
             // 不 return，继续向下执行正常的停止录音和转写流程
-        }
-
-        // === 松手模式：立即清理定时器相关状态（防止竞态）===
-        *recording_start_time_stop.lock().unwrap() = None;
-        if let Some(handle) = lock_timer_handle_stop.lock().unwrap().take() {
-            handle.abort();
         }
 
         // === 松手模式：检查锁定状态 ===
@@ -3149,22 +3149,7 @@ async fn start_app(
             return; // 不停止录音，等待用户点击悬浮窗按钮
         }
 
-        // === 防止与 finish_locked_recording 竞态 ===
-        // 如果 finish_locked_recording 已经在处理，跳过 on_stop
-        if is_processing_stop_stop.load(Ordering::SeqCst) {
-            tracing::info!("finish_locked_recording 正在处理中，跳过 on_stop");
-            return;
-        }
-
         tracing::info!("检测到快捷键释放，模式: {:?}", trigger_mode);
-
-        // 录音结束时：减少会话计数并恢复其他应用的音量
-        if let Some(ref manager) = *audio_mute_manager_stop.lock().unwrap() {
-            manager.end_session();
-            if let Err(e) = manager.restore_volumes() {
-                tracing::warn!("恢复其他应用音量失败: {}", e);
-            }
-        }
 
         let app = app_handle_stop.clone();
         let recorder = Arc::clone(&audio_recorder_stop);
@@ -3187,8 +3172,8 @@ async fn start_app(
 
         // 获取目标窗口句柄（用于焦点恢复）
         let target_hwnd = *target_window_stop.lock().unwrap();
-        let pre_captured_selected_text =
-            non_empty_selected_text(assistant_selected_text_snapshot_stop.lock().unwrap().take());
+        let selection_snapshot = assistant_selected_text_snapshot_stop.clone();
+        let resources = recording_resources_stop.clone();
 
         // 统计数据相关
         let usage_stats = Arc::clone(&usage_stats_stop);
@@ -3197,7 +3182,11 @@ async fn start_app(
         // 播放停止录音提示音
         beep_player::play_stop_beep();
 
-        tauri::async_runtime::spawn(async move {
+        recording_session_stop.finish(async move {
+            resources.is_recording_locked.store(false, Ordering::SeqCst);
+            resources.restore_audio();
+            let pre_captured_selected_text =
+                non_empty_selected_text(selection_snapshot.lock().unwrap().take());
             let _ = app.emit("recording_stopped", ());
 
             match trigger_mode {
@@ -4725,31 +4714,11 @@ async fn stop_app(app_handle: AppHandle) -> Result<String, String> {
     // 停用热键服务（不终止线程）
     state.hotkey_service.deactivate();
 
-    // 显式关闭活跃的 WebSocket Session
-    {
-        let mut session_guard = state.active_session.lock().await;
-        if let Some(session) = session_guard.take() {
-            let _ = session.close().await;
-            tracing::info!("已关闭千问 WebSocket 会话");
-        }
-    }
-    {
-        let mut session_guard = state.doubao_session.lock().await;
-        if let Some(mut session) = session_guard.take() {
-            let _ = session.finish_audio().await;
-            tracing::info!("已关闭豆包 WebSocket 会话");
-        }
-    }
-    {
-        let mut session_guard = state.doubao_ime_session.lock().await;
-        if let Some(mut session) = session_guard.take() {
-            let _ = session.finish_audio().await;
-            tracing::info!("已关闭豆包输入法 WebSocket 会话");
-        }
-    }
+    *state.is_running.lock().unwrap() = false;
+    state.recording_session.cancel().await;
 
-    *state.audio_recorder.lock().unwrap() = None;
-    *state.streaming_recorder.lock().unwrap() = None;
+    *state.recording.audio_recorder.lock().unwrap() = None;
+    *state.recording.streaming_recorder.lock().unwrap() = None;
     *state.text_inserter.lock().unwrap() = None;
     *state.post_processor.lock().unwrap() = None;
     *state.assistant_processor.lock().unwrap() = None;
@@ -4777,22 +4746,9 @@ async fn hide_to_tray(app_handle: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 async fn quit_app(app_handle: AppHandle) -> Result<(), String> {
-    // 先停止服务
-    let state = app_handle.state::<AppState>();
-    {
-        let mut is_running = state.is_running.lock().unwrap();
-        if *is_running {
-            state.hotkey_service.deactivate();
-            *state.audio_recorder.lock().unwrap() = None;
-            *state.streaming_recorder.lock().unwrap() = None;
-            *state.text_inserter.lock().unwrap() = None;
-            *state.post_processor.lock().unwrap() = None;
-            *state.assistant_processor.lock().unwrap() = None;
-            *state.qwen_client.lock().unwrap() = None;
-            *state.sensevoice_client.lock().unwrap() = None;
-            *state.doubao_client.lock().unwrap() = None;
-            *is_running = false;
-        }
+    let running = *app_handle.state::<AppState>().is_running.lock().unwrap();
+    if running {
+        stop_app(app_handle.clone()).await?;
     }
     app_handle.exit(0);
     Ok(())
@@ -4804,65 +4760,8 @@ async fn cancel_transcription(app_handle: AppHandle) -> Result<String, String> {
 
     let state = app_handle.state::<AppState>();
 
-    // 1. 停止流式录音
-    {
-        let mut recorder_guard = state.streaming_recorder.lock().unwrap();
-        if let Some(ref mut rec) = *recorder_guard {
-            let _ = rec.stop_streaming();
-        }
-    }
-
-    // 2. 停止普通录音
-    {
-        let mut recorder_guard = state.audio_recorder.lock().unwrap();
-        if let Some(ref mut rec) = *recorder_guard {
-            let _ = rec.stop_recording_to_memory();
-        }
-    }
-
-    // 3. 取消音频发送任务
-    {
-        let handle = state.audio_sender_handle.lock().unwrap().take();
-        if let Some(h) = handle {
-            h.abort();
-            tracing::info!("已取消音频发送任务");
-        }
-    }
-
-    // 4. 关闭 WebSocket 会话
-    {
-        let mut session_guard = state.active_session.lock().await;
-        if let Some(ref session) = *session_guard {
-            let _ = session.close().await;
-            tracing::info!("已关闭 WebSocket 会话");
-        }
-        *session_guard = None;
-    }
-    {
-        let mut session_guard = state.doubao_session.lock().await;
-        if let Some(mut session) = session_guard.take() {
-            let _ = session.finish_audio().await;
-            tracing::info!("已关闭豆包 WebSocket 会话");
-        }
-    }
-    {
-        let mut session_guard = state.doubao_ime_session.lock().await;
-        if let Some(mut session) = session_guard.take() {
-            let _ = session.finish_audio().await;
-            tracing::info!("已关闭豆包输入法 WebSocket 会话");
-        }
-    }
-
-    // 5. 隐藏录音悬浮窗（带重试机制）
-    if let Some(overlay) = app_handle.get_webview_window("overlay") {
-        if let Err(e) = overlay.hide() {
-            tracing::error!("取消转录时隐藏悬浮窗失败，准备重试: {}", e);
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            if let Err(e) = overlay.hide() {
-                tracing::error!("取消转录时隐藏悬浮窗重试仍然失败: {}", e);
-            }
-        }
-    }
+    state.hotkey_service.reset_state();
+    state.recording_session.cancel().await;
 
     // 6. 发送取消事件
     let _ = app_handle.emit("transcription_cancelled", ());
@@ -4878,30 +4777,21 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
 
     let state = app_handle.state::<AppState>();
 
-    if !state.is_recording_locked.load(Ordering::SeqCst) {
+    if !state.recording.is_recording_locked.load(Ordering::SeqCst) {
         return Err("未处于锁定录音状态".to_string());
     }
 
-    // 防止与 on_stop 竞态：使用 compare_exchange 原子操作
-    // 如果已经在处理中，直接返回
-    if state
-        .is_processing_stop
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        tracing::warn!("已有停止处理正在进行中，跳过重复触发");
-        return Err("正在处理中".to_string());
-    }
-
-    // 清除锁定状态
-    state.is_recording_locked.store(false, Ordering::SeqCst);
-    *state.recording_start_time.lock().unwrap() = None;
+    state
+        .recording
+        .is_recording_locked
+        .store(false, Ordering::SeqCst);
 
     // 重置热键服务状态（防止状态卡死）
     state.hotkey_service.reset_state();
 
     // 获取并清空触发模式（松手模式仅支持听写模式）
     let trigger_mode = state
+        .recording
         .current_trigger_mode
         .lock()
         .unwrap()
@@ -4911,89 +4801,80 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
     // 播放停止提示音
     beep_player::play_stop_beep();
 
-    // 结束会话并恢复其他应用的音量
-    if let Some(ref manager) = *state.audio_mute_manager.lock().unwrap() {
-        manager.end_session();
-        if let Err(e) = manager.restore_volumes() {
-            tracing::warn!("恢复其他应用音量失败: {}", e);
-        }
-    }
-
-    // 发送录音停止事件（前端会显示处理动画）
-    let _ = app_handle.emit("recording_stopped", ());
-
-    // 注意：不在这里隐藏窗口！
-    // 窗口会在 Pipeline 的 insert_text 之前隐藏，这样用户能看到完整的处理动画
-    // 隐藏逻辑已移至 pipeline/normal.rs 和 pipeline/assistant.rs
-
     // 获取需要的状态变量
     let use_realtime = *state.use_realtime_asr.lock().unwrap();
-    let streaming_recorder = Arc::clone(&state.streaming_recorder);
-    let audio_recorder = Arc::clone(&state.audio_recorder);
-    let active_session = Arc::clone(&state.active_session);
-    let doubao_session = Arc::clone(&state.doubao_session);
-    let doubao_ime_session = Arc::clone(&state.doubao_ime_session);
+    let streaming_recorder = Arc::clone(&state.recording.streaming_recorder);
+    let audio_recorder = Arc::clone(&state.recording.audio_recorder);
+    let active_session = Arc::clone(&state.recording.active_session);
+    let doubao_session = Arc::clone(&state.recording.doubao_session);
+    let doubao_ime_session = Arc::clone(&state.recording.doubao_ime_session);
     let realtime_provider = Arc::clone(&state.realtime_provider);
-    let audio_sender_handle = Arc::clone(&state.audio_sender_handle);
+    let audio_sender_handle = Arc::clone(&state.recording.audio_sender_handle);
     let post_processor = Arc::clone(&state.post_processor);
     let text_inserter = Arc::clone(&state.text_inserter);
     let qwen_client = Arc::clone(&state.qwen_client);
     let sensevoice_client = Arc::clone(&state.sensevoice_client);
     let doubao_client = Arc::clone(&state.doubao_client);
     let enable_fallback = Arc::clone(&state.enable_fallback);
-    let target_hwnd = *state.target_window.lock().unwrap(); // 获取目标窗口句柄
+    let target_hwnd = *state.recording.target_window.lock().unwrap(); // 获取目标窗口句柄
     let usage_stats = Arc::clone(&state.usage_stats);
-    let recording_start_instant = Arc::clone(&state.recording_start_instant);
+    let recording_start_instant = Arc::clone(&state.recording.recording_start_instant);
 
     // 执行停止处理（仅听写模式）
     let app = app_handle.clone();
-    match trigger_mode {
-        config::TriggerMode::Dictation => {
-            if use_realtime {
-                handle_realtime_stop(
-                    app,
-                    streaming_recorder,
-                    active_session,
-                    doubao_session,
-                    doubao_ime_session,
-                    realtime_provider,
-                    audio_sender_handle,
-                    post_processor,
-                    text_inserter,
-                    qwen_client,
-                    sensevoice_client,
-                    doubao_client,
-                    enable_fallback,
-                    target_hwnd,
-                    usage_stats,
-                    recording_start_instant,
-                )
-                .await;
-            } else {
-                handle_http_transcription(
-                    app,
-                    audio_recorder,
-                    post_processor,
-                    text_inserter,
-                    qwen_client,
-                    sensevoice_client,
-                    doubao_client,
-                    enable_fallback,
-                    target_hwnd,
-                    usage_stats,
-                    recording_start_instant,
-                )
-                .await;
+    let resources = state.recording.clone();
+    let completion = state
+        .recording_session
+        .finish(async move {
+            resources.restore_audio();
+            let _ = app.emit("recording_stopped", ());
+            match trigger_mode {
+                config::TriggerMode::Dictation => {
+                    if use_realtime {
+                        handle_realtime_stop(
+                            app,
+                            streaming_recorder,
+                            active_session,
+                            doubao_session,
+                            doubao_ime_session,
+                            realtime_provider,
+                            audio_sender_handle,
+                            post_processor,
+                            text_inserter,
+                            qwen_client,
+                            sensevoice_client,
+                            doubao_client,
+                            enable_fallback,
+                            target_hwnd,
+                            usage_stats,
+                            recording_start_instant,
+                        )
+                        .await;
+                    } else {
+                        handle_http_transcription(
+                            app,
+                            audio_recorder,
+                            post_processor,
+                            text_inserter,
+                            qwen_client,
+                            sensevoice_client,
+                            doubao_client,
+                            enable_fallback,
+                            target_hwnd,
+                            usage_stats,
+                            recording_start_instant,
+                        )
+                        .await;
+                    }
+                }
+                config::TriggerMode::AiAssistant => {
+                    // 松手模式不支持 AI 助手模式，但为了安全性仍然处理
+                    tracing::warn!("松手模式不支持 AI 助手模式，跳过处理");
+                }
             }
-        }
-        config::TriggerMode::AiAssistant => {
-            // 松手模式不支持 AI 助手模式，但为了安全性仍然处理
-            tracing::warn!("松手模式不支持 AI 助手模式，跳过处理");
-        }
-    }
-
-    // 重置处理标志
-    state.is_processing_stop.store(false, Ordering::SeqCst);
+        })
+        .ok_or("录音已在处理中或已结束")?;
+    completion.wait().await;
 
     Ok("录音已完成".to_string())
 }
@@ -5006,50 +4887,13 @@ async fn cancel_locked_recording(app_handle: AppHandle) -> Result<String, String
 
     let state = app_handle.state::<AppState>();
 
-    if !state.is_recording_locked.load(Ordering::SeqCst) {
+    if !state.recording.is_recording_locked.load(Ordering::SeqCst) {
         return Err("未处于锁定录音状态".to_string());
     }
 
-    // 防止与 on_stop 竞态：使用 compare_exchange 原子操作
-    if state
-        .is_processing_stop
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        tracing::warn!("已有停止处理正在进行中，跳过重复触发");
-        return Err("正在处理中".to_string());
-    }
-
-    // 清除锁定状态
-    state.is_recording_locked.store(false, Ordering::SeqCst);
-    *state.recording_start_time.lock().unwrap() = None;
-    *state.current_trigger_mode.lock().unwrap() = None;
-
-    // 重置热键服务状态（防止状态卡死）
-    state.hotkey_service.reset_state();
-
-    // ===== 隐藏悬浮窗并主动恢复焦点 =====
-    let target_hwnd = *state.target_window.lock().unwrap();
-    tracing::info!("取消录音：隐藏悬浮窗并恢复焦点...");
+    let target_hwnd = *state.recording.target_window.lock().unwrap();
+    let result = cancel_transcription(app_handle.clone()).await;
     pipeline::focus::hide_overlay_and_restore_focus(&app_handle, target_hwnd).await;
-
-    // 结束会话并恢复其他应用的音量
-    if let Some(ref manager) = *state.audio_mute_manager.lock().unwrap() {
-        manager.end_session();
-        if let Err(e) = manager.restore_volumes() {
-            tracing::warn!("恢复其他应用音量失败: {}", e);
-        }
-    }
-
-    // 克隆 is_processing_stop 用于后续重置
-    let is_processing_stop = Arc::clone(&state.is_processing_stop);
-
-    // 调用现有的取消逻辑
-    let result = cancel_transcription(app_handle).await;
-
-    // 重置处理标志
-    is_processing_stop.store(false, Ordering::SeqCst);
-
     result
 }
 
@@ -5287,7 +5131,7 @@ async fn update_runtime_config(
 
     // 4. 更新静音其他应用开关
     if let Some(should_mute) = enable_mute_other_apps {
-        if let Some(ref manager) = *state.audio_mute_manager.lock().unwrap() {
+        if let Some(ref manager) = *state.recording.audio_mute_manager.lock().unwrap() {
             manager.set_enabled(should_mute);
             tracing::info!("热更新: 静音其他应用 = {}", should_mute);
             updated.push("静音开关");
@@ -5994,8 +5838,8 @@ pub fn run() {
             let builtin_dictionary_updater_started = Arc::new(AtomicBool::new(false));
 
             let app_state = AppState {
-                audio_recorder: Arc::new(Mutex::new(None)),
-                streaming_recorder: Arc::new(Mutex::new(None)),
+                recording_session: Arc::default(),
+                recording: application::recording_resources::RecordingResources::default(),
                 text_inserter: Arc::new(Mutex::new(None)),
                 post_processor: Arc::new(Mutex::new(None)),
                 assistant_processor: Arc::new(Mutex::new(None)),
@@ -6007,25 +5851,13 @@ pub fn run() {
                 qwen_client: Arc::new(Mutex::new(None)),
                 sensevoice_client: Arc::new(Mutex::new(None)),
                 doubao_client: Arc::new(Mutex::new(None)),
-                active_session: Arc::new(tokio::sync::Mutex::new(None)),
-                doubao_session: Arc::new(tokio::sync::Mutex::new(None)),
-                doubao_ime_session: Arc::new(tokio::sync::Mutex::new(None)),
                 realtime_provider: Arc::new(Mutex::new(None)),
                 fallback_provider: Arc::new(Mutex::new(None)),
-                audio_sender_handle: Arc::new(Mutex::new(None)),
                 hotkey_service: Arc::new(HotkeyService::new()),
-                current_trigger_mode: Arc::new(Mutex::new(None)),
-                is_recording_locked: Arc::new(AtomicBool::new(false)),
-                lock_timer_handle: Arc::new(Mutex::new(None)),
-                recording_start_time: Arc::new(Mutex::new(None)),
-                is_processing_stop: Arc::new(AtomicBool::new(false)),
-                audio_mute_manager: Arc::new(Mutex::new(None)),
-                target_window: Arc::new(Mutex::new(None)),
                 dictionary: Arc::new(Mutex::new(Vec::new())),
                 asr_correction_pairs: Arc::new(Mutex::new(Vec::new())),
                 doubao_ime_credentials: Arc::new(Mutex::new(None)),
                 usage_stats: Arc::new(Mutex::new(usage_stats)),
-                recording_start_instant: Arc::new(Mutex::new(None)),
                 builtin_hotwords_raw: Arc::clone(&builtin_hotwords_raw),
                 builtin_dictionary_updater_started: Arc::clone(&builtin_dictionary_updater_started),
                 conversation_session: Arc::new(Mutex::new(None)),
