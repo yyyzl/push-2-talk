@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -70,6 +71,16 @@ function main() {
   if (command === "check-version") {
     if (argument) assert.equal(argument, `v${project.version}`, "标签与项目版本不一致");
     console.log(project.version);
+  } else if (command === "check-signing-key") {
+    assert(argument, "请提供签名探针目录");
+    fs.mkdirSync(argument, { recursive: true });
+    const probe = path.resolve(argument, "updater-signing-probe.txt");
+    const data = Buffer.from(`PushToTalk ${project.version} updater signing check\n`);
+    fs.writeFileSync(probe, data);
+    // 凭据仅通过当前进程环境传入，不写入文件、命令参数或日志。
+    execFileSync(process.execPath, ["node_modules/@tauri-apps/cli/tauri.js", "signer", "sign", "--app-version", project.version, probe], { stdio: "ignore", timeout: 60_000 });
+    verifySignature(data, fs.readFileSync(`${probe}.sig`, "utf8").trim(), project.publicKey);
+    console.log("更新签名与现有应用公钥匹配。");
   } else if (command === "stage") {
     const bundle = path.join("src-tauri/target", argument, "release/bundle");
     fs.mkdirSync(destination, { recursive: true });
@@ -98,7 +109,7 @@ function main() {
     fs.writeFileSync(path.join(argument, "SHA256SUMS.txt"), `${checksums}\n`);
     console.log(`已验证 ${files.size - 1} 个产物及 Windows x64、Apple Silicon 的更新签名。`);
   } else {
-    throw new Error("用法：release-artifacts.mjs check-version [tag] | stage <target> <dir> | manifest <dir> <owner/repo>");
+    throw new Error("用法：release-artifacts.mjs check-version [tag] | check-signing-key <dir> | stage <target> <dir> | manifest <dir> <owner/repo>");
   }
 }
 

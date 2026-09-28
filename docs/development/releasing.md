@@ -15,7 +15,7 @@
 
 ## 构建与签名
 
-- Tauri 更新签名来自 GitHub Actions secrets：`TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。不在日志输出密钥。
+- Tauri 更新签名使用专用 GitHub Actions secret `TAURI_UPDATER_SIGNING_PRIVATE_KEY`，沿用与已安装版本公钥匹配的原签名私钥，密码为空。仓库中其他签名 Secrets 不代表与当前客户端兼容，不能直接替换。每个平台在构建前签署临时探针并验证公钥匹配，汇总时再校验实际安装包；不在日志输出密钥。
 - 本轮 macOS 使用 `APPLE_SIGNING_IDENTITY=-` 进行 ad-hoc 签名，明确不做 Developer ID 签名或公证；发布说明必须告知首次打开及升级权限限制。
 - Cargo 与安装包元信息使用项目名称、MIT 许可证、仓库地址和实际功能描述，不沿用模板作者与空字段。
 - 正式包只包含 `push-to-talk` 主程序。`test_api` 和 `eval_asr` 通过 `cli-tools` feature 按需启用，平台 CI 显式启用该 feature 以保留工具测试覆盖。发布构建不得启用它；macOS 打包后会检查可执行文件清单，避免开发工具混入并导致 Intel Mac 签名失败。

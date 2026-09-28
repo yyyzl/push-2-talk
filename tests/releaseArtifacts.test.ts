@@ -63,6 +63,10 @@ test("修改包体、替换签名或公钥时拒绝发布", () => {
   wrongSignature.files.set("PushToTalk_1.7.0_x64-setup.exe.sig", wrongSignature.files.get("PushToTalk_1.7.0_aarch64.app.tar.gz.sig")!);
   assert.throws(() => createManifest(wrongSignature), /签名验证失败/);
   assert.throws(() => createManifest({ ...fixture(), publicKey: "invalid" }), /公钥格式/);
+  const differentKeyId = Buffer.from(publicPacket);
+  differentKeyId[2] ^= 1;
+  const foreignPublicKey = Buffer.from(`untrusted comment: different key\n${differentKeyId.toString("base64")}\n`).toString("base64");
+  assert.throws(() => createManifest({ ...fixture(), publicKey: foreignPublicKey }), /签名公钥标识不匹配/);
 });
 
 test("拒绝损坏的签名说明以及错误版本、空说明", () => {

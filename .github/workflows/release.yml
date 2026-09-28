@@ -82,10 +82,15 @@ jobs:
           workspaces: src-tauri -> target
           key: release-${{ matrix.target }}
       - run: npm ci
+      - name: Verify updater key compatibility before building
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: node scripts/release-artifacts.mjs check-signing-key "${{ runner.temp }}/updater-signing-check"
       - name: Build signed updater packages
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           # 本次明确采用 ad-hoc 签名，不执行 Apple 公证。
           APPLE_SIGNING_IDENTITY: '-'
         run: npm run tauri build -- --ci --target ${{ matrix.target }} -- --locked
