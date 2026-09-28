@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import { AlertCircle, MessageSquareQuote, Plus, Trash2 } from "lucide-react";
 import type { LlmConfig, LlmPreset } from "../types";
 import { PresetModelSelect } from "../components/llm/PresetModelSelect";
+import { ReasoningEffortSelect } from "../components/llm/ReasoningEffortSelect";
 
 export type LlmPageProps = {
   llmConfig: LlmConfig;
@@ -75,7 +76,7 @@ export function LlmPage({
             <div className="p-5 border-b border-[var(--stone)]">
               <div className="flex items-center gap-2 p-3 bg-[var(--panel)] border border-[var(--stone)] rounded-xl text-xs text-[var(--ink)]">
                 <AlertCircle size={14} className="text-[var(--steel)]" />
-                <span>Ctrl+Win 听写时使用</span>
+                <span>听写时使用</span>
               </div>
               <button
                 onClick={handleAddPreset}
@@ -184,15 +185,34 @@ export function LlmPage({
               <div className="h-px bg-[var(--stone)]" />
 
               {activePreset && (
-                <PresetModelSelect
-                  preset={activePreset}
-                  llmConfig={llmConfig}
-                  disabled={isRunning}
-                  onCommit={(providerId, model) =>
-                    commitPresetModel(activePreset.id, providerId, model)
-                  }
-                  onNavigateToModels={onNavigateToModels}
-                />
+                <div className="space-y-6">
+                  <PresetModelSelect
+                    preset={activePreset}
+                    llmConfig={llmConfig}
+                    disabled={isRunning}
+                    onCommit={(providerId, model) =>
+                      commitPresetModel(activePreset.id, providerId, model)
+                    }
+                    onNavigateToModels={onNavigateToModels}
+                  />
+
+                  <ReasoningEffortSelect
+                    context={{ kind: "polishing", config: llmConfig }}
+                    value={activePreset.reasoning?.effort}
+                    disabled={isRunning}
+                    description="默认沿用已有配置；支持关闭的模型可用于减少简单文本处理的等待。"
+                    onChange={(effort) => {
+                      setLlmConfig((prev) => ({
+                        ...prev,
+                        presets: prev.presets.map((preset) =>
+                          preset.id === activePreset.id
+                            ? { ...preset, reasoning: effort ? { effort } : undefined }
+                            : preset,
+                        ),
+                      }));
+                    }}
+                  />
+                </div>
               )}
             </div>
           </section>

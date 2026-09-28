@@ -67,6 +67,51 @@ code {
     monospace;
 }
 
+/* macOS draws native traffic lights over this single, integrated toolbar. */
+.mac-toolbar {
+  background: var(--panel);
+}
+
+.mac-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 0 24px;
+}
+
+.mac-window-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  width: 112px;
+}
+
+.mac-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--ink);
+}
+
+.mac-sidebar-toggle:hover {
+  background: var(--sand);
+}
+
+.mac-sidebar-toggle:focus-visible {
+  outline: 2px solid var(--crail);
+  outline-offset: 2px;
+}
+
+#root [data-tauri-drag-region] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .mono {
   font-family: var(--font-mono);
 }
@@ -502,3 +547,68 @@ select,
     margin: 0 2px;
     vertical-align: middle;
 }
+
+/* Shared desktop selects: the popup is portaled outside scrolling panels. */
+.app-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 12px;
+  border: 1px solid var(--stone);
+  border-radius: 10px;
+  background: white;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease-out, background-color 120ms ease-out;
+}
+.app-select-trigger:hover:not(:disabled) { border-color: var(--stone-dark); }
+.app-select-trigger:focus-visible,
+.app-select-trigger[data-state="open"] { outline: 2px solid var(--steel); outline-offset: 2px; }
+.app-select-trigger:disabled { opacity: .6; cursor: not-allowed; }
+.app-select-trigger[data-status="error"] { border-color: #b64032; }
+.app-select-trigger[data-size="compact"] { min-height: 26px; padding: 2px 8px; gap: 4px; font-size: 11px; }
+.app-select-icon { display: flex; flex-shrink: 0; color: #69675f; }
+.app-select-trigger[data-status="success"] .app-select-icon { color: #526438; }
+.app-select-content {
+  z-index: 2000;
+  width: var(--radix-select-trigger-width);
+  min-width: 160px;
+  max-width: calc(100vw - 24px);
+  max-height: min(360px, var(--radix-select-content-available-height));
+  overflow: hidden;
+  border-radius: 12px;
+  background: white;
+  color: var(--ink);
+  box-shadow: 0 6px 24px rgba(20, 20, 19, .18);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 20px;
+}
+.app-select-viewport { padding: 5px; }
+.app-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: default;
+  outline: none;
+  overflow-wrap: anywhere;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.app-select-item[data-state="checked"] { color: #41572f; }
+.app-select-item[data-highlighted] { background: var(--panel); color: var(--ink); }
+.app-select-item[data-disabled] { color: #76746d; cursor: not-allowed; }
+.app-select-description { margin-top: 2px; color: #69675f; font-size: 11px; line-height: 17px; overflow-wrap: anywhere; }
+.app-select-check { display: flex; flex-shrink: 0; color: #526438; }
+.app-select-scroll { display: flex; align-items: center; justify-content: center; height: 22px; color: #69675f; }
+@media (prefers-reduced-motion: reduce) { .app-select-trigger { transition: none; } }

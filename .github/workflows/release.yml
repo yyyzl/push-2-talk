@@ -2,175 +2,165 @@ name: Release Pipeline
 
 on:
   push:
-    branches:
-      - main        # 监听 main 分支的普通提交（只测试构建）
-    tags:
-      - 'v*'        # 监听打标签（执行发布）
-  workflow_dispatch: # 允许手动触发
+    tags: ['v*']
+  workflow_dispatch:
+
+# 同一版本串行运行；构建完成后只更新草稿，公开发布由维护者执行。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # ========================================================
-  # Job 1: 构建测试 (Build Test)
-  # 场景: 只是 Push 代码到 main 分支，没有打 Tag
-  # 目的: 确保代码能编译通过，但不消耗版本号，不发布
-  # ========================================================
-  test-build:
-    # 如果不是 Tag，且不是手动触发，则运行测试
-    if: startsWith(github.ref, 'refs/tags/') != true
+  prepare:
     runs-on: windows-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
-          cache: 'npm'
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+          node-version: '22'
+      - name: Validate version and release notes
+        id: version
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
+          $version = node scripts/release-artifacts.mjs check-version $tag
+          if ($LASTEXITCODE -ne 0) { throw '版本校验失败' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Create or reuse draft
+        if: github.ref_type == 'tag'
+        uses: actions/github-script@v7
         with:
-          workspaces: './src-tauri -> target'
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
+            const existing = releases.find(release => release.tag_name === tag);
+            if (existing) {
+              if (!existing.draft) throw new Error('已公开的版本不可覆盖，请创建新版本。');
+              core.info(`继续构建草稿 ${tag}`);
+            } else {
+              await github.rest.repos.createRelease({
+                ...context.repo, tag_name: tag, target_commitish: context.sha,
+                name: `${tag} · Windows / macOS`, draft: true, prerelease: false,
+                body: '正在构建 Windows x64 与 macOS Apple Silicon 安装包。全部产物校验通过后补充更新说明；此草稿尚未发布。'
+              });
+            }
 
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build only (No Release)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5UW5Nb3ZvRnFVL25mNmRRQ2FDZE9rRzlYaHhEWkxOQ0x2OERRL09aTm9BWUFBQkFBQUFBQUFBQUFBQUlBQUFBQUsydjdtdkdpVWQ4dTcxS1Z4K0F0Q3VCQXZ3K01BcnhvUThTLzZ1NGlQbkxpK1dUYVZUbndCTG5LaE9ZQ0JvY0FlYTk1aDB0TkxHc3FFVDBnOS8zL3dFWTRndHNUUzlVbG12LzVNSFpscG4yTkZhWk5ZbUxwMUdLNlE5NVFXR09qa09DcUd5ZVBMeHM9Cg==
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npm run tauri build
-
-  # ========================================================
-  # Job 2: 正式发布 (Release)
-  # 场景: 推送了 v* 标签
-  # 目的: 生成更新日志、签名、打包、上传 Release
-  # ========================================================
-  release:
-    # 只有当推送的是 Tag 时才运行
-    if: startsWith(github.ref, 'refs/tags/')
+  build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
-            args: ''
-
-    runs-on: ${{ matrix.platform }}
-
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+      OPUS_STATIC: '1'
+      OPUS_NO_PKG: '1'
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
-
-      - name: Generate changelog
-        id: changelog
-        shell: bash
-        run: |
-          # 获取当前 tag
-          CURRENT_TAG=${GITHUB_REF#refs/tags/}
-          echo "Current tag: $CURRENT_TAG"
-
-          # 获取上一个 tag
-          PREV_TAG=$(git describe --tags --abbrev=0 ${CURRENT_TAG}^ 2>/dev/null || echo "")
-          echo "Previous tag: $PREV_TAG"
-
-          # 获取 commit 列表
-          if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git log --pretty=format:"%s" -50)
-          else
-            COMMITS=$(git log ${PREV_TAG}..${CURRENT_TAG} --pretty=format:"%s")
-          fi
-
-          # 分类 commits
-          FEATURES=""
-          FIXES=""
-          UPDATES=""
-          OTHERS=""
-
-          while IFS= read -r line; do
-            [ -z "$line" ] && continue
-
-            if echo "$line" | grep -qiE "^feat[：:]"; then
-              FEATURES="${FEATURES}- ${line#*[：:]}"$'\n'
-            elif echo "$line" | grep -qiE "^(fix|bugfix|bug)[：:]"; then
-              FIXES="${FIXES}- ${line#*[：:]}"$'\n'
-            elif echo "$line" | grep -qiE "^(update|improve|perf|优化)[：:]"; then
-              UPDATES="${UPDATES}- ${line#*[：:]}"$'\n'
-            elif echo "$line" | grep -qiE "^(chore|docs|refactor|style|test|security)[：:]"; then
-              OTHERS="${OTHERS}- ${line#*[：:]}"$'\n'
-            else
-              OTHERS="${OTHERS}- ${line}"$'\n'
-            fi
-          done <<< "$COMMITS"
-
-          # 构建 changelog
-          CHANGELOG=""
-
-          if [ -n "$FEATURES" ]; then
-            CHANGELOG="${CHANGELOG}## ✨ 新功能"$'\n'"${FEATURES}"$'\n'
-          fi
-
-          if [ -n "$FIXES" ]; then
-            CHANGELOG="${CHANGELOG}## 🐛 Bug 修复"$'\n'"${FIXES}"$'\n'
-          fi
-
-          if [ -n "$UPDATES" ]; then
-            CHANGELOG="${CHANGELOG}## 🚀 优化改进"$'\n'"${UPDATES}"$'\n'
-          fi
-
-          if [ -n "$OTHERS" ]; then
-            CHANGELOG="${CHANGELOG}## 📦 其他"$'\n'"${OTHERS}"$'\n'
-          fi
-
-          # 如果没有任何分类的 commits
-          if [ -z "$CHANGELOG" ]; then
-            CHANGELOG="本次更新无重大变更"$'\n'
-          fi
-
-          # 输出到 GitHub Actions
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 'lts/*'
-          cache: 'npm'
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build and release
-        uses: tauri-apps/tauri-action@v0
+          workspaces: src-tauri -> target
+          key: release-${{ matrix.target }}
+      - run: npm ci
+      - name: Verify updater key compatibility before building
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5UW5Nb3ZvRnFVL25mNmRRQ2FDZE9rRzlYaHhEWkxOQ0x2OERRL09aTm9BWUFBQkFBQUFBQUFBQUFBQUlBQUFBQUsydjdtdkdpVWQ4dTcxS1Z4K0F0Q3VCQXZ3K01BcnhvUThTLzZ1NGlQbkxpK1dUYVZUbndCTG5LaE9ZQ0JvY0FlYTk1aDB0TkxHc3FFVDBnOS8zL3dFWTRndHNUUzlVbG12LzVNSFpscG4yTkZhWk5ZbUxwMUdLNlE5NVFXR09qa09DcUd5ZVBMeHM9Cg==
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: node scripts/release-artifacts.mjs check-signing-key "${{ runner.temp }}/updater-signing-check"
+      - name: Build signed updater packages
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          # 本次明确采用 ad-hoc 签名，不执行 Apple 公证。
+          APPLE_SIGNING_IDENTITY: '-'
+        run: npm run tauri build -- --ci --target ${{ matrix.target }} -- --locked
+      - name: Verify Mac bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          app="src-tauri/target/$BUILD_TARGET/release/bundle/macos/PushToTalk.app"
+          binaries=("$app/Contents/MacOS/"*)
+          if [[ ${#binaries[@]} -ne 1 || "${binaries[0]##*/}" != push-to-talk ]]; then
+            printf '正式包只能包含主程序，实际发现：%s\n' "${binaries[@]}"
+            exit 1
+          fi
+          codesign --verify --deep --strict "$app"
+          test "$(lipo -archs "$app/Contents/MacOS/push-to-talk")" = "arm64"
+          for binary in "$app/Contents/MacOS/"*; do
+            otool -L "$binary"
+          done > "$RUNNER_TEMP/ptt-linked-libraries.txt"
+          cat "$RUNNER_TEMP/ptt-linked-libraries.txt"
+          if grep -E '/opt/homebrew/|/usr/local/(opt|Cellar)/' "$RUNNER_TEMP/ptt-linked-libraries.txt"; then
+            echo '发布包不可依赖用户未安装的 Homebrew 动态库。'
+            exit 1
+          fi
+      - name: Stage platform assets
+        run: node scripts/release-artifacts.mjs stage ${{ matrix.target }} release-assets
+      - uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: 'v__VERSION__'
-          releaseBody: |
-            ${{ steps.changelog.outputs.changelog }}
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          args: ${{ matrix.args }}
+          name: release-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    needs: [prepare, build]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: v${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify signatures and assemble complete updater manifest
+        run: node scripts/release-artifacts.mjs manifest release-assets ${{ github.repository }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-complete
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enrich draft with packages and reviewed notes
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $draft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft
+          if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw '只允许写入草稿版本' }
+          $assets = @(Get-ChildItem -LiteralPath release-assets -File | ForEach-Object { $_.FullName })
+          gh release upload $env:RELEASE_TAG @assets --clobber
+          if ($LASTEXITCODE -ne 0) { throw '上传产物失败' }
+          gh release edit $env:RELEASE_TAG --title "$env:RELEASE_TAG · Windows / macOS" --notes-file "docs/releases/$env:RELEASE_TAG.md"
+          if ($LASTEXITCODE -ne 0) { throw '补充发布说明失败' }
+          "草稿产物、签名和说明已齐全；尚未公开发布。" >> $env:GITHUB_STEP_SUMMARY

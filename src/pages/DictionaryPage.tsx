@@ -1,7 +1,8 @@
+import { Select } from "../components/common/Select";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { SourceBadge } from "../components/learning/SourceBadge";
-import type { DictionaryEntry } from "../types";
+import type { DictionaryCategory, DictionaryEntry } from "../types";
 import {
   BUILTIN_DICTIONARY_DOMAINS,
   BUILTIN_DICTIONARY_LIMIT,
@@ -10,6 +11,7 @@ import {
   getBuiltinWordsForDomains,
   setBuiltinDomainsSnapshot,
 } from "../utils/builtinDictionary";
+import { DICTIONARY_CATEGORY_OPTIONS } from "../utils/dictionaryUtils";
 
 export type DictionaryPageProps = {
   dictionary: DictionaryEntry[];
@@ -26,6 +28,7 @@ export type DictionaryPageProps = {
   handleSaveEdit: () => void;
   handleCancelEdit: () => void;
   handleBatchDelete: (ids: string[]) => void;
+  handleUpdateCategory: (word: string, category: DictionaryCategory) => void;
   builtinDictionaryDomains: string[];
   setBuiltinDictionaryDomains: (next: string[]) => void;
   builtinDictionaryVersion: number;
@@ -50,6 +53,7 @@ export function DictionaryPage({
   handleSaveEdit,
   handleCancelEdit,
   handleBatchDelete,
+  handleUpdateCategory,
   builtinDictionaryDomains,
   setBuiltinDictionaryDomains,
   builtinDictionaryVersion,
@@ -373,6 +377,10 @@ export function DictionaryPage({
                       {entry.word}
                     </span>
                     <SourceBadge source={entry.source} />
+                    <Select value={entry.category} disabled={isRunning}
+                      aria-label={`${entry.word} 分类`} size="compact" className="max-w-[6.5rem]"
+                      onChange={category => handleUpdateCategory(entry.word, category)}
+                      options={DICTIONARY_CATEGORY_OPTIONS} />
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                       <button
                         onClick={(e) => {

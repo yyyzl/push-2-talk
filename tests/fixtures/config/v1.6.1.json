@@ -1,0 +1,100 @@
+{
+  "dashscope_api_key": "fixture-v161-qwen",
+  "siliconflow_api_key": "fixture-v161-sensevoice",
+  "asr_config": {
+    "credentials": {
+      "qwen_api_key": "fixture-v161-qwen",
+      "sensevoice_api_key": "fixture-v161-sensevoice",
+      "doubao_app_id": "fixture-v161-app",
+      "doubao_access_token": "fixture-v161-access",
+      "doubao_ime_device_id": "fixture-v161-device",
+      "doubao_ime_token": "fixture-v161-ime",
+      "doubao_ime_cdid": "fixture-v161-cdid"
+    },
+    "selection": {
+      "active_provider": "qwen",
+      "enable_fallback": true,
+      "fallback_provider": "siliconflow"
+    },
+    "language_mode": "zh"
+  },
+  "use_realtime_asr": false,
+  "enable_llm_post_process": true,
+  "enable_dictionary_enhancement": false,
+  "llm_config": {
+    "shared": {
+      "providers": [
+        {
+          "id": "release-provider",
+          "name": "已保存服务",
+          "endpoint": "https://provider.invalid/v1",
+          "api_key": "fixture-v161-llm",
+          "default_model": "saved-default"
+        }
+      ],
+      "default_provider_id": "release-provider",
+      "polishing_provider_id": "release-provider",
+      "polishing_model": "saved-polishing",
+      "assistant_model": "saved-assistant",
+      "learning_model": "saved-learning"
+    },
+    "feature_override": {
+      "use_shared": true
+    },
+    "presets": [
+      {
+        "id": "mine",
+        "name": "原有预设",
+        "system_prompt": "保留这段自定义提示词\n以及换行。"
+      }
+    ],
+    "active_preset_id": "mine"
+  },
+  "assistant_config": {
+    "enabled": true,
+    "llm": {
+      "use_shared": true
+    },
+    "qa_system_prompt": "原有问答提示词",
+    "text_processing_system_prompt": "原有选区提示词"
+  },
+  "learning_config": {
+    "enabled": true,
+    "observation_duration_secs": 21,
+    "feature_override": {
+      "use_shared": true
+    }
+  },
+  "tnl_config": {
+    "enabled": true
+  },
+  "dual_hotkey_config": {
+    "dictation": {
+      "keys": [
+        "control_right",
+        "f8"
+      ],
+      "mode": "press",
+      "release_mode_keys": [
+        "f6"
+      ]
+    },
+    "assistant": {
+      "keys": [
+        "alt_right",
+        "space"
+      ],
+      "mode": "press"
+    }
+  },
+  "dictionary": [
+    "ReleaseTerm|manual|product",
+    "LearnedTerm|auto"
+  ],
+  "builtin_dictionary_domains": [
+    "programming"
+  ],
+  "close_action": "minimize",
+  "enable_mute_other_apps": true,
+  "theme": "dark"
+}

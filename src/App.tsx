@@ -1,5 +1,10 @@
+import { useAppConfig } from "./hooks/useAppConfig";
+import { normalizeConfig } from "./state/appConfig";
+import type { ConfigSnapshot } from "./state/configStore";
+import { parseEntry } from "./utils/dictionaryUtils";
 // src/App.tsx
-import { useState, useEffect, useRef, useCallback } from "react";
+import { createConfigInitialization } from "./utils/configInitialization";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   CheckCircle2,
@@ -8,21 +13,14 @@ import {
 import type {
   AppConfig,
   AppStatus,
-  AsrConfig,
   AssistantConfig,
-  DualHotkeyConfig,
-  LearningConfig,
   LlmConfig,
+  TnlConfig,
   UsageStats,
 } from "./types";
 import type { AppPage } from "./pages/types";
-import {
-  DEFAULT_ASSISTANT_CONFIG,
-  DEFAULT_DUAL_HOTKEY_CONFIG,
-  DEFAULT_LEARNING_CONFIG,
-  DEFAULT_LLM_CONFIG,
-} from "./constants";
 import { loadUsageStats } from "./utils";
+import { desktopOs } from "./utils/platform";
 import { TopStatusBar } from "./components/layout/TopStatusBar";
 import { Sidebar } from "./components/layout/Sidebar";
 import { RightPanel } from "./components/layout/RightPanel";
@@ -48,11 +46,8 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { PreferencesPage } from "./pages/PreferencesPage";
 import { HelpPage } from "./pages/HelpPage";
 import { ConfigSaveContext, type ConfigSyncStatus, type ConfigOverrides } from "./contexts/ConfigSaveContext";
-import {
-  createConfigSyncWindowController,
-  scheduleSyncWindowRelease,
-  type ConfigSyncWindowSnapshot,
-} from "./utils/configSyncWindow";
+
+import { buildRecentHotwordEntries } from "./utils/recentHotwords";
 
 /** 哨兵值：外部配置更新时设置，applyRuntimeConfig effect 据此跳过并重置基准 */
 const EXTERNAL_UPDATE_SENTINEL = "__EXTERNAL_CONFIG_UPDATE__";
@@ -61,32 +56,13 @@ function App() {
   const [currentVersion, setCurrentVersion] = useState(() =>
     localStorage.getItem('app_version') || ''
   );
-  const [apiKey, setApiKey] = useState("");
-  const [fallbackApiKey, setFallbackApiKey] = useState("");
-
-  const [asrConfig, setAsrConfig] = useState<AsrConfig>({
-    credentials: {
-      qwen_api_key: '',
-      sensevoice_api_key: '',
-      doubao_app_id: '',
-      doubao_access_token: '',
-      doubao_ime_device_id: '',
-      doubao_ime_token: '',
-      doubao_ime_cdid: '',
-    },
-    selection: {
-      active_provider: 'doubao_ime',
-      enable_fallback: false,
-      fallback_provider: null,
-    },
-    language_mode: 'auto',
-  });
-
-  const [useRealtime, setUseRealtime] = useState(false);
-  const [enablePostProcess, setEnablePostProcess] = useState(false);
-  const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(false);
-  const [learningConfig, setLearningConfig] = useState<LearningConfig>(DEFAULT_LEARNING_CONFIG);
-  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
+  const { store: configStore, view: configView,
+    asrConfig, setAsrConfig, useRealtime, setUseRealtime, enablePostProcess, setEnablePostProcess,
+    enableDictionaryEnhancement, setEnableDictionaryEnhancement, learningConfig, setLearningConfig,
+    tnlConfig, llmConfig, setLlmConfig, assistantConfig, setAssistantConfig,
+    searchConfig, setSearchConfig, dualHotkeyConfig, setDualHotkeyConfig,
+    enableMuteOtherApps, theme,
+    builtinDictionaryDomains, setBuiltinDictionaryDomains } = useAppConfig();
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
   const [originalTranscript, setOriginalTranscript] = useState<string | null>(null);
@@ -114,8 +90,8 @@ function App() {
     handleSaveEdit,
     handleCancelEdit,
     handleBatchDelete,
+    handleUpdateCategory,
   } = useDictionary();
-  const [builtinDictionaryDomains, setBuiltinDictionaryDomains] = useState<string[]>([]);
   const [builtinDictionaryVersion, setBuiltinDictionaryVersion] = useState(0);
   const {
     history,
@@ -125,6 +101,10 @@ function App() {
     handleCopyText,
     handleClearHistory,
   } = useHistoryController();
+  const recentHotwordEntries = useMemo(
+    () => tnlConfig.enable_context_hotwords ? buildRecentHotwordEntries(history) : [],
+    [history, tnlConfig.enable_context_hotwords],
+  );
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   // R8.2 (v4): cross-page focus state — set by ModelsPage callback, consumed by LlmPage useEffect
   // v4 simplification: no "action" field — model selector is inline so just scrolling+activating is enough
@@ -138,9 +118,6 @@ function App() {
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
-  const [enableMuteOtherApps, setEnableMuteOtherApps] = useState(false);
-  const [theme, setTheme] = useState("light");
-  const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const {
     updateStatus,
@@ -155,8 +132,6 @@ function App() {
     onError: (message) => setError(message),
   });
   // hotkeyConfig 已迁移到 dualHotkeyConfig，不再单独使用
-  const [dualHotkeyConfig, setDualHotkeyConfig] = useState<DualHotkeyConfig>(DEFAULT_DUAL_HOTKEY_CONFIG);
-  const [assistantConfig, setAssistantConfig] = useState<AssistantConfig>(DEFAULT_ASSISTANT_CONFIG);
 
   // 创建 ref 用于在 useHotkeyRecording 中访问 wrappedSaveImmediately
   const saveImmediatelyRef = useRef<((overrides?: ConfigOverrides) => Promise<void>) | null>(null);
@@ -181,55 +156,19 @@ function App() {
   const [currentMode, setCurrentMode] = useState<string | null>(null); // 当前转录模式: "normal" | "smartcommand"
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const hasCheckedUpdateOnStartup = useRef(false);
-  const hasLoadedConfigRef = useRef(false);
+  const configInitializationRef = useRef(createConfigInitialization());
+  const [configReady, setConfigReady] = useState(false);
   const autoSaveTimerRef = useRef<number | null>(null);
-  const configSyncWindowControllerRef = useRef(createConfigSyncWindowController());
-  const [syncWindowSnapshot, setSyncWindowSnapshot] = useState<ConfigSyncWindowSnapshot>(
-    () => configSyncWindowControllerRef.current.snapshot(),
-  );
-
-  const syncWindowSnapshotRef = useRef(syncWindowSnapshot);
-  useEffect(() => {
-    syncWindowSnapshotRef.current = syncWindowSnapshot;
-  }, [syncWindowSnapshot]);
-
-  const updateSyncWindowSnapshot = useCallback(() => {
-    const nextSnapshot = configSyncWindowControllerRef.current.snapshot();
-    const prevSnapshot = syncWindowSnapshotRef.current;
-
-    if (
-      prevSnapshot.isSuppressed === nextSnapshot.isSuppressed
-      && prevSnapshot.source === nextSnapshot.source
-      && prevSnapshot.isExternalSyncing === nextSnapshot.isExternalSyncing
-    ) {
-      return;
-    }
-
-    syncWindowSnapshotRef.current = nextSnapshot;
-    setSyncWindowSnapshot(nextSnapshot);
-  }, []);
-  const releaseConfigSyncWindow = useCallback((token: number) => {
-    scheduleSyncWindowRelease({
-      token,
-      complete: (releasedToken) => {
-        configSyncWindowControllerRef.current.complete(releasedToken);
-        updateSyncWindowSnapshot();
-      },
-    });
-  }, [updateSyncWindowSnapshot]);
-
-  const handleExternalConfigUpdated = useCallback((_config: AppConfig) => {
-    if (autoSaveTimerRef.current) {
-      window.clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = null;
-    }
-    const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
-    updateSyncWindowSnapshot();
-    // 标记 applyRuntimeConfig 基准需要重置，防止外部配置触发冗余的后端热更新
-    // （后端已经通过 restart_service_with_config 处理过了）
-    lastAppliedConfigHashRef.current = EXTERNAL_UPDATE_SENTINEL;
-    releaseConfigSyncWindow(syncToken);
-  }, [releaseConfigSyncWindow, updateSyncWindowSnapshot]);
+  const syncWindowSnapshot = {
+    isExternalSyncing: !configReady && !error,
+    source: !configReady && !error ? "initial_load" as const : null,
+  };
+  const handleExternalConfigUpdated = useCallback((snapshot: ConfigSnapshot<AppConfig>) => {
+    if (snapshot.revision < configStore.getSnapshot().revision) return;
+    configStore.receive({ ...snapshot, config: normalizeConfig(snapshot.config) });
+    setDictionary(configStore.getSnapshot().config.dictionary.map(parseEntry));
+    if (!configStore.getSnapshot().dirty) lastAppliedConfigHashRef.current = EXTERNAL_UPDATE_SENTINEL;
+  }, [configStore, setDictionary]);
   const statusRef = useRef(status);
   useEffect(() => {
     statusRef.current = status;
@@ -298,21 +237,6 @@ function App() {
     setLlmTime,
     setTotalTime,
     setShowCloseDialog,
-    setApiKey,
-    setFallbackApiKey,
-    setAsrConfig,
-    setUseRealtime,
-    setEnablePostProcess,
-    setEnableDictionaryEnhancement,
-    setLlmConfig,
-    setAssistantConfig,
-    setLearningConfig,
-    setEnableMuteOtherApps,
-    setTheme,
-    setCloseAction,
-    setDictionary,
-    setDualHotkeyConfig,
-    setBuiltinDictionaryDomains,
     onExternalConfigUpdated: handleExternalConfigUpdated,
     onBuiltinDictionaryUpdated: handleBuiltinDictionaryUpdated,
     setHistory,
@@ -347,45 +271,19 @@ function App() {
     handleSaveConfig,
     immediatelySaveConfig,
     handleAutostartToggle,
+    handleStartStop,
     handleCloseAction,
     applyRuntimeConfig,
     patchConfigFields,
   } = useAppServiceController({
-    setAsrConfig,
-    apiKey,
-    setApiKey,
-    fallbackApiKey,
-    setFallbackApiKey,
-    useRealtime,
-    setUseRealtime,
-    enablePostProcess,
-    setEnablePostProcess,
-    enableDictionaryEnhancement,
-    setEnableDictionaryEnhancement,
-    llmConfig,
-    setLlmConfig,
-    assistantConfig,
-    setAssistantConfig,
-    asrConfig,
-    dualHotkeyConfig,
-    setDualHotkeyConfig,
-    learningConfig,
-    setLearningConfig,
-    dictionary,
+    configStore,
     setDictionary,
-    builtinDictionaryDomains,
-    setBuiltinDictionaryDomains,
+    recentHotwordEntries,
     status,
     setStatus,
     setError,
     enableAutostart,
     setEnableAutostart,
-    enableMuteOtherApps,
-    setEnableMuteOtherApps,
-    theme,
-    setTheme,
-    closeAction,
-    setCloseAction,
     rememberChoice,
     setRememberChoice,
     setShowCloseDialog,
@@ -418,11 +316,6 @@ function App() {
     } catch (err) {
       setSyncStatus("error");
 
-      // 2s 后回到 idle
-      syncTimeoutRef.current = window.setTimeout(() => {
-        setSyncStatus("idle");
-      }, 2000);
-
       throw err; // 重新抛出以便调用方处理
     }
   }, [immediatelySaveConfig]);
@@ -432,81 +325,27 @@ function App() {
     theme?: string;
     enableMuteOtherApps?: boolean;
     closeAction?: "close" | "minimize" | null;
+    tnlConfig?: {
+      disfluencyMode?: TnlConfig["disfluency_mode"];
+      enableContextHotwords?: boolean;
+    };
   }) => {
     cancelAutoSaveDebounce();
-    const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
-    updateSyncWindowSnapshot();
-
-    if (syncTimeoutRef.current) {
-      window.clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = null;
-    }
-
-    const previousTheme = theme;
-    const previousEnableMuteOtherApps = enableMuteOtherApps;
-    const previousLearningConfig = learningConfig;
-    const previousCloseAction = closeAction;
-
-    if (typeof patch.theme === "string") {
-      setTheme(patch.theme);
-    }
-    if (typeof patch.enableMuteOtherApps === "boolean") {
-      setEnableMuteOtherApps(patch.enableMuteOtherApps);
-    }
-    if (typeof patch.learningEnabled === "boolean") {
-      const nextLearningEnabled = patch.learningEnabled;
-      setLearningConfig((prev) => ({ ...prev, enabled: nextLearningEnabled }));
-    }
-    if (patch.closeAction !== undefined) {
-      setCloseAction(patch.closeAction);
-    }
-
+    if (syncTimeoutRef.current) window.clearTimeout(syncTimeoutRef.current);
     setSyncStatus("syncing");
-
     try {
       await patchConfigFields(patch);
+      setError(null);
       setSyncStatus("success");
-      syncTimeoutRef.current = window.setTimeout(() => {
-        setSyncStatus("idle");
-      }, 1500);
-    } catch (err) {
-      if (typeof patch.theme === "string") {
-        setTheme(previousTheme);
-      }
-      if (typeof patch.enableMuteOtherApps === "boolean") {
-        setEnableMuteOtherApps(previousEnableMuteOtherApps);
-      }
-      if (typeof patch.learningEnabled === "boolean") {
-        setLearningConfig(previousLearningConfig);
-      }
-      if (patch.closeAction !== undefined) {
-        setCloseAction(previousCloseAction);
-      }
-
+      syncTimeoutRef.current = window.setTimeout(() => setSyncStatus("idle"), 1500);
+    } catch (error) {
+      // Keep the user's draft. Retrying never requires entering a key/model again.
       setSyncStatus("error");
-      syncTimeoutRef.current = window.setTimeout(() => {
-        setSyncStatus("idle");
-      }, 2000);
-      throw err;
-    } finally {
-      releaseConfigSyncWindow(syncToken);
+      setError(String(error));
+      throw error;
     }
-  }, [
-    theme,
-    enableMuteOtherApps,
-    learningConfig,
-    closeAction,
-    patchConfigFields,
-    setTheme,
-    setEnableMuteOtherApps,
-    setLearningConfig,
-    setCloseAction,
-    cancelAutoSaveDebounce,
-    releaseConfigSyncWindow,
-    updateSyncWindowSnapshot,
-  ]);
+  }, [cancelAutoSaveDebounce, patchConfigFields]);
 
-  // 更新 ref 以便 useHotkeyRecording 可以访问
   useEffect(() => {
     saveImmediatelyRef.current = wrappedSaveImmediately;
   }, [wrappedSaveImmediately]);
@@ -522,32 +361,26 @@ function App() {
     }
   }, [transcript, originalTranscript]);
   useEffect(() => {
-    if (hasLoadedConfigRef.current) return;
-    hasLoadedConfigRef.current = true;
+    if (configInitializationRef.current.isStarted()) return;
 
     const init = async () => {
       try {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        const syncToken = configSyncWindowControllerRef.current.begin("initial_load");
-        updateSyncWindowSnapshot();
-        try {
+        await configInitializationRef.current.run(async () => {
           await loadConfig();
-        } finally {
-          releaseConfigSyncWindow(syncToken);
-        }
+        });
+        setConfigReady(true);
         // 启动时自动检查更新（只执行一次）
         if (!hasCheckedUpdateOnStartup.current) {
           hasCheckedUpdateOnStartup.current = true;
           await checkForUpdates({ openModal: true, silentOnNoUpdate: true, silentOnError: true });
         }
       } catch (err) {
-        hasLoadedConfigRef.current = false;
         console.error("初始化失败:", err);
         setError("应用初始化失败: " + String(err));
       }
     };
     init();
-  }, [checkForUpdates, loadConfig, releaseConfigSyncWindow]);
+  }, [checkForUpdates, loadConfig]);
   useEffect(() => {
     getVersion().then(v => {
       setCurrentVersion(v);
@@ -588,7 +421,7 @@ function App() {
   const lastAppliedConfigHashRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!hasLoadedConfigRef.current) return;
+    if (!configInitializationRef.current.isReady()) return;
     if (status !== "running") return;
 
     const configHash = JSON.stringify({
@@ -596,8 +429,10 @@ function App() {
       enableDictionaryEnhancement,
       llmConfig,
       assistantConfig,
+      searchConfig,
       enableMuteOtherApps,
       dictionary,
+      recentHotwordEntries,
       builtinDictionaryDomains,
     });
 
@@ -633,62 +468,27 @@ function App() {
       }
       // 失败时不更新基准，下次相同配置会重试
     });
-  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, enableMuteOtherApps, dictionary, builtinDictionaryDomains, applyRuntimeConfig]);
+  }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, searchConfig, enableMuteOtherApps, dictionary, recentHotwordEntries, builtinDictionaryDomains, applyRuntimeConfig]);
 
-  // Auto-save config after changes (debounced).
-  // While the service is running, this applies changes by restarting the backend.
+  // Debounce explicit edits only. Receiving snapshots never schedules a save.
   useEffect(() => {
-    console.log(
-      "[App.tsx] 自动保存 useEffect 触发, theme=",
-      theme,
-      "hasLoaded=",
-      hasLoadedConfigRef.current,
-      "syncSuppressed=",
-      configSyncWindowControllerRef.current.isSuppressed(),
-      "syncSource=",
-      configSyncWindowControllerRef.current.currentSource(),
-    );
-    if (!hasLoadedConfigRef.current) return;
-    if (status === "recording" || status === "transcribing") return;
-
-    if (configSyncWindowControllerRef.current.isSuppressed()) {
-      console.log(
-        "[App.tsx] 同步窗口中，跳过自动保存, source=",
-        configSyncWindowControllerRef.current.currentSource(),
-      );
-      return;
-    }
-
-    console.log("[App.tsx] 准备 debounce 保存配置, theme=", theme);
-
-    if (autoSaveTimerRef.current) {
-      window.clearTimeout(autoSaveTimerRef.current);
-    }
-
+    if (!configReady || !configView.loaded || !configView.dirty || configView.saving) return;
+    if (["recording", "transcribing", "polishing", "assistant_processing"].includes(status)) return;
     autoSaveTimerRef.current = window.setTimeout(() => {
-      if (statusRef.current === "recording" || statusRef.current === "transcribing") return;
-      console.log("[App.tsx] debounce 到期，执行 handleSaveConfig");
-      void handleSaveConfigRef.current();
+      autoSaveTimerRef.current = null;
+      if (!configStore.getSnapshot().dirty) return;
+      if (syncTimeoutRef.current) window.clearTimeout(syncTimeoutRef.current);
+      setSyncStatus("syncing");
+      void handleSaveConfigRef.current().then(() => {
+        setSyncStatus("success");
+        syncTimeoutRef.current = window.setTimeout(() => setSyncStatus("idle"), 1500);
+      }).catch(error => {
+        console.error("自动保存失败，已保留编辑内容:", error);
+        setSyncStatus("error");
+      });
     }, 900);
-
-    return () => {
-      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
-    };
-  }, [
-    asrConfig,
-    useRealtime,
-    enablePostProcess,
-    enableDictionaryEnhancement,
-    llmConfig,
-    assistantConfig,
-    dictionary,
-    builtinDictionaryDomains,
-    enableMuteOtherApps,
-    closeAction,
-    dualHotkeyConfig,
-    learningConfig,
-    theme,
-  ]);
+    return () => { if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current); };
+  }, [configReady, configView.editVersion, configView.dirty, configView.loaded, status, configStore]);
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -785,6 +585,8 @@ function App() {
           <AssistantPage
             assistantConfig={assistantConfig}
             setAssistantConfig={setAssistantConfig}
+            searchConfig={searchConfig}
+            setSearchConfig={setSearchConfig}
             sharedConfig={llmConfig.shared}
             onNavigateToModels={() => setActivePage("models")}
             isRunning={isConfigLocked}
@@ -807,6 +609,7 @@ function App() {
             handleSaveEdit={handleSaveEdit}
             handleCancelEdit={handleCancelEdit}
             handleBatchDelete={handleBatchDelete}
+            handleUpdateCategory={handleUpdateCategory}
             builtinDictionaryDomains={builtinDictionaryDomains}
             setBuiltinDictionaryDomains={setBuiltinDictionaryDomains}
             builtinDictionaryVersion={builtinDictionaryVersion}
@@ -835,8 +638,10 @@ function App() {
         return (
           <PreferencesPage
             status={status}
+            onStartService={handleStartStop}
             theme={theme}
             learningConfig={learningConfig}
+            tnlConfig={tnlConfig}
             setLearningConfig={setLearningConfig}
             setTheme={async (newTheme) => {
               console.log("[App.tsx] setTheme 被调用, newTheme=", newTheme);
@@ -863,6 +668,12 @@ function App() {
             onSetLearningEnabled={async (enabled) => {
               await saveFieldPatchWithStatus({ learningEnabled: enabled });
             }}
+            onSetContextHotwords={async (enabled) => {
+              await saveFieldPatchWithStatus({ tnlConfig: { enableContextHotwords: enabled } });
+            }}
+            onSetDisfluencyMode={async (mode) => {
+              await saveFieldPatchWithStatus({ tnlConfig: { disfluencyMode: mode } });
+            }}
             onNavigateToModels={() => setActivePage("models")}
           />
         );
@@ -872,6 +683,19 @@ function App() {
         return null;
     }
   })();
+
+  const integratedToolbar = desktopOs === "macos";
+  const topStatusBar = (
+    <TopStatusBar
+      status={status}
+      recordingTime={recordingTime}
+      formatTime={formatTime}
+      usageStats={usageStats}
+      globalNotice={globalNotice}
+      sidebarCollapsed={sidebarCollapsed}
+      onToggleSidebar={integratedToolbar ? () => setSidebarCollapsed((v) => !v) : undefined}
+    />
+  );
 
   return (
     <ConfigSaveContext.Provider
@@ -883,60 +707,65 @@ function App() {
         syncWindowSource: syncWindowSnapshot.source,
       }}
     >
-      <div className="h-screen w-full bg-[var(--paper)] text-[var(--ink)] font-serif flex">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
-          activePage={activePage}
-          onNavigate={navigate}
-          updateStatus={updateStatus}
-        />
-
-        <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
-          <TopStatusBar
-            status={status}
-            recordingTime={recordingTime}
-            formatTime={formatTime}
-            usageStats={usageStats}
-            globalNotice={globalNotice}
+      <div className={`h-screen w-full text-[var(--ink)] font-serif flex flex-col ${integratedToolbar ? "bg-[var(--panel)]" : "bg-[var(--paper)]"}`}>
+        {integratedToolbar && topStatusBar}
+        <div className="flex flex-1 min-h-0">
+          <Sidebar
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
+            activePage={activePage}
+            onNavigate={navigate}
+            updateStatus={updateStatus}
+            integratedToolbar={integratedToolbar}
           />
 
-          <div className="flex-1 min-h-0 flex overflow-hidden">
-            <main className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scroll p-6">
-              {error && (
-                <div className="mx-auto max-w-3xl mb-6 flex items-center gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 text-sm font-semibold">
-                  <AlertCircle size={18} />
-                  <span>{error}</span>
-                </div>
+          <div className={`flex-1 min-w-0 flex flex-col overflow-hidden bg-[var(--paper)] ${integratedToolbar ? "rounded-tl-2xl" : ""}`}>
+            {!integratedToolbar && topStatusBar}
+
+            <div className="flex-1 min-h-0 flex overflow-hidden">
+              <main className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scroll p-6">
+                {error && (
+                  <div className="mx-auto max-w-3xl mb-6 flex items-center gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 text-sm font-semibold">
+                    <AlertCircle size={18} />
+                    <span className="flex-1">{error}</span>
+                    {configView.dirty && (
+                      <button type="button" disabled={syncStatus === "syncing"}
+                        className="shrink-0 rounded-lg border border-red-200 px-3 py-1.5 disabled:opacity-50"
+                        onClick={() => { void wrappedSaveImmediately().catch(() => {}); }}>
+                        {syncStatus === "syncing" ? "保存中…" : "重试保存"}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {content}
+              </main>
+
+              {activePage === "dashboard" && (
+                <RightPanel
+                  asrConfig={asrConfig}
+                  setAsrConfig={setAsrConfig}
+                  useRealtime={useRealtime}
+                  setUseRealtime={setUseRealtime}
+                  enablePostProcess={enablePostProcess}
+                  setEnablePostProcess={setEnablePostProcess}
+                  enableDictionaryEnhancement={enableDictionaryEnhancement}
+                  setEnableDictionaryEnhancement={setEnableDictionaryEnhancement}
+                  llmConfig={llmConfig}
+                  setLlmConfig={setLlmConfig}
+                  dualHotkeyConfig={dualHotkeyConfig}
+                  dictionary={dictionary}
+                  newWord={newWord}
+                  setNewWord={setNewWord}
+                  onAddWord={handleAddWord}
+                  onNavigate={navigate}
+                  isRunning={isConfigLocked}
+                />
               )}
-
-              {content}
-            </main>
-
-            {activePage === "dashboard" && (
-              <RightPanel
-                asrConfig={asrConfig}
-                setAsrConfig={setAsrConfig}
-                useRealtime={useRealtime}
-                setUseRealtime={setUseRealtime}
-                enablePostProcess={enablePostProcess}
-                setEnablePostProcess={setEnablePostProcess}
-                enableDictionaryEnhancement={enableDictionaryEnhancement}
-                setEnableDictionaryEnhancement={setEnableDictionaryEnhancement}
-                llmConfig={llmConfig}
-                setLlmConfig={setLlmConfig}
-                dualHotkeyConfig={dualHotkeyConfig}
-                dictionary={dictionary}
-                newWord={newWord}
-                setNewWord={setNewWord}
-                onAddWord={handleAddWord}
-                onNavigate={navigate}
-                isRunning={isConfigLocked}
-              />
-            )}
+            </div>
           </div>
-        </div>
 
+        </div>
         <div
           className={`fixed top-6 left-1/2 -translate-x-1/2 pointer-events-none transition-all duration-500 z-50 ${showSuccessToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-4"
             }`}

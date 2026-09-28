@@ -1,4 +1,4 @@
-import { Mic, Type } from "lucide-react";
+import { Mic, Type, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { AppStatus, UsageStats } from "../../types";
 import type { GlobalNoticePayload } from "../../utils/globalNotice";
 import { GlobalNoticeBar } from "../common/GlobalNoticeBar";
@@ -9,6 +9,8 @@ export type TopStatusBarProps = {
   formatTime: (seconds: number) => string;
   usageStats?: UsageStats;
   globalNotice?: GlobalNoticePayload | null;
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
 };
 
 export function TopStatusBar({
@@ -17,6 +19,8 @@ export function TopStatusBar({
   formatTime,
   usageStats,
   globalNotice,
+  sidebarCollapsed,
+  onToggleSidebar,
 }: TopStatusBarProps) {
   const isRecording = status === "recording";
   const isTranscribing = status === "transcribing";
@@ -24,24 +28,45 @@ export function TopStatusBar({
   const isAssistantProcessing = status === "assistant_processing";
   const isProcessing = isTranscribing || isPolishing || isAssistantProcessing;
 
+  const notice = (
+    <div
+      className={`overflow-hidden transition-all duration-200 ${
+        globalNotice ? "max-h-10 opacity-100" : "max-h-0 opacity-0"
+      }`}
+    >
+      {globalNotice && (
+        <GlobalNoticeBar
+          message={globalNotice.message}
+          loading={globalNotice.loading}
+          tone={globalNotice.tone}
+        />
+      )}
+    </div>
+  );
+
   return (
-    <div className="relative border-b border-[var(--stone)] bg-[var(--paper)] font-sans">
-      <div
-        className={`overflow-hidden transition-all duration-200 ${
-          globalNotice ? "max-h-10 opacity-100" : "max-h-0 opacity-0"
-        }`}
-      >
-        {globalNotice && (
-          <GlobalNoticeBar
-            message={globalNotice.message}
-            loading={globalNotice.loading}
-            tone={globalNotice.tone}
-          />
-        )}
-      </div>
+    <div className={onToggleSidebar ? "mac-toolbar relative shrink-0 font-sans" : "relative shrink-0 border-b border-[var(--stone)] bg-[var(--paper)] font-sans"}>
+      {!onToggleSidebar && notice}
 
       {/* ── Main status bar content (always stable, never shifts) ── */}
-      <div className="px-6 py-3 flex items-center justify-between">
+      <div
+        data-tauri-drag-region={onToggleSidebar ? true : undefined}
+        className={onToggleSidebar ? "mac-toolbar-row" : "px-6 py-3 flex items-center justify-between"}
+      >
+        {onToggleSidebar && (
+          <div className="mac-window-controls" data-tauri-drag-region>
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              className="mac-sidebar-toggle"
+              title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+              aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+              aria-expanded={!sidebarCollapsed}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+            </button>
+          </div>
+        )}
         <div
           className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
             isRecording
@@ -92,7 +117,7 @@ export function TopStatusBar({
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className={onToggleSidebar ? "ml-auto flex items-center gap-2" : "flex items-center gap-2"}>
           {usageStats && (
             <div className="mr-2 flex items-center gap-2 text-xs tabular-nums">
               <div
@@ -154,6 +179,7 @@ export function TopStatusBar({
           )}
         </div>
       </div>
+      {onToggleSidebar && notice}
     </div>
   );
 }

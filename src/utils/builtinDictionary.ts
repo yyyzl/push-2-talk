@@ -138,3 +138,15 @@ export function getBuiltinWordsForDomains(domains: string[]): string[] {
 
   return words;
 }
+
+function formatBuiltinRuntimeEntry(word: string): string | null {
+  const trimmed = word.trim();
+  if (!trimmed) return null;
+  return `${trimmed}|domain|domain_term`;
+}
+
+export function getBuiltinRuntimeEntriesForDomains(domains: string[]): string[] {
+  return getBuiltinWordsForDomains(domains)
+    .map(formatBuiltinRuntimeEntry)
+    .filter((entry): entry is string => Boolean(entry));
+}

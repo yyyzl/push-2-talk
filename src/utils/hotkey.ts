@@ -1,5 +1,9 @@
 import type { HotkeyKey, AsrConfig, AsrProvider } from '../types';
-import { FALLBACK_ASR_PROVIDER, ASR_PROVIDERS } from '../constants';
+import {
+  ASR_PROVIDERS,
+  normalizeQwenAsrProfile,
+  FALLBACK_ASR_PROVIDER,
+} from '../constants';
 
 // 将 DOM KeyboardEvent 映射为 HotkeyKey
 export const mapDomKeyToHotkeyKey = (e: KeyboardEvent): HotkeyKey | null => {
@@ -104,14 +108,19 @@ export const isAsrConfigValid = (config: AsrConfig): boolean => {
 export const normalizeAsrConfigWithFallback = (
   config: AsrConfig,
 ): { config: AsrConfig; didFallback: boolean } => {
-  if (isAsrConfigValid(config)) {
-    return { config, didFallback: false };
+  const normalizedConfig: AsrConfig = {
+    ...config,
+    qwen_profile: normalizeQwenAsrProfile(config.qwen_profile),
+  };
+
+  if (isAsrConfigValid(normalizedConfig)) {
+    return { config: normalizedConfig, didFallback: false };
   }
 
   const fallbackConfig: AsrConfig = {
-    ...config,
+    ...normalizedConfig,
     selection: {
-      ...config.selection,
+      ...normalizedConfig.selection,
       active_provider: FALLBACK_ASR_PROVIDER,
     },
   };
@@ -121,7 +130,7 @@ export const normalizeAsrConfigWithFallback = (
   }
 
   // 回退也无效，返回原配置
-  return { config, didFallback: false };
+  return { config: normalizedConfig, didFallback: false };
 };
 
 /** 获取 ASR Provider 的中文显示名称 */

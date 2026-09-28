@@ -5,17 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use futures_util::StreamExt;
 
-#[cfg(windows)]
-use std::ffi::OsStr;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
-#[cfg(windows)]
-use windows::core::PCWSTR;
-#[cfg(windows)]
-use windows::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-};
-
 pub const CACHE_FILENAME: &str = "builtin_hotwords_cache.txt";
 const EMBEDDED_HOTWORDS: &str = include_str!("../../hotwords.txt");
 pub const HOTWORDS_ENDPOINTS: &[&str] = &[
@@ -119,50 +108,14 @@ pub(crate) fn save_cache_atomic_to_path(path: &Path, content: &str) -> Result<()
         tmp_file.sync_all()?;
     }
 
-    if let Err(err) = replace_file(&tmp_path, path) {
+    if let Err(err) = crate::platform::replace_file(&tmp_path, path) {
         if let Err(cleanup_err) = std::fs::remove_file(&tmp_path) {
             tracing::warn!("替换缓存失败后清理临时文件失败: {}", cleanup_err);
         }
-        return Err(err);
+        return Err(err.context("替换缓存文件失败"));
     }
 
     Ok(())
-}
-
-fn replace_file(tmp_path: &Path, target_path: &Path) -> Result<()> {
-    #[cfg(windows)]
-    {
-        let from = to_wide_path(tmp_path.as_os_str());
-        let to = to_wide_path(target_path.as_os_str());
-        let moved = unsafe {
-            MoveFileExW(
-                PCWSTR(from.as_ptr()),
-                PCWSTR(to.as_ptr()),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if let Err(err) = moved {
-            anyhow::bail!("替换缓存文件失败: {}", err);
-        }
-        return Ok(());
-    }
-
-    #[cfg(not(windows))]
-    {
-        if target_path.exists() {
-            std::fs::remove_file(target_path)?;
-        }
-        std::fs::rename(tmp_path, target_path)?;
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn to_wide_path(value: &OsStr) -> Vec<u16> {
-    value
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<u16>>()
 }
 
 #[cfg(test)]
@@ -349,6 +302,37 @@ mod tests {
         save_cache_atomic_to_path(&target, "【AI】:[GPT,Claude]").expect("save cache");
         let readback = std::fs::read_to_string(&target).expect("read cache");
         assert_eq!(readback, "【AI】:[GPT,Claude]");
+    }
+
+    #[test]
+    fn cache_update_should_replace_existing_content_without_temporary_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("builtin_hotwords_cache.txt");
+        std::fs::write(&target, "【AI】:[Old]").unwrap();
+
+        save_cache_atomic_to_path(&target, "【AI】:[GPT,Claude]").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "【AI】:[GPT,Claude]"
+        );
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cache_update_should_clean_temporary_file_when_replacement_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("builtin_hotwords_cache.txt");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("sentinel.txt"), "keep this file").unwrap();
+
+        assert!(save_cache_atomic_to_path(&target, "【AI】:[GPT,Claude]").is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("sentinel.txt")).unwrap(),
+            "keep this file"
+        );
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]

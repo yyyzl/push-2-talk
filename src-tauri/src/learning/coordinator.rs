@@ -3,19 +3,21 @@
 // 功能：整合观察流程的入口点
 // 流程：Pipeline 触发 → 等待观察期 → 验证 → Diff 分析 → LLM 判断 → 发送建议
 
+use crate::platform::{self, InputTarget};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter};
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
-use crate::config::{AppConfig, LearningConfig};
-use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs};
+use crate::config::LearningConfig;
+use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs, DiffResult};
 use crate::learning::llm_judge::LlmJudge;
+use crate::learning::observations::Observations;
 use crate::learning::validator::is_asr_text_present;
 
 // 全局活跃观察任务管理器（存储优雅取消标志）
@@ -23,7 +25,7 @@ use crate::learning::validator::is_asr_text_present;
 // - 旧任务收到取消信号后，立即结束观察期，但继续执行 diff/LLM 流程
 // - 避免直接 abort 导致学习丢失
 lazy_static::lazy_static! {
-    static ref ACTIVE_OBSERVATIONS: Arc<Mutex<HashMap<isize, Arc<AtomicBool>>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref ACTIVE_OBSERVATIONS: Observations<InputTarget> = Observations::new();
 }
 
 /// 扩展上下文的最大字符数（防止 CJK 文本导致上下文膨胀）
@@ -43,6 +45,13 @@ pub struct LearningSuggestion {
     pub context: String,
     pub category: String,
     pub reason: String,
+    pub already_in_dictionary: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LearningSuggestionRouting {
+    should_emit: bool,
+    already_in_dictionary: bool,
 }
 
 /// 启动学习观察流程
@@ -57,7 +66,7 @@ pub struct LearningSuggestion {
 pub fn start_learning_observation(
     app: AppHandle,
     asr_text: String,
-    target_hwnd: isize,
+    target_hwnd: InputTarget,
     config: LearningConfig,
 ) -> JoinHandle<()> {
     // 生成唯一的观察ID
@@ -85,38 +94,13 @@ pub fn start_learning_observation(
         return tauri::async_runtime::JoinHandle::Tokio(tokio::spawn(async {}));
     }
 
-    // 取消同一窗口的旧观察任务（优雅取消：发送信号让旧任务提前结束观察期）
-    // 旧任务会继续执行 diff/LLM 流程，不会丢失学习机会
-    {
-        let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-        if let Some(old_cancel_flag) = active.remove(&target_hwnd) {
-            tracing::info!(
-                "Learning: 优雅取消旧观察任务 [hwnd={}]（旧任务将继续完成学习流程）",
-                target_hwnd
-            );
-            old_cancel_flag.store(true, Ordering::SeqCst);
-        }
-    }
-
-    // 创建新任务的取消标志
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let cancel_flag_clone = cancel_flag.clone();
+    // 注册与替换在同一个锁内完成，且先于 spawn；旧任务仍可完成 diff/LLM。
+    let observation = ACTIVE_OBSERVATIONS.begin(target_hwnd);
+    let cancel_flag_clone = observation.cancel_flag();
 
     // 启动新任务
     let handle = tokio::spawn(async move {
-        // RAII 清理守卫：确保任务结束时从 ACTIVE_OBSERVATIONS 中移除
-        struct CleanupGuard {
-            hwnd: isize,
-        }
-        impl Drop for CleanupGuard {
-            fn drop(&mut self) {
-                let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-                if active.remove(&self.hwnd).is_some() {
-                    tracing::debug!("Learning: 任务完成，已从活跃观察中移除 hwnd={}", self.hwnd);
-                }
-            }
-        }
-        let _cleanup = CleanupGuard { hwnd: target_hwnd };
+        let _observation = observation;
 
         // 等待观察期（用户修正时间）
         let duration = Duration::from_secs(config.observation_duration_secs.max(1));
@@ -215,8 +199,8 @@ pub fn start_learning_observation(
         );
 
         // 加载 LLM 配置
-        let app_config = match AppConfig::load() {
-            Ok((cfg, _)) => cfg,
+        let app_config = match crate::application::configuration::load_persisted_config() {
+            Ok(cfg) => cfg,
             Err(e) => {
                 tracing::warn!("Learning [{}]: 加载配置失败: {}", &observation_id[..8], e);
                 return;
@@ -274,6 +258,11 @@ pub fn start_learning_observation(
                     diff.original_segment,
                     diff.corrected_segment
                 );
+                continue;
+            }
+
+            if record_existing_correction_reversion(&diff.original_segment, &diff.corrected_segment)
+            {
                 continue;
             }
 
@@ -345,7 +334,21 @@ pub fn start_learning_observation(
 
             // 检查词库是否已存在该词（使用预计算的 HashSet 进行 O(1) 查找）
             let normalized_word = crate::dictionary_utils::normalize_word(&word);
-            if dictionary_word_set.contains(&normalized_word) {
+            let routing = learning_suggestion_routing(
+                &normalized_word,
+                &diff.original_segment,
+                &diff.corrected_segment,
+                &dictionary_word_set,
+            );
+            if routing.already_in_dictionary
+                && record_existing_correction_observation(
+                    &diff.original_segment,
+                    &diff.corrected_segment,
+                )
+            {
+                continue;
+            }
+            if !routing.should_emit {
                 tracing::info!(
                     "Learning [{}]: 词汇 \"{}\" 已存在于词库，跳过通知",
                     &observation_id[..8],
@@ -353,18 +356,23 @@ pub fn start_learning_observation(
                 );
                 continue;
             }
+            if routing.already_in_dictionary {
+                tracing::info!(
+                    "Learning [{}]: 词汇 \"{}\" 已存在于词库，仍发送纠错建议以保存个性化纠错对",
+                    &observation_id[..8],
+                    normalized_word
+                );
+            }
 
             // 创建建议（使用规范化后的词汇，确保与词库比对一致）
-            let suggestion_id = uuid::Uuid::new_v4().to_string();
-            let suggestion = LearningSuggestion {
-                id: suggestion_id,
-                word: normalized_word.clone(),
-                original: diff.original_segment.clone(),
-                corrected: diff.corrected_segment.clone(),
-                context: diff.context.clone(),
-                category: result.category,
-                reason: result.reason,
-            };
+            let suggestion = build_learning_suggestion(
+                normalized_word.clone(),
+                &diff,
+                &extended_context,
+                result.category,
+                result.reason,
+                routing,
+            );
 
             tracing::info!(
                 "Learning [{}]: 发送学习建议到前端 - 词汇: \"{}\", 分类: \"{}\", 原因: \"{}\"",
@@ -388,14 +396,288 @@ pub fn start_learning_observation(
         );
     });
 
-    // 保存新任务的取消标志
-    {
-        let mut active = ACTIVE_OBSERVATIONS.lock().unwrap();
-        active.insert(target_hwnd, cancel_flag);
-    }
-
     // 包装为 Tauri JoinHandle
     tauri::async_runtime::JoinHandle::Tokio(handle)
+}
+
+#[cfg(test)]
+mod acceptance_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct ScriptedReader {
+        focus_checks: AtomicUsize,
+        reads: AtomicUsize,
+        focused_polls: usize,
+        sample: Option<String>,
+    }
+    impl CorrectionReader for ScriptedReader {
+        fn is_focused(&self) -> bool {
+            self.focus_checks.fetch_add(1, Ordering::SeqCst) < self.focused_polls
+        }
+        fn read(&self) -> Option<String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.sample.clone()
+        }
+    }
+    fn reader(focused_polls: usize, sample: Option<&str>) -> Arc<ScriptedReader> {
+        Arc::new(ScriptedReader {
+            focus_checks: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
+            focused_polls,
+            sample: sample.map(str::to_owned),
+        })
+    }
+
+    #[tokio::test]
+    async fn superseded_before_first_poll_does_not_read_the_new_insertion() {
+        let reader = reader(
+            usize::MAX,
+            Some("new insertion must not become old correction"),
+        );
+        let result = observe_with_reader(
+            "cancel-before",
+            Duration::from_secs(5),
+            reader.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await;
+        assert_eq!(result, None);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn superseded_during_poll_delay_does_not_read_the_new_insertion() {
+        let reader = reader(
+            usize::MAX,
+            Some("new insertion must not become old correction"),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(observe_with_reader(
+            "cancel-wait",
+            Duration::from_secs(5),
+            reader.clone(),
+            cancel.clone(),
+        ));
+        sleep(Duration::from_millis(50)).await;
+        cancel.store(true, Ordering::SeqCst);
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn unfocused_target_stops_after_three_polls_without_reading() {
+        let reader = reader(0, Some("bystander must never be read"));
+        assert_eq!(
+            observe_with_reader(
+                "lost-focus",
+                Duration::from_secs(10),
+                reader.clone(),
+                Arc::new(AtomicBool::new(false))
+            )
+            .await,
+            None
+        );
+        assert_eq!(reader.focus_checks.load(Ordering::SeqCst), 3);
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn focus_loss_keeps_only_the_last_focused_sample() {
+        let reader = reader(1, Some("known correction before switching apps"));
+        let result = observe_with_reader(
+            "focus-after",
+            Duration::from_secs(10),
+            reader.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+        assert_eq!(
+            result.as_deref(),
+            Some("known correction before switching apps")
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.focus_checks.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn unsupported_control_produces_no_sample() {
+        let reader = reader(usize::MAX, None);
+        assert_eq!(
+            observe_with_reader(
+                "unsupported",
+                Duration::from_millis(500),
+                reader.clone(),
+                Arc::new(AtomicBool::new(false))
+            )
+            .await,
+            None
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    }
+
+    struct ReplacedWhileReading {
+        cancel: Arc<AtomicBool>,
+        reads: AtomicUsize,
+        cancel_on_read: usize,
+    }
+    impl CorrectionReader for ReplacedWhileReading {
+        fn is_focused(&self) -> bool {
+            true
+        }
+        fn read(&self) -> Option<String> {
+            let index = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+            if index == self.cancel_on_read {
+                self.cancel.store(true, Ordering::SeqCst);
+                Some("replacement insertion".into())
+            } else {
+                Some("previously observed correction".into())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn replacement_during_native_read_discards_the_in_flight_sample() {
+        for cancel_on_read in [1, 2] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let reader = Arc::new(ReplacedWhileReading {
+                cancel: cancel.clone(),
+                reads: AtomicUsize::new(0),
+                cancel_on_read,
+            });
+            let result =
+                observe_with_reader("cancel-read", Duration::from_secs(5), reader, cancel).await;
+            assert_eq!(
+                result.as_deref(),
+                if cancel_on_read == 1 {
+                    None
+                } else {
+                    Some("previously observed correction")
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn real_safari_correction_survives_validation_and_diff_filters() {
+        let baseline = "这次测试使用库伯内特斯管理容器服务运行正常。这次测试用库伯内特司管理容器，运行正常。这个测试使用库博内科斯管理容器，使用库伯内科斯管理能力更加强大。";
+        let corrected = format!(
+            "PushToTalk ATDD\n\n{}",
+            baseline.replacen("库伯内特斯", "Kubernetes", 1)
+        );
+        assert!(is_asr_text_present(&corrected, baseline, 0.5));
+        let window = extract_diff_window(&corrected, baseline, 120);
+        let diffs = merge_word_level_diffs(analyze_diff(baseline, &window), baseline, &window);
+        assert!(diffs.iter().any(|diff| {
+            !diff.original_segment.trim().is_empty()
+                && diff.corrected_segment.contains("Kubernetes")
+                && !is_single_letter_noise(&diff.original_segment, &diff.corrected_segment)
+        }));
+    }
+
+    #[test]
+    fn real_textedit_correction_survives_validation_and_diff_filters() {
+        let baseline = "使用库伯内特斯管理容器服务运行正常。这次测试使用库伯内德斯管理容器，客户运行正常。这个测试使用库博内特斯管理的容器服务运营正常，这次的测试使用库柏内特斯管理。";
+        let corrected = format!(
+            "PushToTalk ATDD\n\n{}",
+            baseline.replacen("库伯内特斯", "Kubernetes", 1)
+        );
+        assert!(is_asr_text_present(&corrected, baseline, 0.5));
+        let window = extract_diff_window(&corrected, baseline, 120);
+        let diffs = merge_word_level_diffs(analyze_diff(baseline, &window), baseline, &window);
+        assert!(
+            diffs.iter().any(|diff| {
+                !diff.original_segment.trim().is_empty()
+                    && diff.corrected_segment.contains("Kubernetes")
+                    && !is_single_letter_noise(&diff.original_segment, &diff.corrected_segment)
+            }),
+            "a real correction must reach the learning judge"
+        );
+    }
+}
+
+fn learning_suggestion_routing(
+    normalized_word: &str,
+    original: &str,
+    corrected: &str,
+    dictionary_word_set: &HashSet<String>,
+) -> LearningSuggestionRouting {
+    let already_in_dictionary = dictionary_word_set.contains(normalized_word);
+    LearningSuggestionRouting {
+        should_emit: !already_in_dictionary || has_correction_pair_payload(original, corrected),
+        already_in_dictionary,
+    }
+}
+
+fn has_correction_pair_payload(original: &str, corrected: &str) -> bool {
+    let original = original.trim();
+    let corrected = corrected.trim();
+    !original.is_empty()
+        && !corrected.is_empty()
+        && crate::personalization::phonetic_keys::normalize_surface(original)
+            != crate::personalization::phonetic_keys::normalize_surface(corrected)
+}
+
+fn build_learning_suggestion(
+    normalized_word: String,
+    diff: &DiffResult,
+    extended_context: &str,
+    category: String,
+    reason: String,
+    routing: LearningSuggestionRouting,
+) -> LearningSuggestion {
+    LearningSuggestion {
+        id: Uuid::new_v4().to_string(),
+        word: normalized_word,
+        original: diff.original_segment.clone(),
+        corrected: diff.corrected_segment.clone(),
+        context: extended_context.to_string(),
+        category,
+        reason,
+        already_in_dictionary: routing.already_in_dictionary,
+    }
+}
+
+fn record_existing_correction_observation(original: &str, corrected: &str) -> bool {
+    match crate::personalization::record_observed_correction_pair(Some(original), Some(corrected)) {
+        Ok(Some(pair)) => {
+            tracing::info!(
+                "Learning: 已记录个性化纠错对再次观察: {} → {} (id: {}, confidence: {:.2}, frequency: {})",
+                pair.original_text,
+                pair.corrected_text,
+                pair.id,
+                pair.confidence,
+                pair.frequency
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("Learning: 记录个性化纠错对再次观察失败: {}", e);
+            false
+        }
+    }
+}
+
+fn record_existing_correction_reversion(original: &str, corrected: &str) -> bool {
+    match crate::personalization::record_reverted_correction_pair(Some(original), Some(corrected)) {
+        Ok(Some(pair)) => {
+            tracing::info!(
+                "Learning: 已记录个性化纠错对改回原文: {} → {} (id: {}, confidence: {:.2}, rejected: {})",
+                pair.corrected_text,
+                pair.original_text,
+                pair.id,
+                pair.confidence,
+                pair.rejected_count
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("Learning: 记录个性化纠错对改回原文失败: {}", e);
+            false
+        }
+    }
 }
 
 /// 观察修正文本
@@ -421,7 +703,37 @@ pub fn start_learning_observation(
 async fn observe_correction_text(
     observation_id: &str,
     duration: Duration,
-    target_hwnd: isize,
+    target_hwnd: InputTarget,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<String> {
+    observe_with_reader(
+        observation_id,
+        duration,
+        Arc::new(NativeCorrectionReader(target_hwnd)),
+        cancel_flag,
+    )
+    .await
+}
+
+trait CorrectionReader: Send + Sync {
+    fn is_focused(&self) -> bool;
+    fn read(&self) -> Option<String>;
+}
+
+struct NativeCorrectionReader(InputTarget);
+impl CorrectionReader for NativeCorrectionReader {
+    fn is_focused(&self) -> bool {
+        platform::desktop().is_focused(self.0)
+    }
+    fn read(&self) -> Option<String> {
+        read_observed_text(self.0)
+    }
+}
+
+async fn observe_with_reader(
+    observation_id: &str,
+    duration: Duration,
+    reader: Arc<dyn CorrectionReader>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<String> {
     // 降低轮询频率：100ms → 500ms，减少线程风暴
@@ -455,11 +767,16 @@ async fn observe_correction_text(
         }
 
         sleep(check_interval).await;
+        // A new insertion can supersede this task while it sleeps. Do not read
+        // that insertion as a correction of the old baseline.
+        if cancel_flag.load(Ordering::SeqCst) {
+            ended_due_to_cancel = true;
+            break;
+        }
         check_count += 1;
 
         // 焦点检查：如果目标窗口已失去焦点，跳过本次读取
-        let current_fg = crate::win32_input::get_foreground_window();
-        if current_fg != Some(target_hwnd) {
+        if !reader.is_focused() {
             focus_lost_count += 1;
             tracing::debug!(
                 "Learning [{}]: 第{}次检测跳过（目标窗口已失焦，连续{}次）",
@@ -486,11 +803,16 @@ async fn observe_correction_text(
 
         // 在同步上下文中调用 UIA 读取（带超时保护）
         let uia_start = Instant::now();
-        let text = tokio::task::spawn_blocking(move || get_text_via_uia(target_hwnd))
+        let sample_reader = reader.clone();
+        let text = tokio::task::spawn_blocking(move || sample_reader.read())
             .await
             .ok()
             .flatten();
         let uia_elapsed = uia_start.elapsed();
+        if cancel_flag.load(Ordering::SeqCst) {
+            ended_due_to_cancel = true;
+            break;
+        }
 
         // 记录 UIA 读取耗时（用于诊断）
         if uia_elapsed.as_millis() > 200 {
@@ -523,27 +845,8 @@ async fn observe_correction_text(
             &observation_id[..8],
             check_count
         );
-        // 即使没有读取到文本，也尝试立即读取一次
-        if last_text.is_none() {
-            tracing::info!(
-                "Learning [{}]: 优雅取消时尚未读取到文本，尝试立即读取",
-                &observation_id[..8]
-            );
-            let text = tokio::task::spawn_blocking(move || get_text_via_uia(target_hwnd))
-                .await
-                .ok()
-                .flatten();
-            if let Some(content) = text {
-                if !content.trim().is_empty() {
-                    tracing::info!(
-                        "Learning [{}]: 优雅取消时立即读取成功（长度: {}）",
-                        &observation_id[..8],
-                        content.len()
-                    );
-                    last_text = Some(content);
-                }
-            }
-        }
+        // Only an already observed sample belongs to the old baseline. A final
+        // fresh read here may contain the replacement recording's inserted text.
     } else if ended_due_to_focus_loss {
         // 数据可靠性较差：窗口失焦意味着后续读取可能不可靠。
         // 但如果在失焦前已成功读取到文本，仍可返回 last_text，避免学习功能过于脆弱。
@@ -658,9 +961,9 @@ fn is_single_letter_noise(original: &str, corrected: &str) -> bool {
     false
 }
 
-/// 通过 UI Automation 获取目标窗口文本
+/// 通过平台文本观察接口读取目标文本
 ///
-/// 仅使用 UIA 方案，不会抢占焦点
+/// Windows 使用 UIA；macOS 使用 AX。读取不会抢占焦点。
 ///
 /// # 参数
 /// * `target_hwnd` - 目标窗口句柄
@@ -668,15 +971,15 @@ fn is_single_letter_noise(original: &str, corrected: &str) -> bool {
 /// # 返回值
 /// * `Some(String)` - 成功读取的文本
 /// * `None` - 读取失败（窗口无效、UIA 不支持等）
-fn get_text_via_uia(target_hwnd: isize) -> Option<String> {
+fn read_observed_text(target_hwnd: InputTarget) -> Option<String> {
     // 检查窗口是否有效
-    if !crate::win32_input::is_window_valid(target_hwnd) {
+    if !platform::desktop().is_valid(target_hwnd) {
         tracing::debug!("Learning: 目标窗口已无效");
         return None;
     }
 
-    // 使用 UI Automation 读取文本（无干扰方案）
-    match crate::uia_text_reader::get_focused_window_text(target_hwnd) {
+    // 使用平台文本观察接口读取（无干扰方案）
+    match platform::desktop().read_text(target_hwnd) {
         Ok(text) if !text.trim().is_empty() => {
             tracing::debug!("Learning: UIA 成功读取文本（长度: {}）", text.len());
             Some(text)
@@ -814,5 +1117,84 @@ fn extract_extended_context(
         result.chars().take(MAX_CONTEXT_CHARS).collect()
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dictionary_words(words: &[&str]) -> HashSet<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn learning_suggestion_emits_existing_dictionary_word_when_correction_pair_is_useful() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "cloud code",
+            "Claude Code",
+            &dictionary_words(&["Claude Code"]),
+        );
+
+        assert!(routing.should_emit);
+        assert!(routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_skips_existing_dictionary_word_without_correction_pair() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "Claude Code",
+            "Claude Code",
+            &dictionary_words(&["Claude Code"]),
+        );
+
+        assert!(!routing.should_emit);
+        assert!(routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_emits_new_dictionary_word_normally() {
+        let routing = learning_suggestion_routing(
+            "Claude Code",
+            "cloud code",
+            "Claude Code",
+            &HashSet::new(),
+        );
+
+        assert!(routing.should_emit);
+        assert!(!routing.already_in_dictionary);
+    }
+
+    #[test]
+    fn learning_suggestion_uses_extended_context_for_persistence() {
+        let diff = crate::learning::diff_analyzer::DiffResult {
+            original_segment: "cloud code".to_string(),
+            corrected_segment: "Claude Code".to_string(),
+            context: "短上下文 cloud code".to_string(),
+            orig_start: 0,
+            orig_end: 10,
+            curr_start: 0,
+            curr_end: 11,
+        };
+        let routing = LearningSuggestionRouting {
+            should_emit: true,
+            already_in_dictionary: false,
+        };
+
+        let suggestion = build_learning_suggestion(
+            "Claude Code".to_string(),
+            &diff,
+            "在 JetBrains 项目里保存 Claude Code 的纠错上下文",
+            "proper_noun".to_string(),
+            "技术产品名".to_string(),
+            routing,
+        );
+
+        assert_eq!(
+            suggestion.context,
+            "在 JetBrains 项目里保存 Claude Code 的纠错上下文"
+        );
     }
 }

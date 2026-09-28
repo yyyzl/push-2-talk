@@ -9,17 +9,22 @@
 //! 4. 口语符号映射（仅在技术片段内）
 //! 5. 词库精确/模糊匹配（可选）
 
+pub(crate) mod disfluency;
 mod engine;
 mod fuzzy;
 mod rules;
+mod syllable_lattice;
 mod tech_span;
 mod tokenizer;
 mod types;
 
+pub use disfluency::{clean_disfluency, DisfluencyMode, DisfluencyResult};
 pub use engine::TnlEngine;
+pub(crate) use fuzzy::is_common_english_word;
+pub(crate) use syllable_lattice::{SyllableLattice, WindowKey};
 pub use types::{
-    TnlArbitrationSummary, TnlCandidate, TnlCandidateArbitrationResult, TnlCandidateDecision,
-    TnlDiagnostics,
+    Span, SpanType, TnlArbitrationSummary, TnlCandidate, TnlCandidateArbitrationResult,
+    TnlCandidateDecision, TnlDiagnostics,
 };
 #[allow(unused_imports)]
 pub use types::{TnlCandidateRisk, TnlCandidateSource};

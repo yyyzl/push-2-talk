@@ -1,31 +1,14 @@
+pub(crate) mod patch;
+pub(crate) mod repository;
 // src-tauri/src/config.rs
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 // 词典相关函数已移至独立的 dictionary_utils 模块
-
-// ============================================================================
-// 全局配置操作锁
-// ============================================================================
-
-lazy_static::lazy_static! {
-    /// 全局配置操作锁
-    ///
-    /// 保护所有 config 的读写操作，防止并发 load->modify->save 导致的数据丢失
-    ///
-    /// 使用方式：
-    /// ```ignore
-    /// let _guard = CONFIG_LOCK.lock().unwrap();
-    /// let (mut config, _) = AppConfig::load()?;
-    /// // 修改 config...
-    /// config.save()?;
-    /// ```
-    pub static ref CONFIG_LOCK: Mutex<()> = Mutex::new(());
-}
 
 // ============================================================================
 // 热键触发模式
@@ -482,6 +465,16 @@ pub enum AsrProvider {
     SiliconFlow,
 }
 
+impl AsrProvider {
+    pub fn realtime_enabled(&self, requested: bool) -> bool {
+        match self {
+            Self::DoubaoIme => true,
+            Self::SiliconFlow => false,
+            _ => requested,
+        }
+    }
+}
+
 impl Default for AsrProvider {
     fn default() -> Self {
         AsrProvider::DoubaoIme
@@ -535,10 +528,55 @@ pub enum AsrLanguageMode {
     Auto,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QwenAsrProfile {
+    #[default]
+    #[serde(rename = "qwen_audio_3_1")]
+    QwenAudio3_1,
+    #[serde(rename = "qwen_audio_3", alias = "qwen_audio3")]
+    QwenAudio3,
+    Qwen3Legacy,
+}
+
+impl QwenAsrProfile {
+    pub fn http_model(self) -> &'static str {
+        match self {
+            Self::QwenAudio3_1 => "qwen-audio-3.1-asr-flash",
+            Self::QwenAudio3 => "qwen-audio-3.0-asr-flash",
+            Self::Qwen3Legacy => "qwen3-asr-flash",
+        }
+    }
+
+    pub fn realtime_model(self) -> &'static str {
+        match self {
+            Self::QwenAudio3_1 => "qwen-audio-3.1-asr-flash-streaming",
+            Self::QwenAudio3 => "qwen-audio-3.0-asr-flash-streaming",
+            Self::Qwen3Legacy => "qwen3-asr-flash-realtime",
+        }
+    }
+}
+
+fn legacy_qwen_profile() -> QwenAsrProfile {
+    QwenAsrProfile::Qwen3Legacy
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QwenModelSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
     pub credentials: AsrCredentials,
     pub selection: AsrSelection,
+    #[serde(default = "legacy_qwen_profile")]
+    pub qwen_profile: QwenAsrProfile,
+    #[serde(default)]
+    pub qwen_models: QwenModelSelection,
     #[serde(default)]
     pub language_mode: AsrLanguageMode,
 }
@@ -548,6 +586,8 @@ impl Default for AsrConfig {
         Self {
             credentials: AsrCredentials::default(),
             selection: AsrSelection::default(),
+            qwen_profile: QwenAsrProfile::default(),
+            qwen_models: QwenModelSelection::default(),
             language_mode: AsrLanguageMode::Auto,
         }
     }
@@ -574,13 +614,16 @@ pub struct AppConfig {
     #[serde(default)]
     pub smart_command_config: SmartCommandConfig,
     /// AI 助手配置（新增）
-    #[serde(default)]
+    #[serde(default = "legacy_assistant_config")]
     pub assistant_config: AssistantConfig,
+    /// 联网搜索配置
+    #[serde(default)]
+    pub search_config: SearchConfig,
     /// 自动词库学习配置
     #[serde(default)]
     pub learning_config: LearningConfig,
     /// TNL 技术规范化层配置
-    #[serde(default)]
+    #[serde(default = "legacy_tnl_config")]
     pub tnl_config: TnlConfig,
     /// 关闭行为: "close" = 直接关闭, "minimize" = 最小化到托盘, None = 每次询问
     #[serde(default)]
@@ -659,16 +702,81 @@ pub struct TnlConfig {
     /// 是否启用 TNL（默认启用）
     #[serde(default = "default_enable_tnl")]
     pub enabled: bool,
+    /// 口语流畅化清洗模式
+    #[serde(default = "legacy_disfluency_mode")]
+    pub disfluency_mode: crate::tnl::DisfluencyMode,
+    /// 个性化纠错对精确文本 Pass 开关
+    #[serde(default)]
+    pub enable_personalization_exact_text_pass: bool,
+    /// 个性化音节格/alias Pass 开关
+    #[serde(default)]
+    pub enable_personalization_syllable_match_pass: bool,
+    /// 将学习到的纠错对作为 ASR 热词；旧配置必须主动开启。
+    #[serde(default)]
+    pub enable_personalization_hotwords: bool,
+    /// 将当前输入窗口与近期历史作为 ASR 上下文热词；旧配置必须主动开启。
+    #[serde(default)]
+    pub enable_context_hotwords: bool,
+    /// 个性化窗口最大 token 数
+    #[serde(default = "default_personalization_max_window_tokens")]
+    pub personalization_max_window_tokens: usize,
+    /// 个性化本地自动应用阈值
+    #[serde(default = "default_personalization_apply_threshold")]
+    pub personalization_apply_threshold: f32,
+}
+
+// Deserialization restores old behavior; Default is reserved for a new installation.
+fn legacy_tnl_config() -> TnlConfig {
+    TnlConfig {
+        disfluency_mode: legacy_disfluency_mode(),
+        enable_personalization_exact_text_pass: false,
+        enable_personalization_syllable_match_pass: false,
+        enable_personalization_hotwords: false,
+        enable_context_hotwords: false,
+        ..TnlConfig::default()
+    }
+}
+
+fn legacy_disfluency_mode() -> crate::tnl::DisfluencyMode {
+    crate::tnl::DisfluencyMode::Off
 }
 
 fn default_enable_tnl() -> bool {
     true
 }
 
+fn default_enable_personalization_exact_text_pass() -> bool {
+    true
+}
+
+fn default_enable_personalization_syllable_match_pass() -> bool {
+    true
+}
+
+fn default_personalization_max_window_tokens() -> usize {
+    5
+}
+
+fn default_personalization_apply_threshold() -> f32 {
+    0.88
+}
+
 impl Default for TnlConfig {
     fn default() -> Self {
+        let enable_personalization_exact_text_pass =
+            default_enable_personalization_exact_text_pass();
+        let enable_personalization_syllable_match_pass =
+            default_enable_personalization_syllable_match_pass();
+
         Self {
             enabled: default_enable_tnl(),
+            disfluency_mode: crate::tnl::DisfluencyMode::default(),
+            enable_personalization_exact_text_pass,
+            enable_personalization_syllable_match_pass,
+            enable_personalization_hotwords: true,
+            enable_context_hotwords: false,
+            personalization_max_window_tokens: default_personalization_max_window_tokens(),
+            personalization_apply_threshold: default_personalization_apply_threshold(),
         }
     }
 }
@@ -700,6 +808,29 @@ pub struct LlmPreset {
     /// Migration 9 cleans up violations on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<LlmReasoningConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_body: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    #[default]
+    Default,
+    None,
+    Auto,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LlmReasoningConfig {
+    #[serde(default)]
+    pub effort: ReasoningEffort,
 }
 
 // ============================================================================
@@ -833,6 +964,10 @@ pub struct LlmFeatureConfig {
     /// 模型覆盖（共享模式或独立模式都可用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<LlmReasoningConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_body: Option<serde_json::Value>,
 }
 
 impl Default for LlmFeatureConfig {
@@ -843,6 +978,8 @@ impl Default for LlmFeatureConfig {
             endpoint: None,
             api_key: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         }
     }
 }
@@ -858,6 +995,14 @@ pub struct ResolvedLlmClientConfig {
 }
 
 impl LlmFeatureConfig {
+    fn has_connection_override(&self) -> bool {
+        !self.use_shared
+            || self.provider_id.is_some()
+            || self.endpoint.is_some()
+            || self.api_key.is_some()
+            || self.model.is_some()
+    }
+
     /// 解析配置：根据 use_shared 决定使用共享配置还是独立配置
     pub fn resolve(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
         self.resolve_with_feature(shared, "")
@@ -1018,11 +1163,7 @@ impl LlmConfig {
     /// Note: `resolve_with_feature` is shared by polishing/assistant/learning, so preset awareness
     /// is contained here in `LlmConfig` rather than leaking the preset concept to the generic method.
     pub fn resolve_polishing(&self) -> ResolvedLlmClientConfig {
-        if let Some(preset) = self
-            .presets
-            .iter()
-            .find(|p| p.id == self.active_preset_id)
-        {
+        if let Some(preset) = self.presets.iter().find(|p| p.id == self.active_preset_id) {
             if let Some(provider_id) = preset.provider_id.as_deref() {
                 if let Some(provider) = self.shared.get_provider(provider_id) {
                     let model = preset
@@ -1096,6 +1237,8 @@ fn default_presets() -> Vec<LlmPreset> {
             system_prompt: "你是一个语音转写润色助手。请在不改变原意的前提下：1）删除重复或意义相近的句子；2）合并同一主题的内容；3）去除「嗯」「啊」等口头禅；4）保留数字与关键信息；5）相关数字和时间不要使用中文；6）整理成自然的段落。输出纯文本即可。".to_string(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         },
         LlmPreset {
             id: "translation".to_string(),
@@ -1103,6 +1246,8 @@ fn default_presets() -> Vec<LlmPreset> {
             system_prompt: "你是一个专业的翻译助手。请将用户的中文语音转写内容翻译成地道、流畅的英文。不要输出任何解释性文字，只输出翻译结果。".to_string(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         }
     ]
 }
@@ -1138,7 +1283,16 @@ pub const DEFAULT_ASSISTANT_QA_PROMPT: &str = r#"你是一个智能语音助手�
 - 如果是代码相关问题，直接给出代码"#;
 
 /// AI 助手默认系统提示词 - 文本处理模式（有选中文本）
-pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理专家。用户选中了一段文本，并给出了处理指令，你需要：
+pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个选区上下文助手。用户会选中一段文本，然后用语音或文字提出问题/指令。你需要：
+1. 始终先阅读【本轮选中文本（主要上下文）】，把它作为本轮回答的主要依据。
+2. 判断用户意图：是编辑类任务，还是基于选中文本回答问题、解释、分析、提建议。
+3. 编辑类任务（润色、翻译、总结、改写、扩写、修复语法等）：直接输出处理后的文本，不要添加“这是修改后的版本”等前缀。
+4. 问答/解释/分析类任务：围绕选中文本给出清晰回答，可以引用关键点，但不要脱离选区泛泛回答。
+5. 保持原文格式和结构，除非用户明确要求改变。
+
+如果指令不明确，优先根据选中文本给出最可能有用的处理结果；确实无法判断时，只提出一个简短澄清问题。"#;
+
+const LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理专家。用户选中了一段文本，并给出了处理指令，你需要：
 1. 根据用户的指令对文本进行相应处理（润色、翻译、解释、修改等）
 2. 直接输出处理后的结果，不要添加多余的解释
 3. 保持原文的格式和结构（除非用户要求改变）
@@ -1151,6 +1305,17 @@ pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本
 - "总结" → 提炼核心要点
 
 注意：直接输出处理结果，不要添加"这是修改后的版本"之类的前缀。"#;
+
+#[cfg(test)]
+const LEGACY_FRONTEND_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理助手。用户会选中一段文本，然后通过语音告诉你要如何处理这段文本。
+你的任务：
+1. 理解用户的语音指令
+2. 对选中的文本执行相应操作（润色、翻译、总结、改写等）
+3. 直接输出处理后的文本
+注意：
+- 只输出处理后的结果，不要输出任何解释
+- 保持原文的格式和结构（除非用户要求改变）
+- 如果指令不明确，按最合理的方式处理"#;
 
 /// Smart Command 独立配置（保留向后兼容）
 ///
@@ -1185,12 +1350,75 @@ pub struct AssistantConfig {
     /// LLM 配置（使用共享或独立）
     #[serde(default)]
     pub llm: LlmFeatureConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa_llm: Option<LlmFeatureConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_processing_llm: Option<LlmFeatureConfig>,
     /// 问答模式系统提示词（无选中文本时使用）
     #[serde(default = "default_assistant_qa_prompt")]
     pub qa_system_prompt: String,
     /// 文本处理模式系统提示词（有选中文本时使用）
-    #[serde(default = "default_assistant_text_processing_prompt")]
+    #[serde(default = "legacy_assistant_text_processing_prompt")]
     pub text_processing_system_prompt: String,
+    /// AI 助手是否允许联网搜索
+    #[serde(default)]
+    pub enable_web_search: bool,
+    /// function calling 最多工具循环次数
+    #[serde(default = "default_web_search_max_loops")]
+    pub web_search_max_loops: u32,
+    /// 文本处理模式是否也允许联网搜索
+    #[serde(default)]
+    pub web_search_in_text_mode: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchProviderType {
+    Tavily,
+    Bocha,
+    Serper,
+    Searxng,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchProviderConfig {
+    pub id: String,
+    pub provider_type: SearchProviderType,
+    pub display_name: String,
+    #[serde(default = "default_search_provider_enabled")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basic_auth_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basic_auth_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serper_gl: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serper_hl: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serper_tbs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searxng_language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searxng_time_range: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchConfig {
+    #[serde(default)]
+    pub providers: Vec<SearchProviderConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_provider_id: Option<String>,
+    #[serde(default = "default_search_max_results")]
+    pub max_results: u32,
+    #[serde(default = "default_search_timeout_secs")]
+    pub timeout_secs: u32,
+    #[serde(default = "default_search_enable_fallback")]
+    pub enable_fallback: bool,
 }
 
 fn default_smart_command_endpoint() -> String {
@@ -1213,6 +1441,37 @@ fn default_assistant_text_processing_prompt() -> String {
     DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string()
 }
 
+fn legacy_assistant_text_processing_prompt() -> String {
+    LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string()
+}
+
+fn legacy_assistant_config() -> AssistantConfig {
+    AssistantConfig {
+        text_processing_system_prompt: legacy_assistant_text_processing_prompt(),
+        ..AssistantConfig::default()
+    }
+}
+
+fn default_web_search_max_loops() -> u32 {
+    3
+}
+
+fn default_search_provider_enabled() -> bool {
+    true
+}
+
+fn default_search_max_results() -> u32 {
+    5
+}
+
+fn default_search_timeout_secs() -> u32 {
+    6
+}
+
+fn default_search_enable_fallback() -> bool {
+    true
+}
+
 impl Default for SmartCommandConfig {
     fn default() -> Self {
         Self {
@@ -1230,8 +1489,25 @@ impl Default for AssistantConfig {
         Self {
             enabled: false,
             llm: LlmFeatureConfig::default(),
+            qa_llm: None,
+            text_processing_llm: None,
             qa_system_prompt: default_assistant_qa_prompt(),
             text_processing_system_prompt: default_assistant_text_processing_prompt(),
+            enable_web_search: false,
+            web_search_max_loops: default_web_search_max_loops(),
+            web_search_in_text_mode: false,
+        }
+    }
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            providers: Vec::new(),
+            default_provider_id: None,
+            max_results: default_search_max_results(),
+            timeout_secs: default_search_timeout_secs(),
+            enable_fallback: default_search_enable_fallback(),
         }
     }
 }
@@ -1244,14 +1520,45 @@ impl SmartCommandConfig {
 }
 
 impl AssistantConfig {
-    /// 解析 LLM 配置
-    pub fn resolve_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
-        self.llm.resolve_with_feature(shared, "assistant")
+    fn merge_mode_llm_config(&self, mode_config: Option<&LlmFeatureConfig>) -> LlmFeatureConfig {
+        let Some(mode_config) = mode_config else {
+            return self.llm.clone();
+        };
+
+        if mode_config.has_connection_override() {
+            return mode_config.clone();
+        }
+
+        let mut merged = self.llm.clone();
+        merged.reasoning = mode_config.reasoning.clone();
+        merged.custom_body = mode_config.custom_body.clone();
+        merged
+    }
+
+    pub fn qa_feature_config(&self) -> LlmFeatureConfig {
+        self.merge_mode_llm_config(self.qa_llm.as_ref())
+    }
+
+    pub fn text_processing_feature_config(&self) -> LlmFeatureConfig {
+        self.merge_mode_llm_config(self.text_processing_llm.as_ref())
+    }
+
+    pub fn resolve_qa_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
+        self.qa_feature_config()
+            .resolve_with_feature(shared, "assistant")
+    }
+
+    pub fn resolve_text_processing_llm(&self, shared: &SharedLlmConfig) -> ResolvedLlmClientConfig {
+        self.text_processing_feature_config()
+            .resolve_with_feature(shared, "assistant")
     }
 
     /// 检查配置是否有效（结合共享配置）
     pub fn is_valid_with_shared(&self, shared: &SharedLlmConfig) -> bool {
-        self.llm.is_valid_with_shared(shared)
+        self.qa_feature_config().is_valid_with_shared(shared)
+            && self
+                .text_processing_feature_config()
+                .is_valid_with_shared(shared)
     }
 }
 
@@ -1275,6 +1582,89 @@ fn default_enable_dictionary_enhancement() -> bool {
     false
 }
 
+fn migrate_legacy_llm_registry(config: &mut AppConfig) -> bool {
+    let old = config.llm_config.shared.clone();
+    if !old.providers.is_empty()
+        || old.endpoint.is_none()
+        || old.api_key.is_none()
+        || old.default_model.is_none()
+    {
+        return false;
+    }
+
+    fn provider_id(shared: &mut SharedLlmConfig, resolved: &ResolvedLlmClientConfig) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(resolved.endpoint.as_bytes());
+        hash.update(b"|");
+        hash.update(resolved.api_key.as_bytes());
+        let id = format!("{:x}", hash.finalize())[..12].to_string();
+        if shared.get_provider(&id).is_none() {
+            shared.providers.push(LlmProvider {
+                id: id.clone(),
+                name: format!("旧配置提供商 {}", shared.providers.len() + 1),
+                endpoint: resolved.endpoint.clone(),
+                api_key: resolved.api_key.clone(),
+                default_model: resolved.model.clone(),
+            });
+        }
+        id
+    }
+
+    let shared = &mut config.llm_config.shared;
+    let base = LlmFeatureConfig::default().resolve(&old);
+    shared.default_provider_id = provider_id(shared, &base);
+    for (name, feature) in [
+        ("polishing", &mut config.llm_config.feature_override),
+        ("assistant", &mut config.assistant_config.llm),
+        ("learning", &mut config.learning_config.feature_override),
+    ] {
+        // Independent connections already have complete semantics; leave them untouched.
+        if !feature.use_shared {
+            continue;
+        }
+        let resolved = feature.resolve_with_feature(&old, name);
+        let id = provider_id(shared, &resolved);
+        match name {
+            "polishing" => {
+                shared.polishing_provider_id = Some(id);
+                shared.polishing_model = Some(resolved.model);
+            }
+            "assistant" => {
+                shared.assistant_provider_id = Some(id);
+                shared.assistant_model = Some(resolved.model);
+            }
+            _ => {
+                shared.learning_provider_id = Some(id);
+                shared.learning_model = Some(resolved.model);
+            }
+        }
+        feature.provider_id = None;
+        feature.endpoint = None;
+        feature.api_key = None;
+        feature.model = None;
+    }
+
+    // Mode-specific connections are optional. Reasoning-only overrides still inherit
+    // the migrated assistant connection; explicit old overrides retain their full tuple.
+    for mode in [
+        &mut config.assistant_config.qa_llm,
+        &mut config.assistant_config.text_processing_llm,
+    ] {
+        if let Some(feature) = mode {
+            if feature.use_shared && feature.has_connection_override() {
+                let resolved = feature.resolve_with_feature(&old, "assistant");
+                feature.use_shared = false;
+                feature.provider_id = None;
+                feature.endpoint = Some(resolved.endpoint);
+                feature.api_key = Some(resolved.api_key);
+                feature.model = Some(resolved.model);
+            }
+        }
+    }
+    true
+}
+
 impl AppConfig {
     pub fn new() -> Self {
         Self {
@@ -1287,6 +1677,7 @@ impl AppConfig {
             llm_config: LlmConfig::default(),
             smart_command_config: SmartCommandConfig::default(),
             assistant_config: AssistantConfig::default(),
+            search_config: SearchConfig::default(),
             learning_config: LearningConfig::default(),
             tnl_config: TnlConfig::default(),
             close_action: None,
@@ -1307,55 +1698,58 @@ impl AppConfig {
         Ok(app_dir.join("config.json"))
     }
 
-    pub fn load() -> Result<(Self, bool)> {
-        let path = Self::config_path()?;
+    pub fn backfill_dictionary_categories(&mut self) -> bool {
+        crate::dictionary_utils::backfill_inferred_categories(&mut self.dictionary)
+    }
+
+    pub(crate) fn load_from_path(path: &Path) -> Result<(Self, bool)> {
         tracing::info!("尝试从以下路径加载配置: {:?}", path);
 
         // 跟踪是否发生了迁移（调用者可根据此决定是否保存）
-        let mut migrated = false;
+        // The old writer moved the canonical file to .bak before replacing it.
+        // Recover only if the canonical file is absent; never hide its parse errors.
+        let backup_path = path.with_extension("json.bak");
+        let recovered_backup = !path.try_exists()? && backup_path.try_exists()?;
+        let source = if recovered_backup {
+            backup_path.as_path()
+        } else {
+            path
+        };
+        let mut migrated = recovered_backup;
 
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
+        if source.try_exists()? {
+            let content = std::fs::read_to_string(source)?;
 
             // 使用 serde_json::Value 先解析，以支持结构迁移
             let v: serde_json::Value = serde_json::from_str(&content)?;
 
-            // 尝试直接反序列化为 AppConfig
-            let mut config: AppConfig = match serde_json::from_value(v.clone()) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("直接解析配置失败，尝试手动迁移: {}", e);
-                    let mut cfg = AppConfig::new();
+            // Unknown/invalid fields must not silently reset unrelated settings or keys.
+            // Known historical fields are still accepted and migrated below.
+            let mut config: AppConfig = serde_json::from_value(v.clone())
+                .context("配置格式不受支持；原配置已保留，请检查配置字段")?;
 
-                    // 尝试从原始 JSON 提取未变更的字段
-                    if let Some(llm_config) = v.get("llm_config") {
-                        if let Ok(llm) = serde_json::from_value(llm_config.clone()) {
-                            tracing::info!("成功恢复 llm_config");
-                            cfg.llm_config = llm;
-                        }
-                    }
-                    if let Some(assistant_config) = v.get("assistant_config") {
-                        if let Ok(assistant) = serde_json::from_value(assistant_config.clone()) {
-                            tracing::info!("成功恢复 assistant_config");
-                            cfg.assistant_config = assistant;
-                        }
-                    }
-                    if let Some(dictionary) = v.get("dictionary") {
-                        if let Ok(dict) = serde_json::from_value(dictionary.clone()) {
-                            tracing::info!("成功恢复 dictionary");
-                            cfg.dictionary = dict;
-                        }
-                    }
-                    if let Some(builtin_domains) = v.get("builtin_dictionary_domains") {
-                        if let Ok(domains) = serde_json::from_value(builtin_domains.clone()) {
-                            tracing::info!("成功恢复 builtin_dictionary_domains");
-                            cfg.builtin_dictionary_domains = domains;
-                        }
-                    }
-
-                    cfg
+            if v.get("asr_config")
+                .and_then(|asr| asr.get("qwen_profile"))
+                .is_none()
+            {
+                config.asr_config.qwen_profile = legacy_qwen_profile();
+                migrated = true;
+            }
+            if v.get("tnl_config")
+                .and_then(|tnl| tnl.get("disfluency_mode"))
+                .is_none()
+            {
+                config.tnl_config.disfluency_mode = legacy_disfluency_mode();
+                migrated = true;
+            }
+            // Before provider selection existed, DashScope was the primary ASR.
+            if v.get("asr_config").is_none() {
+                if !config.dashscope_api_key.trim().is_empty() {
+                    config.asr_config.selection.active_provider = AsrProvider::Qwen;
+                } else if !config.siliconflow_api_key.trim().is_empty() {
+                    config.asr_config.selection.active_provider = AsrProvider::SiliconFlow;
                 }
-            };
+            }
 
             // ========== 迁移逻辑 ==========
 
@@ -1495,9 +1889,15 @@ impl AppConfig {
                             tracing::info!("迁移 learning_config.llm_endpoint -> learning_config.feature_override.endpoint");
                             config.learning_config.feature_override.endpoint =
                                 Some(endpoint.to_string());
+                            let resolved = config
+                                .learning_config
+                                .resolve_llm(&config.llm_config.shared);
                             // 重要：设置 use_shared=false 以保留原语义
                             // 否则迁移后会优先使用 Provider Registry，导致 endpoint 被忽略
                             config.learning_config.feature_override.use_shared = false;
+                            config.learning_config.feature_override.api_key =
+                                Some(resolved.api_key);
+                            config.learning_config.feature_override.model = Some(resolved.model);
                             migrated = true;
                         }
                     }
@@ -1506,12 +1906,8 @@ impl AppConfig {
 
             // 迁移 5: 旧单快捷键 → 新双快捷键 (保持原有逻辑)
             if let Some(old_hotkey) = config.hotkey_config.take() {
-                let is_default = config.dual_hotkey_config.dictation.keys
-                    == vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
-                    && config.dual_hotkey_config.assistant.keys
-                        == vec![HotkeyKey::AltLeft, HotkeyKey::Space];
-
-                if is_default {
+                // A saved modern choice wins even when it happens to equal the defaults.
+                if v.get("dual_hotkey_config").is_none() {
                     tracing::info!(
                         "迁移旧快捷键配置 {} 到听写模式",
                         old_hotkey.format_display()
@@ -1537,206 +1933,24 @@ impl AppConfig {
                             endpoint: Some(config.smart_command_config.endpoint.clone()),
                             model: Some(config.smart_command_config.model.clone()),
                             api_key: Some(config.smart_command_config.api_key.clone()),
+                            reasoning: None,
+                            custom_body: None,
                         },
+                        qa_llm: None,
+                        text_processing_llm: None,
                         qa_system_prompt: config.smart_command_config.system_prompt.clone(),
-                        text_processing_system_prompt: default_assistant_text_processing_prompt(),
+                        text_processing_system_prompt: legacy_assistant_text_processing_prompt(),
+                        enable_web_search: false,
+                        web_search_max_loops: default_web_search_max_loops(),
+                        web_search_in_text_mode: false,
                     };
                     config.smart_command_config.enabled = false;
                 }
             }
 
-            // 迁移 7: 旧配置 → Provider Registry (自动迁移)
-            if config.llm_config.shared.providers.is_empty() {
-                // 检查是否有旧配置需要迁移
-                let has_old_shared_config = config.llm_config.shared.endpoint.is_some()
-                    && config.llm_config.shared.api_key.is_some()
-                    && config.llm_config.shared.default_model.is_some();
-
-                if has_old_shared_config {
-                    tracing::info!("检测到旧版共享配置，开始迁移到 Provider Registry");
-
-                    use sha2::{Digest, Sha256};
-
-                    // 计算 Voice Polishing 的 effective 配置
-                    let polishing_endpoint = config
-                        .llm_config
-                        .shared
-                        .endpoint
-                        .clone()
-                        .unwrap_or_default();
-                    let polishing_api_key =
-                        config.llm_config.shared.api_key.clone().unwrap_or_default();
-                    let polishing_model = config
-                        .llm_config
-                        .shared
-                        .polishing_model
-                        .clone()
-                        .or_else(|| config.llm_config.shared.default_model.clone())
-                        .unwrap_or_else(default_llm_model);
-
-                    // 计算 AI Assistant 的 effective 配置
-                    let assistant_endpoint = if config.assistant_config.llm.use_shared {
-                        config
-                            .assistant_config
-                            .llm
-                            .endpoint
-                            .clone()
-                            .unwrap_or_else(|| polishing_endpoint.clone())
-                    } else {
-                        config
-                            .assistant_config
-                            .llm
-                            .endpoint
-                            .clone()
-                            .unwrap_or_default()
-                    };
-                    let assistant_api_key = if config.assistant_config.llm.use_shared {
-                        config
-                            .assistant_config
-                            .llm
-                            .api_key
-                            .clone()
-                            .unwrap_or_else(|| polishing_api_key.clone())
-                    } else {
-                        config
-                            .assistant_config
-                            .llm
-                            .api_key
-                            .clone()
-                            .unwrap_or_default()
-                    };
-                    let assistant_model = if config.assistant_config.llm.use_shared {
-                        config
-                            .assistant_config
-                            .llm
-                            .model
-                            .clone()
-                            .or_else(|| config.llm_config.shared.assistant_model.clone())
-                            .or_else(|| config.llm_config.shared.default_model.clone())
-                            .unwrap_or_else(default_llm_model)
-                    } else {
-                        config
-                            .assistant_config
-                            .llm
-                            .model
-                            .clone()
-                            .unwrap_or_default()
-                    };
-
-                    // 生成确定性 Provider ID
-                    fn generate_provider_id(endpoint: &str, api_key: &str) -> String {
-                        let mut hasher = Sha256::new();
-                        hasher.update(endpoint.as_bytes());
-                        hasher.update(b"|");
-                        hasher.update(api_key.as_bytes());
-                        let result = hasher.finalize();
-                        format!("{:x}", result)[..12].to_string()
-                    }
-
-                    let polishing_id =
-                        generate_provider_id(&polishing_endpoint, &polishing_api_key);
-                    let assistant_id =
-                        generate_provider_id(&assistant_endpoint, &assistant_api_key);
-
-                    // 判断是否需要创建 1 个或 2 个 Provider
-                    if polishing_id == assistant_id {
-                        // 配置相同，创建 1 个 Provider
-                        tracing::info!("语音润色和 AI 助手使用相同配置，创建单个 Provider");
-
-                        let provider = LlmProvider {
-                            id: polishing_id.clone(),
-                            name: "默认提供商 (迁移)".to_string(),
-                            endpoint: polishing_endpoint,
-                            api_key: polishing_api_key,
-                            default_model: config
-                                .llm_config
-                                .shared
-                                .default_model
-                                .clone()
-                                .unwrap_or_else(default_llm_model),
-                        };
-
-                        config.llm_config.shared.providers.push(provider);
-                        config.llm_config.shared.default_provider_id = polishing_id.clone();
-
-                        // 设置功能绑定
-                        config.llm_config.shared.polishing_provider_id = Some(polishing_id.clone());
-                        config.llm_config.shared.assistant_provider_id = Some(polishing_id.clone());
-
-                        // 设置模型覆盖
-                        if polishing_model
-                            != config
-                                .llm_config
-                                .shared
-                                .default_model
-                                .clone()
-                                .unwrap_or_else(default_llm_model)
-                        {
-                            config.llm_config.shared.polishing_model = Some(polishing_model);
-                        }
-                        if assistant_model
-                            != config
-                                .llm_config
-                                .shared
-                                .default_model
-                                .clone()
-                                .unwrap_or_else(default_llm_model)
-                        {
-                            config.llm_config.shared.assistant_model = Some(assistant_model);
-                        }
-
-                        // 清空 Feature 的独立配置（包括 model，因为已迁移到 Provider.default_model 或 shared.*_model）
-                        config.llm_config.feature_override.use_shared = true;
-                        config.llm_config.feature_override.endpoint = None;
-                        config.llm_config.feature_override.api_key = None;
-                        config.llm_config.feature_override.model = None;
-                        config.assistant_config.llm.use_shared = true;
-                        config.assistant_config.llm.endpoint = None;
-                        config.assistant_config.llm.api_key = None;
-                        config.assistant_config.llm.model = None;
-                    } else {
-                        // 配置不同，创建 2 个 Provider
-                        tracing::info!("语音润色和 AI 助手使用不同配置，创建两个 Provider");
-
-                        let polishing_provider = LlmProvider {
-                            id: polishing_id.clone(),
-                            name: "语音润色提供商 (迁移)".to_string(),
-                            endpoint: polishing_endpoint,
-                            api_key: polishing_api_key,
-                            default_model: polishing_model.clone(),
-                        };
-
-                        let assistant_provider = LlmProvider {
-                            id: assistant_id.clone(),
-                            name: "AI 助手提供商 (迁移)".to_string(),
-                            endpoint: assistant_endpoint,
-                            api_key: assistant_api_key,
-                            default_model: assistant_model.clone(),
-                        };
-
-                        config.llm_config.shared.providers.push(polishing_provider);
-                        config.llm_config.shared.providers.push(assistant_provider);
-                        config.llm_config.shared.default_provider_id = polishing_id.clone();
-
-                        // 设置功能绑定
-                        config.llm_config.shared.polishing_provider_id = Some(polishing_id.clone());
-                        config.llm_config.shared.assistant_provider_id = Some(assistant_id.clone());
-
-                        // 清空 Feature 的独立配置（包括 model，因为已迁移到 Provider.default_model）
-                        config.llm_config.feature_override.use_shared = true;
-                        config.llm_config.feature_override.endpoint = None;
-                        config.llm_config.feature_override.api_key = None;
-                        config.llm_config.feature_override.model = None;
-                        config.assistant_config.llm.use_shared = true;
-                        config.assistant_config.llm.endpoint = None;
-                        config.assistant_config.llm.api_key = None;
-                        config.assistant_config.llm.model = None;
-                    }
-
-                    // 标记迁移完成（不在此处保存，由调用者决定）
-                    tracing::info!("Provider 迁移完成");
-                    migrated = true;
-                }
+            // 迁移 7: 先按旧规则解析每个功能，再写入 Registry，不能只迁移共享默认值。
+            if migrate_legacy_llm_registry(&mut config) {
+                migrated = true;
             }
 
             // 迁移 8: 清理 Provider Registry 模式下遗留的 feature model 覆盖
@@ -1775,6 +1989,11 @@ impl AppConfig {
                 migrated = true;
             }
 
+            if config.backfill_dictionary_categories() {
+                tracing::info!("迁移个人词典 category metadata");
+                migrated = true;
+            }
+
             if config.llm_config.presets.is_empty() {
                 tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
             }
@@ -1791,72 +2010,321 @@ impl AppConfig {
         }
     }
 
-    pub fn save(&self) -> Result<()> {
-        let path = Self::config_path()?;
+    pub(crate) fn save_to_path(&self, path: &Path) -> Result<()> {
         let content = serde_json::to_string_pretty(self)?;
         tracing::info!("保存配置到: {:?}", path);
 
-        // 使用原子写入：先写临时文件，再原子替换
-        let temp_path = path.with_extension("json.tmp");
-        let backup_path = path.with_extension("json.bak");
-
-        tracing::info!("写入临时文件: {:?}", temp_path);
-        std::fs::write(&temp_path, &content).map_err(|e| {
-            tracing::error!("写入临时文件失败: {}", e);
-            e
-        })?;
-
-        // Windows 原子替换策略：
-        // 1. 如果目标文件存在，先备份到 .bak
-        // 2. 重命名临时文件到目标文件
-        // 3. 删除备份文件
-        // 这样即使在任何步骤崩溃，都能恢复：
-        // - 步骤 1 崩溃：原文件完好
-        // - 步骤 2 崩溃：.bak 文件可用于恢复
-        // - 步骤 3 崩溃：配置已保存成功，.bak 只是残留
-        tracing::info!("执行原子替换");
-        if path.exists() {
-            // 先备份旧文件
-            if backup_path.exists() {
-                let _ = std::fs::remove_file(&backup_path);
-            }
-            std::fs::rename(&path, &backup_path).map_err(|e| {
-                tracing::error!("备份旧配置文件失败: {}", e);
-                e
-            })?;
+        // Keep the old file in place until the native atomic replacement succeeds.
+        // Unique siblings also prevent independent writers from sharing a temp file.
+        anyhow::ensure!(!path.is_dir(), "配置路径是目录，无法保存");
+        let temp_path = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            crate::platform::replace_file(&temp_path, path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
         }
-
-        // 重命名临时文件到目标文件
-        match std::fs::rename(&temp_path, &path) {
-            Ok(_) => {
-                // 成功后删除备份文件
-                let _ = std::fs::remove_file(&backup_path);
-                tracing::info!("配置保存成功");
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("重命名临时文件失败: {}", e);
-                // 尝试恢复备份
-                if backup_path.exists() {
-                    if let Err(restore_err) = std::fs::rename(&backup_path, &path) {
-                        tracing::error!("恢复备份失败: {}", restore_err);
-                    } else {
-                        tracing::info!("已从备份恢复配置");
-                    }
-                }
-                Err(e.into())
-            }
-        }
+        result
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AsrConfig, AsrLanguageMode, LlmConfig, LlmPreset};
+    use super::{
+        AppConfig, AsrConfig, AsrLanguageMode, AssistantConfig, LlmConfig, LlmFeatureConfig,
+        LlmPreset, LlmReasoningConfig, QwenAsrProfile, ReasoningEffort, SearchConfig,
+        SharedLlmConfig, TnlConfig, DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT,
+    };
 
     #[test]
     fn asr_config_defaults_to_auto_language_mode() {
         assert_eq!(AsrConfig::default().language_mode, AsrLanguageMode::Auto);
+    }
+
+    #[test]
+    fn asr_config_preserves_legacy_qwen3_when_profile_is_absent() {
+        let config: AsrConfig = serde_json::from_value(serde_json::json!({
+            "credentials": {},
+            "selection": {}
+        }))
+        .expect("旧版 ASR 配置应能迁移");
+
+        assert_eq!(
+            serde_json::to_value(config.qwen_profile).unwrap(),
+            "qwen3_legacy"
+        );
+        assert_eq!(config.qwen_profile, QwenAsrProfile::Qwen3Legacy);
+    }
+
+    #[test]
+    fn asr_config_round_trips_all_three_qwen_profiles() {
+        for wire in ["qwen_audio_3_1", "qwen_audio_3", "qwen3_legacy"] {
+            let config: AsrConfig = serde_json::from_value(serde_json::json!({
+                "credentials": {}, "selection": {}, "qwen_profile": wire
+            }))
+            .expect("每种模型都必须能通过 save_config IPC 反序列化");
+            assert_eq!(serde_json::to_value(config).unwrap()["qwen_profile"], wire);
+        }
+    }
+
+    #[test]
+    fn asr_config_round_trips_qwen_audio_3_ipc_value() {
+        let config: AsrConfig = serde_json::from_value(serde_json::json!({
+            "credentials": {},
+            "selection": {},
+            "qwen_profile": "qwen_audio_3"
+        }))
+        .expect("前端 qwen_audio_3 应能通过 Tauri IPC 反序列化");
+
+        assert_eq!(config.qwen_profile, QwenAsrProfile::QwenAudio3);
+
+        let value = serde_json::to_value(config).expect("ASR 配置应能序列化");
+        assert_eq!(value["qwen_profile"], "qwen_audio_3");
+    }
+
+    #[test]
+    fn asr_config_migrates_previous_qwen_audio3_wire_value() {
+        let profile: QwenAsrProfile = serde_json::from_str("\"qwen_audio3\"")
+            .expect("修复前可能落盘的 qwen_audio3 应继续可读");
+
+        assert_eq!(profile, QwenAsrProfile::QwenAudio3);
+        assert_eq!(
+            serde_json::to_string(&profile).expect("Qwen profile 应能序列化"),
+            "\"qwen_audio_3\""
+        );
+    }
+
+    #[test]
+    fn asr_config_serializes_legacy_qwen_profile_explicitly() {
+        let config = AsrConfig {
+            qwen_profile: QwenAsrProfile::Qwen3Legacy,
+            ..AsrConfig::default()
+        };
+
+        let value = serde_json::to_value(config).expect("ASR 配置应能序列化");
+        assert_eq!(value["qwen_profile"], "qwen3_legacy");
+    }
+
+    #[test]
+    fn search_config_defaults_are_safe_for_legacy_configs() {
+        let cfg = SearchConfig::default();
+
+        assert!(cfg.providers.is_empty());
+        assert_eq!(cfg.default_provider_id, None);
+        assert_eq!(cfg.max_results, 5);
+        assert_eq!(cfg.timeout_secs, 6);
+        assert!(cfg.enable_fallback);
+    }
+
+    #[test]
+    fn assistant_web_search_defaults_to_off() {
+        let cfg = AssistantConfig::default();
+
+        assert!(!cfg.enable_web_search);
+        assert_eq!(cfg.web_search_max_loops, 3);
+        assert!(!cfg.web_search_in_text_mode);
+    }
+
+    #[test]
+    fn assistant_reasoning_override_preserves_base_independent_connection() {
+        let mut cfg = AssistantConfig::default();
+        cfg.llm = LlmFeatureConfig {
+            use_shared: false,
+            provider_id: None,
+            endpoint: Some("https://assistant.example.com/v1".to_string()),
+            api_key: Some("assistant-key".to_string()),
+            model: Some("assistant-model".to_string()),
+            reasoning: None,
+            custom_body: None,
+        };
+        cfg.qa_llm = Some(LlmFeatureConfig {
+            reasoning: Some(LlmReasoningConfig {
+                effort: ReasoningEffort::High,
+            }),
+            ..LlmFeatureConfig::default()
+        });
+
+        let resolved = cfg.resolve_qa_llm(&SharedLlmConfig::default());
+        let qa_config = cfg.qa_feature_config();
+
+        assert_eq!(
+            resolved.endpoint,
+            "https://assistant.example.com/v1/chat/completions"
+        );
+        assert_eq!(resolved.api_key, "assistant-key");
+        assert_eq!(resolved.model, "assistant-model");
+        assert_eq!(
+            qa_config.reasoning.expect("reasoning override").effort,
+            ReasoningEffort::High
+        );
+        assert!(cfg.is_valid_with_shared(&SharedLlmConfig::default()));
+    }
+
+    #[test]
+    fn assistant_mode_connection_override_replaces_base_connection_when_explicit() {
+        let mut cfg = AssistantConfig::default();
+        cfg.llm = LlmFeatureConfig {
+            use_shared: false,
+            provider_id: None,
+            endpoint: Some("https://base.example.com/v1".to_string()),
+            api_key: Some("base-key".to_string()),
+            model: Some("base-model".to_string()),
+            reasoning: None,
+            custom_body: None,
+        };
+        cfg.text_processing_llm = Some(LlmFeatureConfig {
+            use_shared: false,
+            provider_id: None,
+            endpoint: Some("https://text.example.com/v1".to_string()),
+            api_key: Some("text-key".to_string()),
+            model: Some("text-model".to_string()),
+            reasoning: Some(LlmReasoningConfig {
+                effort: ReasoningEffort::None,
+            }),
+            custom_body: None,
+        });
+
+        let resolved = cfg.resolve_text_processing_llm(&SharedLlmConfig::default());
+        let text_config = cfg.text_processing_feature_config();
+
+        assert_eq!(
+            resolved.endpoint,
+            "https://text.example.com/v1/chat/completions"
+        );
+        assert_eq!(resolved.api_key, "text-key");
+        assert_eq!(resolved.model, "text-model");
+        assert_eq!(
+            text_config.reasoning.expect("reasoning override").effort,
+            ReasoningEffort::None
+        );
+    }
+
+    #[test]
+    fn app_config_legacy_json_backfills_search_fields() {
+        let json = r#"{
+            "assistant_config": {
+                "enabled": true,
+                "llm": {"use_shared": true},
+                "qa_system_prompt": "qa",
+                "text_processing_system_prompt": "tp"
+            }
+        }"#;
+
+        let cfg: AppConfig = serde_json::from_str(json).expect("旧配置必须能反序列化");
+
+        assert!(!cfg.assistant_config.enable_web_search);
+        assert_eq!(cfg.assistant_config.web_search_max_loops, 3);
+        assert_eq!(cfg.search_config.max_results, 5);
+    }
+
+    #[test]
+    fn new_install_uses_context_prompt() {
+        assert_eq!(
+            AppConfig::new()
+                .assistant_config
+                .text_processing_system_prompt,
+            DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT
+        );
+    }
+
+    #[test]
+    fn tnl_config_defaults_enable_personalization_passes() {
+        let cfg = TnlConfig::default();
+
+        assert!(cfg.enabled);
+        assert_eq!(
+            cfg.disfluency_mode,
+            crate::tnl::DisfluencyMode::Conservative
+        );
+        assert!(cfg.enable_personalization_exact_text_pass);
+        assert!(cfg.enable_personalization_syllable_match_pass);
+        assert_eq!(cfg.personalization_max_window_tokens, 5);
+        assert!((cfg.personalization_apply_threshold - 0.88).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn experimental_context_hotwords_require_opt_in_without_resetting_saved_choice() {
+        assert!(!TnlConfig::default().enable_context_hotwords);
+        let old: TnlConfig = serde_json::from_str("{}").unwrap();
+        assert!(!old.enable_context_hotwords);
+        let configured: TnlConfig =
+            serde_json::from_str(r#"{"enable_context_hotwords":true}"#).unwrap();
+        assert!(configured.enable_context_hotwords);
+        let reloaded: TnlConfig =
+            serde_json::from_str(&serde_json::to_string(&configured).unwrap()).unwrap();
+        assert!(reloaded.enable_context_hotwords);
+    }
+
+    #[test]
+    fn app_config_legacy_json_backfills_tnl_personalization_fields() {
+        let json = r#"{
+            "tnl_config": {
+                "enabled": true
+            }
+        }"#;
+
+        let cfg: AppConfig = serde_json::from_str(json).expect("旧配置必须能反序列化");
+
+        assert_eq!(
+            cfg.tnl_config.disfluency_mode,
+            crate::tnl::DisfluencyMode::Off
+        );
+        assert!(!cfg.tnl_config.enable_personalization_exact_text_pass);
+        assert!(!cfg.tnl_config.enable_personalization_syllable_match_pass);
+        assert_eq!(cfg.tnl_config.personalization_max_window_tokens, 5);
+        assert!((cfg.tnl_config.personalization_apply_threshold - 0.88).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn app_config_loads_explicit_tnl_disfluency_mode() {
+        let json = r#"{
+            "tnl_config": {
+                "enabled": true,
+                "disfluency_mode": "off"
+            }
+        }"#;
+
+        let cfg: AppConfig = serde_json::from_str(json).expect("配置必须能反序列化");
+
+        assert_eq!(
+            cfg.tnl_config.disfluency_mode,
+            crate::tnl::DisfluencyMode::Off
+        );
+    }
+
+    #[test]
+    fn app_config_dictionary_backfill_marks_migrated_when_storage_changes() {
+        let mut cfg = AppConfig::new();
+        cfg.dictionary = vec!["useState|auto".to_string(), "rust|auto".to_string()];
+
+        assert!(cfg.backfill_dictionary_categories());
+        assert_eq!(
+            cfg.dictionary,
+            vec!["useState|auto|code_symbol", "rust|auto"]
+        );
+    }
+
+    #[test]
+    fn app_config_dictionary_backfill_skips_canonical_storage() {
+        let mut cfg = AppConfig::new();
+        cfg.dictionary = vec![
+            "useState|auto|code_symbol".to_string(),
+            "rust|auto".to_string(),
+        ];
+
+        assert!(!cfg.backfill_dictionary_categories());
+        assert_eq!(
+            cfg.dictionary,
+            vec!["useState|auto|code_symbol", "rust|auto"]
+        );
     }
 
     // ============================================================================
@@ -1875,6 +2343,8 @@ mod tests {
                 system_prompt: String::new(),
                 provider_id: Some("some-provider".to_string()),
                 model: Some("some-model".to_string()),
+                reasoning: None,
+                custom_body: None,
             },
             LlmPreset {
                 id: "p2".to_string(),
@@ -1882,6 +2352,8 @@ mod tests {
                 system_prompt: String::new(),
                 provider_id: None, // ← violates invariant
                 model: Some("orphan-model".to_string()),
+                reasoning: None,
+                custom_body: None,
             },
             LlmPreset {
                 id: "p3".to_string(),
@@ -1889,6 +2361,8 @@ mod tests {
                 system_prompt: String::new(),
                 provider_id: None,
                 model: None,
+                reasoning: None,
+                custom_body: None,
             },
         ];
 
@@ -1917,6 +2391,8 @@ mod tests {
             system_prompt: String::new(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         }];
 
         let cleaned = llm.cleanup_preset_state_invariant();
@@ -1933,13 +2409,15 @@ mod tests {
             "system_prompt": "Old prompt"
         }"#;
 
-        let preset: LlmPreset = serde_json::from_str(legacy_json)
-            .expect("旧 JSON 必须能反序列化");
+        let preset: LlmPreset = serde_json::from_str(legacy_json).expect("旧 JSON 必须能反序列化");
 
         assert_eq!(preset.id, "polishing");
         assert_eq!(preset.name, "文本润色");
         assert_eq!(preset.system_prompt, "Old prompt");
-        assert_eq!(preset.provider_id, None, "旧 JSON 加载后 provider_id 必须为 None");
+        assert_eq!(
+            preset.provider_id, None,
+            "旧 JSON 加载后 provider_id 必须为 None"
+        );
         assert_eq!(preset.model, None, "旧 JSON 加载后 model 必须为 None");
     }
 
@@ -1953,6 +2431,8 @@ mod tests {
             system_prompt: "prompt".to_string(),
             provider_id: None,
             model: None,
+            reasoning: None,
+            custom_body: None,
         };
 
         let json = serde_json::to_string(&preset).expect("序列化必须成功");
@@ -1981,6 +2461,8 @@ mod tests {
             system_prompt: "prompt".to_string(),
             provider_id: Some("prov-1".to_string()),
             model: Some("m1".to_string()),
+            reasoning: None,
+            custom_body: None,
         };
 
         let json = serde_json::to_string(&preset).expect("序列化必须成功");
@@ -1997,3 +2479,9 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod compatibility_tests;
+
+#[cfg(test)]
+mod release_upgrade_tests;

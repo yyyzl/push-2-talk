@@ -1,249 +1,61 @@
+import { ConfigStore } from "../state/configStore";
+import { configValues } from "../state/appConfig";
+import { desktop, type StartApp } from "../services/desktop";
 import type React from "react";
 import { useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import type {
-  AppConfig,
-  AppStatus,
-  AsrConfig,
-  AssistantConfig,
-  DictionaryEntry,
-  DualHotkeyConfig,
-  HotkeyKey,
-  LearningConfig,
-  LlmConfig,
-} from "../types";
-import {
-  DEFAULT_ASSISTANT_CONFIG,
-  DEFAULT_DUAL_HOTKEY_CONFIG,
-  DEFAULT_LEARNING_CONFIG,
-  DEFAULT_LLM_CONFIG,
-  FALLBACK_ASR_PROVIDER,
-  VALID_ASR_PROVIDERS,
-  normalizeLearningConfig,
-} from "../constants";
+import type { AppConfig, AppStatus, AsrConfig, AssistantConfig, DictionaryEntry, DisfluencyMode, LlmConfig } from "../types";
+import type { ConfigOverrides } from "../contexts/ConfigSaveContext";
+import { FALLBACK_ASR_PROVIDER } from "../constants";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
-import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
-import {
-  fetchBuiltinDomains,
-  getBuiltinWordsForDomains,
-  normalizeBuiltinDictionaryDomains,
-  setBuiltinDomainsSnapshot,
-} from "../utils/builtinDictionary";
-
-const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
-
-const buildRuntimeDictionary = (
-  dictionaryEntries: DictionaryEntry[],
-  builtinDomains: string[],
-): string[] => {
-  const userWords = entriesToWords(dictionaryEntries);
-  const builtinWords = getBuiltinWordsForDomains(builtinDomains);
-  if (builtinWords.length === 0) return userWords;
-
-  const merged = new Set<string>();
-  const result: string[] = [];
-
-  for (const word of userWords) {
-    if (merged.has(word)) continue;
-    merged.add(word);
-    result.push(word);
-  }
-
-  for (const word of builtinWords) {
-    if (merged.has(word)) continue;
-    merged.add(word);
-    result.push(word);
-  }
-
-  return result;
-};
-
-type SaveConfigGatewayOverrides = {
-  apiKey?: string;
-  fallbackApiKey?: string;
-  useRealtime?: boolean;
-  enablePostProcess?: boolean;
-  enableDictionaryEnhancement?: boolean;
-  llmConfig?: LlmConfig;
-  assistantConfig?: AssistantConfig;
-  asrConfig?: AsrConfig;
-  closeAction?: "close" | "minimize" | null;
-  dualHotkeyConfig?: DualHotkeyConfig;
-  learningConfig?: LearningConfig;
-  enableMuteOtherApps?: boolean;
-  dictionaryEntries?: DictionaryEntry[];
-  storageDictionary?: string[];
-  builtinDictionaryDomains?: string[];
-  theme?: string;
-};
+import { parseEntry } from "../utils/dictionaryUtils";
+import { fetchBuiltinDomains, setBuiltinDomainsSnapshot } from "../utils/builtinDictionary";
+import { buildRuntimeDictionary } from "../utils/runtimeDictionary";
+import { loadConfiguration, saveConfiguration } from "../state/configActions";
 
 type ConfigFieldPatchPayload = {
   learningEnabled?: boolean;
   theme?: string;
   enableMuteOtherApps?: boolean;
   closeAction?: "close" | "minimize" | null;
-};
-
-type ResolvedSaveConfig = {
-  apiKey: string;
-  fallbackApiKey: string;
-  useRealtime: boolean;
-  enablePostProcess: boolean;
-  enableDictionaryEnhancement: boolean;
-  llmConfig: LlmConfig;
-  assistantConfig: AssistantConfig;
-  asrConfig: AsrConfig;
-  closeAction: "close" | "minimize" | null;
-  dualHotkeyConfig: DualHotkeyConfig;
-  learningConfig: LearningConfig;
-  enableMuteOtherApps: boolean;
-  dictionaryEntries: DictionaryEntry[];
-  storageDictionary: string[];
-  runtimeDictionary: string[];
-  builtinDictionaryDomains: string[];
-  theme: string;
+  tnlConfig?: {
+    disfluencyMode?: DisfluencyMode;
+    enableContextHotwords?: boolean;
+  };
 };
 
 export type UseAppServiceControllerParams = {
-  setAsrConfig: React.Dispatch<React.SetStateAction<AsrConfig>>;
-
-  apiKey: string;
-  setApiKey: React.Dispatch<React.SetStateAction<string>>;
-
-  fallbackApiKey: string;
-  setFallbackApiKey: React.Dispatch<React.SetStateAction<string>>;
-
-  useRealtime: boolean;
-  setUseRealtime: React.Dispatch<React.SetStateAction<boolean>>;
-
-  enablePostProcess: boolean;
-  setEnablePostProcess: React.Dispatch<React.SetStateAction<boolean>>;
-
-  enableDictionaryEnhancement: boolean;
-  setEnableDictionaryEnhancement: React.Dispatch<React.SetStateAction<boolean>>;
-
-  llmConfig: LlmConfig;
-  setLlmConfig: React.Dispatch<React.SetStateAction<LlmConfig>>;
-
-  assistantConfig: AssistantConfig;
-  setAssistantConfig: React.Dispatch<React.SetStateAction<AssistantConfig>>;
-
-  asrConfig: AsrConfig;
-
-  dualHotkeyConfig: DualHotkeyConfig;
-  setDualHotkeyConfig: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
-
-  learningConfig: LearningConfig;
-  setLearningConfig: React.Dispatch<React.SetStateAction<LearningConfig>>;
-
-  dictionary: DictionaryEntry[];
+  configStore: ConfigStore<AppConfig>;
   setDictionary: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
-
-  builtinDictionaryDomains: string[];
-  setBuiltinDictionaryDomains: React.Dispatch<React.SetStateAction<string[]>>;
-
+  recentHotwordEntries: string[];
   status: AppStatus;
   setStatus: React.Dispatch<React.SetStateAction<AppStatus>>;
-
   setError: React.Dispatch<React.SetStateAction<string | null>>;
-
   enableAutostart: boolean;
   setEnableAutostart: React.Dispatch<React.SetStateAction<boolean>>;
-
-  enableMuteOtherApps: boolean;
-  setEnableMuteOtherApps: React.Dispatch<React.SetStateAction<boolean>>;
-
-  theme: string;
-  setTheme: React.Dispatch<React.SetStateAction<string>>;
-
-  closeAction: "close" | "minimize" | null;
-  setCloseAction: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
-
   rememberChoice: boolean;
   setRememberChoice: React.Dispatch<React.SetStateAction<boolean>>;
   setShowCloseDialog: React.Dispatch<React.SetStateAction<boolean>>;
-
   setShowSuccessToast: React.Dispatch<React.SetStateAction<boolean>>;
   showToast?: (message: string, durationMs?: number) => void;
-
-  /** 即时保存前的回调，用于取消 debounce timer */
   onBeforeImmediateSave?: () => void;
 };
 
-export function useAppServiceController({
-  setAsrConfig,
-  apiKey,
-  setApiKey,
-  fallbackApiKey,
-  setFallbackApiKey,
-  useRealtime,
-  setUseRealtime,
-  enablePostProcess,
-  setEnablePostProcess,
-  enableDictionaryEnhancement,
-  setEnableDictionaryEnhancement,
-  llmConfig,
-  setLlmConfig,
-  assistantConfig,
-  setAssistantConfig,
-  asrConfig,
-  dualHotkeyConfig,
-  setDualHotkeyConfig,
-  learningConfig,
-  setLearningConfig,
-  dictionary,
-  setDictionary,
-  builtinDictionaryDomains,
-  setBuiltinDictionaryDomains,
-  status,
-  setStatus,
-  setError,
-  enableAutostart,
-  setEnableAutostart,
-  enableMuteOtherApps,
-  setEnableMuteOtherApps,
-  theme,
-  setTheme,
-  closeAction,
-  setCloseAction,
-  rememberChoice,
-  setRememberChoice,
-  setShowCloseDialog,
-  setShowSuccessToast,
-  showToast,
-  onBeforeImmediateSave,
-}: UseAppServiceControllerParams) {
+export function useAppServiceController({ configStore, setDictionary,
+  recentHotwordEntries, status, setStatus, setError, enableAutostart, setEnableAutostart,
+  rememberChoice, setRememberChoice, setShowCloseDialog, setShowSuccessToast, showToast,
+  onBeforeImmediateSave }: UseAppServiceControllerParams) {
+  const observedConfig = configStore.getSnapshot().config;
+  const { asrConfig, builtinDictionaryDomains } = configValues(observedConfig);
+  const setAsrConfig = useCallback((value: AsrConfig) => configStore.edit(current => ({ ...current, asr_config: value }), observedConfig), [configStore, observedConfig]);
+
   const flashSuccessToast = useCallback(() => {
     setShowSuccessToast(true);
     window.setTimeout(() => setShowSuccessToast(false), 3000);
   }, [setShowSuccessToast]);
 
-  const startApp = useCallback(
-    async (payload: {
-      apiKey: string;
-      fallbackApiKey: string;
-      useRealtime: boolean;
-      enablePostProcess: boolean;
-      enableDictionaryEnhancement: boolean;
-      llmConfig: LlmConfig;
-      smartCommandConfig: null;
-      assistantConfig: AssistantConfig;
-      asrConfig: AsrConfig | null;
-      dualHotkeyConfig: DualHotkeyConfig;
-      enableMuteOtherApps: boolean;
-      dictionary: string[];
-      theme: string;
-    }) => {
-      await invoke<string>("start_app", payload);
-    },
-    [],
-  );
+  const startApp = useCallback(async (payload: StartApp) => { await desktop.start(payload); }, []);
+  const stopApp = useCallback(async () => { await desktop.stop(); }, []);
 
-  const stopApp = useCallback(async () => {
-    await invoke<string>("stop_app");
-  }, []);
-
-  // 热更新运行时配置（无需重启服务）
   const applyRuntimeConfig = useCallback(
     async (updates: {
       enablePostProcess?: boolean;
@@ -255,14 +67,18 @@ export function useAppServiceController({
     }): Promise<boolean> => {
       if (status !== "running") return false;
       try {
-        await invoke<string>("update_runtime_config", {
+        await desktop.updateRuntime({
           enablePostProcess: updates.enablePostProcess,
           enableDictionaryEnhancement: updates.enableDictionaryEnhancement,
           llmConfig: updates.llmConfig,
           assistantConfig: updates.assistantConfig,
           enableMuteOtherApps: updates.enableMuteOtherApps,
           dictionary: updates.dictionary
-            ? buildRuntimeDictionary(updates.dictionary, builtinDictionaryDomains)
+            ? buildRuntimeDictionary(
+              updates.dictionary,
+              builtinDictionaryDomains,
+              recentHotwordEntries,
+            )
             : undefined,
         });
         return true;
@@ -271,407 +87,68 @@ export function useAppServiceController({
         return false;
       }
     },
-    [builtinDictionaryDomains, status],
+    [builtinDictionaryDomains, recentHotwordEntries, status],
   );
 
-  const resolveSaveConfig = useCallback(
-    (overrides: SaveConfigGatewayOverrides = {}): ResolvedSaveConfig => {
-      const storageDictionaryFromOverrides = overrides.storageDictionary?.filter(
-        (word) => typeof word === "string" && word.trim(),
-      );
-      const dictionaryEntriesFromStorage = storageDictionaryFromOverrides?.map(parseEntry);
-      const finalDictionaryEntries =
-        overrides.dictionaryEntries ?? dictionaryEntriesFromStorage ?? dictionary;
-      const finalBuiltinDictionaryDomains = normalizeBuiltinDictionaryDomains(
-        overrides.builtinDictionaryDomains ?? builtinDictionaryDomains,
-      );
-      const finalStorageDictionary =
-        storageDictionaryFromOverrides ?? entriesToStorageFormat(finalDictionaryEntries);
-      const finalTheme = (overrides.theme ?? theme) || "light";
-      const finalAsrConfig = overrides.asrConfig ?? asrConfig;
-      const finalLearningConfig = normalizeLearningConfig(
-        overrides.learningConfig ?? learningConfig,
-      );
+  const saveConfigThroughGateway = useCallback(async (overrides: ConfigOverrides = {}) => {
+    const saved = await saveConfiguration(configStore, desktop, overrides, observedConfig);
+    const dictionaryEntries = saved.dictionary.map(parseEntry);
+    return {
+      ...configValues(saved), dictionaryEntries,
+      runtimeDictionary: buildRuntimeDictionary(dictionaryEntries, saved.builtin_dictionary_domains, recentHotwordEntries)
+    };
+  }, [configStore, observedConfig, recentHotwordEntries]);
 
-      return {
-        apiKey: finalAsrConfig.credentials.qwen_api_key || overrides.apiKey || apiKey,
-        fallbackApiKey:
-          finalAsrConfig.credentials.sensevoice_api_key
-          || overrides.fallbackApiKey
-          || fallbackApiKey,
-        useRealtime: overrides.useRealtime ?? useRealtime,
-        enablePostProcess: overrides.enablePostProcess ?? enablePostProcess,
-        enableDictionaryEnhancement:
-          overrides.enableDictionaryEnhancement ?? enableDictionaryEnhancement,
-        llmConfig: overrides.llmConfig ?? llmConfig,
-        assistantConfig: overrides.assistantConfig ?? assistantConfig,
-        asrConfig: finalAsrConfig,
-        closeAction: overrides.closeAction ?? closeAction ?? null,
-        dualHotkeyConfig: overrides.dualHotkeyConfig ?? dualHotkeyConfig,
-        learningConfig: finalLearningConfig,
-        enableMuteOtherApps: overrides.enableMuteOtherApps ?? enableMuteOtherApps,
-        dictionaryEntries: finalDictionaryEntries,
-        storageDictionary: finalStorageDictionary,
-        runtimeDictionary: buildRuntimeDictionary(
-          finalDictionaryEntries,
-          finalBuiltinDictionaryDomains,
-        ),
-        builtinDictionaryDomains: finalBuiltinDictionaryDomains,
-        theme: finalTheme,
-      };
-    },
-    [
-      apiKey,
-      fallbackApiKey,
-      useRealtime,
-      enablePostProcess,
-      enableDictionaryEnhancement,
-      llmConfig,
-      assistantConfig,
-      asrConfig,
-      closeAction,
-      dualHotkeyConfig,
-      learningConfig,
-      enableMuteOtherApps,
-      dictionary,
-      builtinDictionaryDomains,
-      theme,
-    ],
-  );
-
-  const saveConfigThroughGateway = useCallback(
-    async (overrides: SaveConfigGatewayOverrides = {}) => {
-      const resolved = resolveSaveConfig(overrides);
-
-      await invoke<string>("save_config", {
-        apiKey: resolved.apiKey,
-        fallbackApiKey: resolved.fallbackApiKey,
-        useRealtime: resolved.useRealtime,
-        enablePostProcess: resolved.enablePostProcess,
-        enableDictionaryEnhancement: resolved.enableDictionaryEnhancement,
-        llmConfig: resolved.llmConfig,
-        smartCommandConfig: null,
-        assistantConfig: resolved.assistantConfig,
-        asrConfig: resolved.asrConfig,
-        closeAction: resolved.closeAction,
-        dualHotkeyConfig: resolved.dualHotkeyConfig,
-        learningConfig: resolved.learningConfig,
-        enableMuteOtherApps: resolved.enableMuteOtherApps,
-        dictionary: resolved.storageDictionary,
-        builtinDictionaryDomains: resolved.builtinDictionaryDomains,
-        theme: resolved.theme,
-      });
-
-      return resolved;
-    },
-    [resolveSaveConfig],
-  );
-
-  const patchConfigFields = useCallback(
-    async (patch: ConfigFieldPatchPayload) => {
-      await invoke<string>("patch_config_fields", { patch });
-    },
-    [],
-  );
+  const patchConfigFields = useCallback(async (patch: ConfigFieldPatchPayload) => {
+    configStore.edit(current => ({
+      ...current,
+      ...(patch.theme !== undefined ? { theme: patch.theme } : {}),
+      ...(patch.enableMuteOtherApps !== undefined ? { enable_mute_other_apps: patch.enableMuteOtherApps } : {}),
+      ...(patch.closeAction !== undefined ? { close_action: patch.closeAction } : {}),
+      learning_config: patch.learningEnabled === undefined ? current.learning_config : { ...current.learning_config, enabled: patch.learningEnabled },
+      tnl_config: {
+        ...current.tnl_config,
+        ...(patch.tnlConfig?.disfluencyMode !== undefined ? { disfluency_mode: patch.tnlConfig.disfluencyMode } : {}),
+        ...(patch.tnlConfig?.enableContextHotwords !== undefined ? { enable_context_hotwords: patch.tnlConfig.enableContextHotwords } : {}),
+      },
+    }));
+    await configStore.flush(desktop.updateConfig);
+  }, [configStore]);
 
   const loadConfig = useCallback(async () => {
     try {
-      let config = await invoke<AppConfig>("load_config");
-      try {
-        const domains = await fetchBuiltinDomains();
-        setBuiltinDomainsSnapshot(domains);
-      } catch (error) {
-        console.warn("预加载内置词库失败，继续使用当前快照:", error);
-      }
-
-      // ========== 迁移逻辑：从 localStorage 迁移到后端 (幂等) ==========
-      const backendCreds = config.asr_config?.credentials;
-      const backendHasAnyCredential = Boolean(
-        backendCreds?.qwen_api_key?.trim() ||
-        backendCreds?.sensevoice_api_key?.trim() ||
-        backendCreds?.doubao_app_id?.trim() ||
-        backendCreds?.doubao_access_token?.trim()
-      );
-
-      if (!backendHasAnyCredential) {
-        try {
-          const savedCache = localStorage.getItem('pushtotalk_asr_cache');
-          if (savedCache) {
-            console.log('[迁移] 检测到后端配置为空且发现 localStorage 配置，开始迁移');
-            const parsedCache = JSON.parse(savedCache);
-
-            const activeProvider =
-              VALID_ASR_PROVIDERS.includes(parsedCache.active_provider)
-                ? parsedCache.active_provider
-                : FALLBACK_ASR_PROVIDER;
-
-            const migratedAsrConfig: AsrConfig = {
-              credentials: {
-                qwen_api_key: parsedCache.qwen?.api_key || '',
-                sensevoice_api_key: parsedCache.siliconflow?.api_key || '',
-                doubao_app_id: parsedCache.doubao?.app_id || '',
-                doubao_access_token: parsedCache.doubao?.access_token || '',
-                // 豆包输入法 ASR 凭据 (自动注册获取，迁移时留空)
-                doubao_ime_device_id: '',
-                doubao_ime_token: '',
-                doubao_ime_cdid: '',
-              },
-              selection: {
-                active_provider: activeProvider,
-                enable_fallback: false,
-                fallback_provider: null,
-              },
-              language_mode: parsedCache.language_mode === 'zh' ? 'zh' : 'auto',
-            };
-
-            let localDictionary: string[] = [];
-            try {
-              const savedDict = localStorage.getItem(DICTIONARY_STORAGE_KEY);
-              if (savedDict) {
-                const parsed = JSON.parse(savedDict);
-                if (Array.isArray(parsed)) {
-                  localDictionary = parsed.filter((w) => typeof w === "string");
-                }
-              }
-            } catch {
-              // ignore
-            }
-
-            const mergedDictionary = Array.from(
-              new Set([...(config.dictionary || []), ...localDictionary])
-            ).filter((w) => typeof w === "string" && w.trim());
-
-            await saveConfigThroughGateway({
-              apiKey: config.dashscope_api_key || "",
-              fallbackApiKey: config.siliconflow_api_key || "",
-              useRealtime: config.use_realtime_asr ?? true,
-              enablePostProcess: config.enable_llm_post_process ?? false,
-              enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
-              llmConfig: config.llm_config || DEFAULT_LLM_CONFIG,
-              assistantConfig: config.assistant_config || DEFAULT_ASSISTANT_CONFIG,
-              asrConfig: migratedAsrConfig,
-              closeAction: config.close_action ?? null,
-              dualHotkeyConfig: config.dual_hotkey_config || DEFAULT_DUAL_HOTKEY_CONFIG,
-              learningConfig: config.learning_config || DEFAULT_LEARNING_CONFIG,
-              enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-              storageDictionary: mergedDictionary,
-              builtinDictionaryDomains: normalizeBuiltinDictionaryDomains(
-                config.builtin_dictionary_domains || []
-              ),
-              theme: config.theme || "light",
-            });
-
-            console.log('[迁移] 配置已保存到后端，清理 localStorage');
-            localStorage.removeItem('pushtotalk_asr_cache');
-            localStorage.removeItem(DICTIONARY_STORAGE_KEY);
-            config = await invoke<AppConfig>("load_config");
-          }
-        } catch (err) {
-          console.error('[迁移] 迁移失败:', err);
-        }
-      }
-      // ========== 迁移逻辑结束 ==========
-
-      setApiKey(config.dashscope_api_key);
-      setFallbackApiKey(config.siliconflow_api_key || "");
-
-      const loadedAsrConfig: AsrConfig | null = config.asr_config
-        ? {
-            ...config.asr_config,
-            language_mode: config.asr_config.language_mode === "zh" ? "zh" : "auto",
-          }
-        : null;
-
-      let effectiveAsrConfig = loadedAsrConfig;
-      let asrDidFallback = false;
-      if (effectiveAsrConfig) {
-        const normalized = normalizeAsrConfigWithFallback(effectiveAsrConfig);
-        effectiveAsrConfig = normalized.config;
-        asrDidFallback = normalized.didFallback;
-        if (asrDidFallback) {
-          const fallbackName = getAsrProviderDisplayName(FALLBACK_ASR_PROVIDER);
-          const fallbackMessage = `ASR Key 缺失，已自动切换至${fallbackName}`;
-          console.warn(`[配置修复] ${fallbackMessage}`);
-          showToast?.(fallbackMessage, 2600);
-        }
-      }
-      if (effectiveAsrConfig) {
-        setAsrConfig(effectiveAsrConfig);
-      }
-
-      setUseRealtime(config.use_realtime_asr ?? false);
-      setEnablePostProcess(config.enable_llm_post_process ?? false);
-      setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? false);
-
-      // 智能补齐 llm_config
-      const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
-      if (!loadedLlmConfig.presets || loadedLlmConfig.presets.length === 0) {
-        console.warn('[配置修复] 检测到空 presets，使用默认值');
-        loadedLlmConfig.presets = DEFAULT_LLM_CONFIG.presets;
-        loadedLlmConfig.active_preset_id = DEFAULT_LLM_CONFIG.active_preset_id;
-      } else {
-        const activeExists = loadedLlmConfig.presets.find(
-          (p) => p.id === loadedLlmConfig.active_preset_id,
-        );
-        if (!activeExists) {
-          loadedLlmConfig.active_preset_id = loadedLlmConfig.presets[0].id;
-        }
-      }
-      setLlmConfig(loadedLlmConfig);
-
-      // 智能补齐 assistant_config
-      let loadedAssistantConfig = config.assistant_config || DEFAULT_ASSISTANT_CONFIG;
-      if (!loadedAssistantConfig.qa_system_prompt || !loadedAssistantConfig.text_processing_system_prompt) {
-        console.warn('[配置修复] 检测到不完整的 assistant_config，使用默认值');
-        loadedAssistantConfig = DEFAULT_ASSISTANT_CONFIG;
-      }
-      setAssistantConfig(loadedAssistantConfig);
-
-      if (config.dual_hotkey_config) {
-        setDualHotkeyConfig(config.dual_hotkey_config);
-      } else if (config.hotkey_config && config.hotkey_config.keys.length > 0) {
-        setDualHotkeyConfig({
-          dictation: config.hotkey_config,
-          assistant: { keys: ["alt_left", "space"] },
-        });
-      } else {
-        setDualHotkeyConfig(DEFAULT_DUAL_HOTKEY_CONFIG);
-      }
-
-      const loadedLearningConfig = normalizeLearningConfig(
-        config.learning_config || DEFAULT_LEARNING_CONFIG,
-      );
-      setLearningConfig(loadedLearningConfig);
-
-      if (config.close_action) {
-        setCloseAction(config.close_action);
-      }
-
-      try {
-        const autostart = await invoke<boolean>("get_autostart");
-        setEnableAutostart(autostart);
-      } catch (err) {
-        console.error("获取开机自启状态失败:", err);
-      }
-
-      setEnableMuteOtherApps(config.enable_mute_other_apps ?? false);
-      setTheme(config.theme || "light");
-
-      const configDictionary =
-        config.dictionary && Array.isArray(config.dictionary) ? config.dictionary : [];
-
-      // 处理词典：支持新格式 DictionaryEntry[] 和旧格式 string[]
-      let loadedDictionary: DictionaryEntry[];
-      if (configDictionary.length > 0 && typeof configDictionary[0] === "object") {
-        // 新格式：DictionaryEntry[]
-        loadedDictionary = configDictionary as unknown as DictionaryEntry[];
-      } else {
-        // 旧格式：string[]，需要转换（支持 "word" 和 "word|auto" 格式）
-        const words = (configDictionary as unknown as string[]).filter(
-          (w) => typeof w === "string" && w.trim()
-        );
-        loadedDictionary = words.map(parseEntry);
-      }
+      try { setBuiltinDomainsSnapshot(await fetchBuiltinDomains()); }
+      catch (error) { console.warn("预加载内置词库失败，继续使用当前快照:", error); }
+      const { config, dictionary: loadedDictionary, didFallback } = await loadConfiguration(configStore, desktop);
       setDictionary(loadedDictionary);
-
-      const loadedBuiltinDictionaryDomains = normalizeBuiltinDictionaryDomains(
-        config.builtin_dictionary_domains || []
-      );
-      setBuiltinDictionaryDomains(loadedBuiltinDictionaryDomains);
-
-      const loadedDualHotkeyConfig = config.dual_hotkey_config || {
-        dictation:
-          config.hotkey_config ||
-          ({ keys: ["control_left", "meta_left"] as HotkeyKey[] } as const),
-        assistant: { keys: ["alt_left", "space"] as HotkeyKey[] },
-      };
-
-      if (effectiveAsrConfig && isAsrConfigValid(effectiveAsrConfig)) {
-        await new Promise((resolve) => window.setTimeout(resolve, 100));
-        await startApp({
-          apiKey: config.dashscope_api_key,
-          fallbackApiKey: config.siliconflow_api_key || "",
-          useRealtime: config.use_realtime_asr ?? true,
-          enablePostProcess: config.enable_llm_post_process ?? false,
-          enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
-          llmConfig: loadedLlmConfig,
-          smartCommandConfig: null,
-          assistantConfig: loadedAssistantConfig,
-          asrConfig: effectiveAsrConfig,
-          dualHotkeyConfig: loadedDualHotkeyConfig,
-          enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-          dictionary: buildRuntimeDictionary(
-            loadedDictionary,
-            loadedBuiltinDictionaryDomains
-          ),
-          theme: config.theme || "light",
-        });
-        setStatus("running");
-        setError(null);
-
-        // 回退后持久化修正后的配置，避免下次启动重复回退
-        if (asrDidFallback) {
-          try {
-            await saveConfigThroughGateway({
-              apiKey: effectiveAsrConfig.credentials.qwen_api_key,
-              fallbackApiKey: effectiveAsrConfig.credentials.sensevoice_api_key,
-              useRealtime: config.use_realtime_asr ?? true,
-              enablePostProcess: config.enable_llm_post_process ?? false,
-              enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
-              llmConfig: loadedLlmConfig,
-              assistantConfig: loadedAssistantConfig,
-              asrConfig: effectiveAsrConfig,
-              closeAction: config.close_action ?? null,
-              dualHotkeyConfig: loadedDualHotkeyConfig,
-              learningConfig: loadedLearningConfig,
-              enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-              dictionaryEntries: loadedDictionary,
-              builtinDictionaryDomains: loadedBuiltinDictionaryDomains,
-              theme: config.theme || "light",
-            });
-          } catch (err) {
-            console.warn("[配置修复] 回退配置持久化失败:", err);
-          }
-        }
+      try { setEnableAutostart(await desktop.getAutostart()); }
+      catch (error) { console.error("获取开机自启状态失败:", error); }
+      if (didFallback) {
+        showToast?.(`ASR Key 缺失，已自动切换至${getAsrProviderDisplayName(FALLBACK_ASR_PROVIDER)}`, 2600);
       }
-    } catch (err) {
-      console.error("加载配置失败:", err);
+      if (isAsrConfigValid(config.asr_config)) {
+        try {
+          await startApp({
+            ...configValues(config), smartCommandConfig: null,
+            dictionary: buildRuntimeDictionary(loadedDictionary, config.builtin_dictionary_domains,
+              config.tnl_config.enable_context_hotwords ? recentHotwordEntries : []),
+          });
+          // Startup can refresh provider credentials before the event listener finishes attaching.
+          configStore.receive(await desktop.getConfig());
+          setStatus("running"); setError(null);
+        } catch (error) { setStatus("idle"); setError(String(error)); }
+      }
+    } catch (error) {
+      setError(String(error)); throw error;
     }
-  }, [
-    setApiKey,
-    setAsrConfig,
-    setAssistantConfig,
-    setCloseAction,
-    setDictionary,
-    setBuiltinDictionaryDomains,
-    setDualHotkeyConfig,
-    setLearningConfig,
-    setEnableAutostart,
-    setEnableMuteOtherApps,
-    setEnablePostProcess,
-    setEnableDictionaryEnhancement,
-    setFallbackApiKey,
-    setLlmConfig,
-    setStatus,
-    setError,
-    setUseRealtime,
-    startApp,
-    saveConfigThroughGateway,
-    showToast,
-  ]);
+  }, [configStore, setDictionary, setEnableAutostart, showToast, recentHotwordEntries, startApp, setStatus, setError]);
 
   const handleSaveConfig = useCallback(async () => {
     try {
       const resolved = await saveConfigThroughGateway();
 
-      console.log("[handleSaveConfig] 保存配置, theme=", theme);
-
-      console.log("[handleSaveConfig] 配置已保存到后端");
-
-      // 不需要更新 dictionary 状态，因为它已经是正确的格式
-
       if (status === "running") {
-        await stopApp();
+        // The backend validates the requested model before restarting its running service.
         await startApp({
           apiKey: resolved.apiKey,
           fallbackApiKey: resolved.fallbackApiKey,
@@ -681,6 +158,7 @@ export function useAppServiceController({
           llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
           assistantConfig: resolved.assistantConfig,
+          searchConfig: resolved.searchConfig,
           asrConfig: resolved.asrConfig,
           dualHotkeyConfig: resolved.dualHotkeyConfig,
           enableMuteOtherApps: resolved.enableMuteOtherApps,
@@ -693,9 +171,9 @@ export function useAppServiceController({
       flashSuccessToast();
     } catch (err) {
       setError(String(err));
+      throw err;
     }
   }, [
-    theme,
     status,
     flashSuccessToast,
     saveConfigThroughGateway,
@@ -710,47 +188,17 @@ export function useAppServiceController({
    *
    * @param overrides - 可选的配置覆盖，用于传入最新的状态值（解决 React setState 异步问题）
    */
-  const immediatelySaveConfig = useCallback(async (overrides?: {
-    useRealtime?: boolean;
-    enablePostProcess?: boolean;
-    enableDictionaryEnhancement?: boolean;
-    llmConfig?: LlmConfig;
-    assistantConfig?: AssistantConfig;
-    asrConfig?: AsrConfig;
-    dualHotkeyConfig?: DualHotkeyConfig;
-    learningConfig?: LearningConfig;
-    enableMuteOtherApps?: boolean;
-    dictionaryEntries?: DictionaryEntry[];
-    builtinDictionaryDomains?: string[];
-    theme?: string;
-  }) => {
+  const immediatelySaveConfig = useCallback(async (overrides?: ConfigOverrides) => {
     // 先取消 debounce timer
     onBeforeImmediateSave?.();
 
     try {
-      const resolved = await saveConfigThroughGateway({
-        useRealtime: overrides?.useRealtime,
-        enablePostProcess: overrides?.enablePostProcess,
-        enableDictionaryEnhancement: overrides?.enableDictionaryEnhancement,
-        llmConfig: overrides?.llmConfig,
-        assistantConfig: overrides?.assistantConfig,
-        asrConfig: overrides?.asrConfig,
-        dualHotkeyConfig: overrides?.dualHotkeyConfig,
-        learningConfig: overrides?.learningConfig,
-        enableMuteOtherApps: overrides?.enableMuteOtherApps,
-        dictionaryEntries: overrides?.dictionaryEntries,
-        builtinDictionaryDomains: overrides?.builtinDictionaryDomains,
-        theme: overrides?.theme,
-      });
+      const resolved = await saveConfigThroughGateway(overrides);
 
       if (overrides?.dictionaryEntries) setDictionary(resolved.dictionaryEntries);
-      if (overrides?.builtinDictionaryDomains) {
-        setBuiltinDictionaryDomains(resolved.builtinDictionaryDomains);
-      }
-      if (overrides?.theme) setTheme(resolved.theme);
 
       if (status === "running") {
-        await stopApp();
+        // The backend validates the requested model before restarting its running service.
         await startApp({
           apiKey: resolved.apiKey,
           fallbackApiKey: resolved.fallbackApiKey,
@@ -760,6 +208,7 @@ export function useAppServiceController({
           llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
           assistantConfig: resolved.assistantConfig,
+          searchConfig: resolved.searchConfig,
           asrConfig: resolved.asrConfig,
           dualHotkeyConfig: resolved.dualHotkeyConfig,
           enableMuteOtherApps: resolved.enableMuteOtherApps,
@@ -778,8 +227,6 @@ export function useAppServiceController({
     onBeforeImmediateSave,
     status,
     setDictionary,
-    setBuiltinDictionaryDomains,
-    setTheme,
     setError,
     saveConfigThroughGateway,
     startApp,
@@ -789,7 +236,7 @@ export function useAppServiceController({
   const handleAutostartToggle = useCallback(async () => {
     try {
       const newValue = !enableAutostart;
-      await invoke<string>("set_autostart", { enabled: newValue });
+      await desktop.setAutostart(newValue);
       setEnableAutostart(newValue);
       flashSuccessToast();
     } catch (err) {
@@ -827,6 +274,7 @@ export function useAppServiceController({
           llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
           assistantConfig: resolved.assistantConfig,
+          searchConfig: resolved.searchConfig,
           asrConfig: resolved.asrConfig,
           dualHotkeyConfig: resolved.dualHotkeyConfig,
           enableMuteOtherApps: resolved.enableMuteOtherApps,
@@ -858,7 +306,7 @@ export function useAppServiceController({
 
   const handleCancelTranscription = useCallback(async () => {
     try {
-      await invoke<string>("cancel_transcription");
+      await desktop.cancelTranscription();
     } catch (err) {
       setError(String(err));
     }
@@ -867,7 +315,6 @@ export function useAppServiceController({
   const handleCloseAction = useCallback(
     async (action: "close" | "minimize") => {
       if (rememberChoice) {
-        setCloseAction(action);
         try {
           await patchConfigFields({ closeAction: action });
         } catch (err) {
@@ -879,15 +326,14 @@ export function useAppServiceController({
       setRememberChoice(false);
 
       if (action === "close") {
-        await invoke("quit_app");
+        await desktop.quit();
       } else {
-        await invoke("hide_to_tray");
+        await desktop.hide();
       }
     },
     [
       rememberChoice,
       patchConfigFields,
-      setCloseAction,
       setRememberChoice,
       setShowCloseDialog,
     ],

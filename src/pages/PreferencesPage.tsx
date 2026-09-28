@@ -1,6 +1,8 @@
-import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle } from "lucide-react";
+import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle, Sparkles } from "lucide-react";
 import { useState } from "react";
-import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
+import { usePlatformStatus } from "../hooks/usePlatformStatus";
+import { PlatformPermissions } from "../components/common/PlatformPermissions";
+import type { AppStatus, DisfluencyMode, UpdateStatus, LearningConfig, SharedLlmConfig, TnlConfig } from "../types";
 import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../components/common";
 import { RedDot } from "../components/common/RedDot";
 import { SettingsModal } from "../components/modals/SettingsModal";
@@ -8,6 +10,7 @@ import { normalizeLearningConfig } from "../constants";
 
 export type PreferencesPageProps = {
   status: AppStatus;
+  onStartService: () => Promise<void>;
 
   enableAutostart: boolean;
   onToggleAutostart: () => void;
@@ -26,13 +29,26 @@ export type PreferencesPageProps = {
 
   sharedConfig: SharedLlmConfig;
   learningConfig: LearningConfig;
+  tnlConfig: TnlConfig;
   setLearningConfig: (next: LearningConfig) => void;
   onSetLearningEnabled: (enabled: boolean) => Promise<void>;
+  onSetDisfluencyMode: (mode: DisfluencyMode) => Promise<void>;
+  onSetContextHotwords: (enabled: boolean) => Promise<void>;
   onNavigateToModels?: () => void;
 };
 
+const DISFLUENCY_MODE_OPTIONS: Array<{
+  value: DisfluencyMode;
+  label: string;
+  summary: string;
+}> = [
+  { value: "off", label: "关闭", summary: "保留原始口语" },
+  { value: "conservative", label: "保守", summary: "仅清理句首短停顿词，保留内容词和重复字" },
+];
+
 export function PreferencesPage({
   status,
+  onStartService,
   enableAutostart,
   onToggleAutostart,
   enableMuteOtherApps,
@@ -46,20 +62,39 @@ export function PreferencesPage({
   onDownloadAndInstall,
   sharedConfig,
   learningConfig,
+  tnlConfig,
   setLearningConfig,
   onSetLearningEnabled,
+  onSetDisfluencyMode,
+  onSetContextHotwords,
   onNavigateToModels,
 }: PreferencesPageProps) {
+  const platformState = usePlatformStatus();
+  const [startingService, setStartingService] = useState(false);
+  const [savingContext, setSavingContext] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
+  const startService = async () => {
+    setStartingService(true);
+    try {
+      await onStartService();
+    } finally {
+      setStartingService(false);
+    }
+  };
+  const muteSupported = platformState.platform?.other_app_mute === true;
   const canInstallUpdate = updateStatus === "available" || updateStatus === "downloading";
 
   // 自动学习配置状态
   const learningEnabled = learningConfig.enabled;
+  const disfluencyMode = tnlConfig.disfluency_mode === "aggressive" ? "conservative" : tnlConfig.disfluency_mode;
+  const disfluencySummary =
+    DISFLUENCY_MODE_OPTIONS.find((option) => option.value === disfluencyMode)?.summary
+    ?? DISFLUENCY_MODE_OPTIONS[1].summary;
   const [learningConfigModalOpen, setLearningConfigModalOpen] = useState(false);
 
   // 切换自动学习开关
   const handleToggleLearning = async () => {
     const newValue = !learningEnabled;
-    const previousLearningConfig = learningConfig;
     const updatedLearningConfig = normalizeLearningConfig({
       ...learningConfig,
       enabled: newValue,
@@ -70,7 +105,6 @@ export function PreferencesPage({
       await onSetLearningEnabled(newValue);
     } catch (error) {
       console.error("保存自动学习配置失败:", error);
-      setLearningConfig(previousLearningConfig); // 回滚
     }
   };
 
@@ -80,6 +114,88 @@ export function PreferencesPage({
         <div className="flex items-center gap-2 text-xs font-bold text-stone-500 uppercase tracking-widest">
           <SlidersHorizontal size={14} />
           <span>偏好设置</span>
+        </div>
+
+        <PlatformPermissions {...platformState} onRequest={platformState.request} onRefresh={platformState.refresh}
+          serviceIdle={status === "idle"} startingService={startingService} onStartService={startService} />
+        <div className="flex items-center justify-between gap-4 p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
+          <div className="flex items-center gap-3">
+            <div
+              className={[
+                "p-2 rounded-xl",
+                disfluencyMode !== "off"
+                  ? "bg-[rgba(120,140,93,0.12)] text-[var(--sage)]"
+                  : "bg-white border border-[var(--stone)] text-stone-500",
+              ].join(" ")}
+            >
+              <Sparkles size={16} />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <div className="text-sm font-bold text-[var(--ink)]">口语流畅化</div>
+                <Tooltip content="保守模式只清理带停顿的句首“嗯、呃”，保留内容词和重复字；旧强力设置也按此规则处理。">
+                  <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
+                </Tooltip>
+              </div>
+              <div className="text-[11px] text-stone-400 font-semibold">{disfluencySummary}</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-[var(--stone)] bg-white">
+            {DISFLUENCY_MODE_OPTIONS.map((option) => {
+              const selected = disfluencyMode === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    if (selected) return;
+                    void onSetDisfluencyMode(option.value);
+                  }}
+                  disabled={status === "recording" || status === "transcribing"}
+                  className={[
+                    "h-9 min-w-[3.5rem] px-3 text-xs font-bold transition-colors",
+                    "disabled:cursor-not-allowed disabled:opacity-50",
+                    selected
+                      ? "bg-[var(--ink)] text-white"
+                      : "text-stone-500 hover:bg-[var(--paper)] hover:text-[var(--ink)]",
+                  ].join(" ")}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="space-y-2 border-t border-[var(--stone)] pt-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div id="context-hotword-label" className="text-sm font-semibold text-[var(--ink)]">上下文热词（实验性）</div>
+              <p id="context-hotword-hint" className="mt-1 text-xs text-stone-600 leading-relaxed">从当前输入窗口和近 24 小时历史提取技术词，随录音作为热词发送给所选识别服务。默认关闭。</p>
+              <p className="mt-1 text-xs text-stone-600">停止服务后调整，下次启动生效。</p>
+            </div>
+            <Toggle
+              aria-labelledby="context-hotword-label"
+              aria-describedby="context-hotword-hint"
+              checked={tnlConfig.enable_context_hotwords}
+              disabled={status !== "idle" || savingContext}
+              size="sm"
+              className="mt-1 shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--steel)]"
+              onCheckedChange={async (enabled) => {
+                setSavingContext(true);
+                setContextError(null);
+                try {
+                  await onSetContextHotwords(enabled);
+                } catch {
+                  setContextError("保存失败，已恢复原设置，请重试。");
+                } finally {
+                  setSavingContext(false);
+                }
+              }}
+            />
+          </div>
+          {contextError && <p className="text-sm text-red-700" role="alert">{contextError}</p>}
         </div>
 
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">
@@ -117,16 +233,16 @@ export function PreferencesPage({
             <div>
               <div className="text-sm font-bold text-[var(--ink)]">录音时静音其他应用</div>
               <div className="text-[11px] text-stone-400 font-semibold">
-                {enableMuteOtherApps ? "录音期间自动静音" : "不干预音频"}
+                {!muteSupported ? "当前平台暂不支持此功能" : enableMuteOtherApps ? "录音期间自动静音" : "不干预音频"}
               </div>
             </div>
           </div>
           <Toggle
-            checked={enableMuteOtherApps}
+            checked={muteSupported && enableMuteOtherApps}
             onCheckedChange={(next) => {
               void onSetEnableMuteOtherApps(next);
             }}
-            disabled={status === "recording" || status === "transcribing"}
+            disabled={!muteSupported || status === "recording" || status === "transcribing"}
             size="sm"
             variant="orange"
           />

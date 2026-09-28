@@ -1,3 +1,4 @@
+import { Select } from "../common/Select";
 import { AlertTriangle, ExternalLink } from "lucide-react";
 import type { LlmConfig, LlmPreset } from "../../types";
 import {
@@ -70,7 +71,7 @@ export function PresetModelSelect({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <label className="text-xs font-bold text-stone-500 uppercase tracking-widest">
+        <label htmlFor="preset-model-provider" className="text-xs font-bold text-stone-500 uppercase tracking-widest">
           LLM 模型
         </label>
         {onNavigateToModels && (
@@ -86,18 +87,8 @@ export function PresetModelSelect({
         )}
       </div>
 
-      <select
-        value={selectedValue}
-        disabled={disabled}
-        onChange={(e) => handleSelectChange(e.target.value)}
-        className="w-full px-4 py-3 bg-white border border-[var(--stone)] rounded-2xl text-sm font-semibold focus:outline-none focus:border-[var(--steel)] disabled:opacity-60"
-      >
-        {options.map((opt) => (
-          <option key={opt.value || "__inherit__"} value={opt.value} disabled={opt.disabled}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
+      <Select id="preset-model-provider" value={selectedValue} disabled={disabled}
+        onChange={handleSelectChange} options={options} />
 
       {isDangling && (
         <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">

@@ -1,0 +1,200 @@
+[
+  {
+    "audio_id": "mvp-openai-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 open ai 接口",
+    "expected_text": "我调用 OpenAI 接口",
+    "user_final_text": "我调用 OpenAI 接口",
+    "category": "tech_mix",
+    "notes": "OpenAI 字面纠错对命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 open eye 接口",
+    "expected_text": "我调用 OpenAI 接口",
+    "user_final_text": "我调用 OpenAI 接口",
+    "category": "tech_mix",
+    "notes": "OpenAI 英文音近错形命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-003",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "配置 open ai key",
+    "expected_text": "配置 OpenAI key",
+    "user_final_text": "配置 OpenAI key",
+    "category": "tech_mix",
+    "notes": "OpenAI 在英文尾词前命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-004",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "测试 open eye key",
+    "expected_text": "测试 OpenAI key",
+    "user_final_text": "测试 OpenAI key",
+    "category": "tech_mix",
+    "notes": "OpenAI 音近错形在英文尾词前命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-005",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "Please open the settings",
+    "expected_text": "Please open the settings",
+    "user_final_text": "Please open the settings",
+    "category": "false_positive_guard",
+    "notes": "open 常见动词不应被泛化到 OpenAI",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-typescript-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "安装 type script 依赖",
+    "expected_text": "安装 TypeScript 依赖",
+    "user_final_text": "安装 TypeScript 依赖",
+    "category": "tech_mix",
+    "notes": "TypeScript 字面纠错对命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-typescript-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "把文件改成 types script",
+    "expected_text": "把文件改成 TypeScript",
+    "user_final_text": "把文件改成 TypeScript",
+    "category": "tech_mix",
+    "notes": "TypeScript 英文音近错形命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-typescript-003",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "type script 类型报错",
+    "expected_text": "TypeScript 类型报错",
+    "user_final_text": "TypeScript 类型报错",
+    "category": "tech_mix",
+    "notes": "TypeScript 句首技术词命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-typescript-004",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "检查 types scripts 配置",
+    "expected_text": "检查 TypeScript 配置",
+    "user_final_text": "检查 TypeScript 配置",
+    "category": "tech_mix",
+    "notes": "TypeScript 复数化错形命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-typescript-005",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "Please type carefully",
+    "expected_text": "Please type carefully",
+    "user_final_text": "Please type carefully",
+    "category": "false_positive_guard",
+    "notes": "type 常见动词不应被泛化到 TypeScript",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-windsurf-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "打开 wind surf",
+    "expected_text": "打开 Windsurf",
+    "user_final_text": "打开 Windsurf",
+    "category": "tech_mix",
+    "notes": "Windsurf 字面纠错对命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-windsurf-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "用 wind surf agent 改代码",
+    "expected_text": "用 Windsurf agent 改代码",
+    "user_final_text": "用 Windsurf agent 改代码",
+    "category": "tech_mix",
+    "notes": "Windsurf 在英文尾词前命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-windsurf-003",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "切到 wind surf workspace",
+    "expected_text": "切到 Windsurf workspace",
+    "user_final_text": "切到 Windsurf workspace",
+    "category": "tech_mix",
+    "notes": "Windsurf 在工作区语境命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-windsurf-004",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "wind surf 插件启动了",
+    "expected_text": "Windsurf 插件启动了",
+    "user_final_text": "Windsurf 插件启动了",
+    "category": "tech_mix",
+    "notes": "Windsurf 句首技术词命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-windsurf-005",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "The wind speed changed",
+    "expected_text": "The wind speed changed",
+    "user_final_text": "The wind speed changed",
+    "category": "false_positive_guard",
+    "notes": "wind 常见词不应被泛化到 Windsurf",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-zh-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 欧盆艾 接口",
+    "expected_text": "我调用 OpenAI 接口",
+    "user_final_text": "我调用 OpenAI 接口",
+    "category": "tech_mix",
+    "notes": "OpenAI 纯中文音译错形通过 zh_pinyin_fuzzy 命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-mixed-001",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 欧盆 ai 接口",
+    "expected_text": "我调用 OpenAI 接口",
+    "user_final_text": "我调用 OpenAI 接口",
+    "category": "tech_mix",
+    "notes": "OpenAI 中文同音错字 + ASCII 尾词通过 mixed key 命中",
+    "diagnostics": null
+  },
+  {
+    "audio_id": "mvp-openai-mixed-002",
+    "audio_wav_path": null,
+    "provider": "manual-fixture",
+    "raw_asr_text": "我调用 欧盆 接口",
+    "expected_text": "我调用 欧盆 接口",
+    "user_final_text": "我调用 欧盆 接口",
+    "category": "false_positive_guard",
+    "notes": "mixed pair 不能只凭中文头部 pinyin key 命中",
+    "diagnostics": null
+  }
+]

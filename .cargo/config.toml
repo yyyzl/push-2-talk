@@ -1,0 +1,4 @@
+[env]
+# CMake 4 compatibility for the bundled Opus project on both native toolchains.
+# Keep CMAKE available for the developer's actual executable; never point macOS at .cmd.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

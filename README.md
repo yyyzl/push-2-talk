@@ -1,704 +1,160 @@
-# PushToTalk - 语音输入助手
+# PushToTalk
 
-<div align="center">
+**把说的话输入到当前应用，也可以用语音修改选中的文字。**
 
-**按住快捷键说话，松开自动转录并插入文本 | AI 智能助手，语音控制一切**
+PushToTalk 是面向 Windows x64 和 Apple Silicon macOS 的开源桌面语音输入工具。按下快捷键开始录音，结束后进行语音识别，并把结果写回原来的输入位置；需要时，可以交给大语言模型润色、翻译或回答问题。
 
-[![Tauri](https://img.shields.io/badge/Tauri-2.0-blue.svg)](https://tauri.app/)
-[![React](https://img.shields.io/badge/React-18-blue.svg)](https://react.dev/)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
+[下载版本](https://github.com/yyyzl/push-2-talk/releases/latest) · [更新记录](https://github.com/yyyzl/push-2-talk/releases) · [反馈问题](https://github.com/yyyzl/push-2-talk/issues) · [开发文档](docs/development/README.md)
 
-</div>
+## 能做什么
 
----
+- **日常听写**：按住说话、松开结束，或使用按一次开始、再按一次结束的模式。识别结果可以直接输入，也可以先经过语句润色。
+- **语音处理文本**：选中一段文字，说“翻译成英文”“整理成三点”等指令。助手通过结果面板展示回答，支持继续对话、复制和回填。
+- **切换识别服务**：支持豆包输入法、千问、豆包语音和 SiliconFlow SenseVoice。千问可以选择 Audio 3.1、Audio 3.0 或旧版 Qwen3，并保留已有模型配置。
+- **按场景配置模型**：接入 OpenAI 兼容的 LLM 服务，分别为润色、助手和词库学习选择提供商；支持自定义提示词、连接测试和模型适配的思考选项。
+- **个人词库与纠词学习**：维护人名、产品名、专业术语和纠错关系；开启学习后，根据本轮输入后的修改给出建议。文本读取能力取决于目标应用。
+- **使用反馈与记录**：录音悬浮窗、提示音、托盘快捷切换，以及最近 50 条本地历史。助手可按配置使用联网搜索。
 
-PushToTalk 是一个高性能的桌面语音输入工具，集成了大语言模型（LLM）能力。支持**两种工作模式**：
+语音识别和 LLM 使用你选择的在线服务。软件开源不代表第三方服务永久免费；可用性、配额和计费以服务商为准。
 
-1. **听写模式**：按住 `Ctrl+Win` 说话，松开后自动转录并插入文本，支持 LLM 智能润色
-2. **AI 助手模式**：选中文本后按 `Alt+Space` 说话，用语音命令处理选中的文本；或直接提问获得答案
+## 安装
 
-[使用教程](https://ncn18msloi7t.feishu.cn/wiki/NFM3wAcWNi0IGTkUqkVckxWWntb)
+从 [GitHub Releases](https://github.com/yyyzl/push-2-talk/releases) 选择系统对应的安装包，具体文件和版本说明以发布页面为准。
 
-### ✨ 核心特性
+| 平台 | 安装包 | 首次使用 |
+| --- | --- | --- |
+| Windows 10 / 11，x64（Intel / AMD） | `*_x64-setup.exe`，NSIS 安装器 | 安装后按项目现有方式以管理员身份运行 |
+| macOS 12 及以上，Apple Silicon | `*_aarch64.dmg` | 拖入“应用程序”，完成麦克风、辅助功能、输入监控授权 |
 
-#### 双模式工作
-- 🎤 **听写模式** - 传统的语音转文字功能
-  - **按住模式**：按住快捷键录音，松开停止（传统方式）
-  - **松手模式**：按一次 F2 开始录音，再按一次结束（防止误停）
-- 🤖 **AI 助手模式** - 语音控制文本处理
-  - **无选中文本**：Q&A 模式，提问获得答案
-  - **选中文本**：语音命令处理文本（翻译、润色、总结、扩写等）
+本次正式支持 Windows x64 和 Apple Silicon macOS，不提供 Intel Mac 或 Windows ARM64 原生安装包。
 
-#### 核心功能
-- ⚡ **实时流式转录** - WebSocket 边录边传，极低延迟（< 500ms），松手即出字
-- 🧠 **LLM 智能后处理** - 内置"文本润色"、"邮件整理"、"中译英"等预设，支持自定义 Prompt
-- ⌨️ **自定义快捷键** - 支持 73 种按键绑定（修饰键、字母、数字、功能键、方向键等）
-- 🔄 **多 ASR 引擎** - 支持阿里云 Qwen、豆包 Doubao、豆包输入法（免费自动注册）、SiliconFlow SenseVoice
-- 🛡️ **智能兜底** - 主引擎失败时自动切换到备用引擎，并行竞速
-- 🧩 **TNL 技术规范化层** - 在 ASR 与 LLM 之间做确定性文本规范化，支持拼音/音标匹配、连续字母合并、连字符词重写
-- 🎨 **可视化反馈** - 录音状态悬浮窗，实时波形显示，三种视觉状态
-- 🔊 **音频反馈** - 录音开始/结束的清脆提示音，盲操也放心
-- 📜 **历史记录** - 自动保存转录历史，支持搜索、复制、清空
-- 🚀 **系统托盘快捷控制** - 支持最小化到托盘、开机自启动，并可一键切换 ASR/语句润色/词库增强
-- 🔄 **自动更新增强** - 内置 6 个镜像源，支持跨版本聚合展示 release notes
-- 💾 **多配置管理** - 支持保存多套 LLM 预设，通过界面快速切换不同场景
-- 📖 **词库系统** - 个人词库 + 内置词库后台更新与前端动态刷新
-- 🧠 **自动词库学习** - 监控用户修正，自动学习专有名词和术语
-- 🔧 **LLM 配置中心** - 多提供商管理，支持连接测试和延迟显示
-- 🎨 **悬浮窗主题切换** - 支持浅色/深色主题
-- 🔇 **录音时静音** - 录音时自动静音其他应用，避免干扰
-- 🎚️ **VAD 静音检测** - 智能检测语音活动，自动过滤静音片段
-- 📈 **AGC 自动增益** - 自动调节音量，优化细微声音场景下的转换效果
-- 🖥️ **多屏幕支持** - 悬浮窗自动适配多显示器环境
+### Windows
 
----
+运行安装器完成安装，然后启动 PushToTalk。全局热键和跨应用输入沿用当前的管理员运行方式。更新使用 NSIS 安装包，不提供 MSI。
 
-## 🎬 快速开始
+### macOS
 
-### 安装
+打开 DMG，把 PushToTalk 拖入“应用程序”后再启动。根据应用中的权限提示，在系统设置里允许：
 
-1. 从 [Releases](https://github.com/yyyzl/push-2-talk/releases) 下载最新版本的安装包
+- **麦克风**：录制语音。
+- **辅助功能**：读取选区、恢复输入目标并回填文字。
+- **输入监控**：监听全局快捷键。
 
-2. 运行 NSIS 安装程序完成安装
+完成授权后回到应用刷新权限状态，再启动服务；系统要求重开时，请完全退出后重新打开。
 
-3. 右键点击应用图标，选择"以管理员身份运行"
+**当前 macOS 分发采用 ad-hoc 签名，未做 Apple Developer ID 签名与公证。** 首次打开可能被系统拦截。确认安装包来自本仓库后，可按 [Apple 的打开说明](https://support.apple.com/zh-cn/102445)，在“隐私与安全性”中处理该应用的打开许可。升级后也可能需要重新授权；如果系统显示已开启、应用却仍报告未授权，可在对应权限列表中移除旧条目，再添加“应用程序”中的当前版本。
 
-> ⚠️ **重要**：必须以管理员身份运行才能使用全局快捷键功能
+## 第一次使用
 
-### 配置
+1. **选择识别引擎。** 默认是豆包输入法，首次使用自动获取设备凭据，无需手填 API Key；服务不可用时可以改用其他引擎。
+2. **配置需要的服务。** 千问和 SenseVoice 使用各自的 API Key；豆包语音使用 App ID 与 Access Token。只有需要润色、助手或模型辅助学习时，才需要配置相应 LLM。
+3. **检查快捷键与权限。** 先用一段普通文本试用，确认不会与系统或其他软件的快捷键冲突。
+4. **保存并启动服务。** 有些页面自动保存，有些选项需要点击保存，以页面状态提示为准。
+5. **把光标放回目标输入框。** 按快捷键说一句话，结束后等待识别与回填。
 
-### 快捷链接
-[API Key申请教学文档](https://ncn18msloi7t.feishu.cn/wiki/ZnBZwSNjpisUdYkKks1cbes8nGb)
+默认快捷键如下；已有配置会继续保留，也可以在“快捷键”页面修改。
 
+| 操作 | Windows | macOS |
+| --- | --- | --- |
+| 听写 | 左 `Ctrl` + 左 `Win` | 左 `Control` + 左 `Command` |
+| AI 助手 | 左 `Alt` + `Space` | 左 `Option` + `Space` |
+| 松手模式 | `F2` | `F2`，部分键盘需要同时按 `Fn` |
 
-#### 1. ASR 配置（至少配置一个）
+macOS 暂未提供独立的 Fn / Globe 快捷键绑定。若功能键被系统占用，可以直接改用其他组合键。
 
-##### 阿里云 Qwen（推荐）
-- 超大量的免费额度，2025 年 3 月前基本用不完
-- 支持实时流式和 HTTP 两种模式
-- [获取 DashScope API Key](https://bailian.console.aliyun.com/?tab=model#/api-key)
+### 识别引擎怎么选
 
-##### 豆包 Doubao（可选）
-- 支持实时流式和 HTTP 两种模式
-- [录音文件识别大模型-极速版开通](https://console.volcengine.com/ark/region:ark+cn-beijing/tts/recordingRecognition)
-- [流式语音识别大模型-小时版开通](https://console.volcengine.com/ark/region:ark+cn-beijing/tts/speechRecognition)
-- 注意：App ID 和 Access Token 在网页下方
+| 引擎 | 支持的方式 | 配置说明 |
+| --- | --- | --- |
+| 豆包输入法 | 实时 | 自动获取凭据；当前不配置备用引擎 |
+| 千问 Qwen | HTTP、实时 | 配置 DashScope API Key，选择模型；两种方式有各自对应的模型 |
+| 豆包语音 Doubao | HTTP、实时 | 配置相应服务的 App ID 与 Access Token |
+| SiliconFlow SenseVoice | HTTP | 配置 SiliconFlow API Key，也可在支持的组合中用作备用引擎 |
 
-##### 豆包输入法（默认，免费）
-- 默认主引擎，无需 API Key
-- 首次使用时自动注册设备凭据并缓存
-- 当前不支持配置备用模型
+第三方服务的错误或额度不足会影响识别。可以先切换引擎或连接方式，再排查对应账号和网络；不要反复清空本地配置。
 
-##### 硅基流动 SenseVoice（可选，免费）
-- 免费使用的备用引擎
-- 可作为主引擎的智能兜底
-- [获取 SiliconFlow API Key](https://cloud.siliconflow.cn/me/account/ak)
+## 升级与数据
 
-#### 2. 快捷键配置（可自定义）
+Windows 旧版可以使用新安装器覆盖升级，应用包含配置迁移逻辑。此次整合保留已有的识别服务、模型选择、快捷键和 LLM 配置，不要求重新初始化。旧版兼容验证基线为 v1.6.1，验证范围见 [Windows 验收记录](docs/development/windows-validation-handoff.md)。
 
-**听写模式**：
-- 默认快捷键：`Ctrl + Win`
-- 松手模式快捷键：`F2`
-- 可自定义为任意组合键（支持 73 种按键）
+升级前建议完全退出应用，并备份数据目录；跨平台复制配置或降级并不等同于同平台覆盖升级，当前不承诺自动完成这些迁移。
 
-**AI 助手模式**：
-- 默认快捷键：`Alt + Space`
-- 可自定义为任意组合键
-
-#### 3. LLM 配置（可选）
+| 数据 | Windows | macOS |
+| --- | --- | --- |
+| 配置、个人词库、纠词等 | `%APPDATA%\PushToTalk\` | `~/Library/Application Support/PushToTalk/` |
+| 历史记录 | WebView 本地存储，位于 `%LOCALAPPDATA%\com.pushtotalk.app\` | WebView 本地存储，独立于上述配置文件 |
 
-##### 听写模式 LLM（文本润色）
-- 用于对转录结果进行润色、翻译等后处理
-- 推荐使用免费的智谱 GLM-4-Flash
-- [获取智谱 API Key](https://docs.bigmodel.cn/cn/guide/models/free/glm-4-flash-250414)
-- 可添加多个自定义预设（文本润色、中译英、邮件整理等）
-
-##### AI 助手模式 LLM（必需）
-- 用于 AI 助手模式的文本处理和问答
-- 支持 OpenAI 兼容接口
-- 配置两个系统提示词：
-  - **Q&A 提示词**：用于回答问题
-  - **文本处理提示词**：用于处理选中的文本
-
-#### 4. 系统设置（可选）
-
-- **关闭时最小化到托盘** - 关闭窗口时保持后台运行
-- **开机自启动** - 系统启动时自动运行（需要管理员权限）
-- **录音时静音其他应用** - 录音时自动静音其他应用，避免干扰
-
-#### 5. 个人词库（可选）
-
-- **自定义热词** - 添加专业术语、人名、地名等，提升识别准确率
-- **支持多个 ASR 引擎** - Qwen（HTTP/实时）和 Doubao（HTTP/实时）均支持词库功能
-- **格式要求** - 每行一个词，支持中英文混合
-- **自动学习** - 开启后，系统会监控用户修正并自动建议添加新词
-
-#### 6. LLM 配置中心（NEW）
-
-- **多提供商管理** - 支持添加多个 LLM 提供商（智谱、OpenAI、DeepSeek 等）
-- **连接测试** - 一键测试连接，显示延迟时间
-- **功能绑定** - 可为不同功能（润色、助手、学习）指定不同的提供商
-
-#### 7. 保存并启动
-
-点击"保存配置"并"启动助手"。
-
----
-
-## 📖 使用指南
-
-### 听写模式
-
-#### 按住模式（传统方式）
-1. 将光标定位在任何输入框（微信、Word、VS Code）
-2. 按住 `Ctrl` + `Win` 键，听到"滴"声后开始说话
-3. 说完松开按键，听到结束提示音
-4. 等待处理（悬浮窗显示处理状态），文本将自动打字上屏
-
-#### 松手模式（防误停）
-1. 将光标定位在输入框
-2. 按一次 `F2` 键（可自定义），听到"滴"声后开始说话
-3. 说话时手可以松开，防止长时间说话时误停
-4. 说完后再按一次 `F2` 键，听到结束提示音
-5. 等待处理，文本将自动打字上屏
-
-**松手模式悬浮窗**：
-- 蓝色药丸状态，中间显示迷你波形
-- 左边 ❌ 按钮：取消录音
-- 右边 ✓ 按钮：结束录音并转录
-- 60 秒超时自动取消
-
-### AI 助手模式
-
-#### Q&A 模式（无选中文本）
-1. 将光标定位在输入框
-2. 按住 `Alt` + `Space` 键（可自定义），说出你的问题
-3. 例如："What is the capital of France?"
-4. 松开按键，LLM 将自动回答并插入答案
-
-#### 文本处理模式（选中文本）
-1. 在任何应用中选中一段文本
-2. 按住 `Alt` + `Space` 键，说出你的命令
-3. 常用命令示例：
-   - "翻译成英文" - 将选中的中文翻译成英文
-   - "润色一下" - 优化选中的文本
-   - "总结一下" - 生成摘要
-   - "扩写成三段" - 扩展内容
-   - "添加注释" - 为代码添加注释
-4. 松开按键，LLM 将处理选中的文本并替换
-
-### 历史记录
-
-在主界面的"历史记录"标签页可查看所有转录记录：
-- 显示转录文本、时间、模式
-- 支持搜索功能
-- 点击复制按钮快速复制
-- 一键清空所有历史
-
----
-
-## 🛠️ 技术栈
-
-### 前端
-- **React 18** - UI 框架
-- **TypeScript** - 类型安全
-- **Tailwind CSS** - 样式框架
-- **Vite** - 构建工具
-
-### 后端 (Rust)
-- **Tauri 2.0** - 跨平台桌面框架
-- **rdev** - 全局键盘监听（支持 73 种按键）
-- **cpal** - 实时音频录制
-- **hound** - WAV 音频处理
-- **tokio-tungstenite** - WebSocket 异步客户端
-- **reqwest** - HTTP 客户端
-- **arboard** - 剪贴板操作
-- **Win32 SendInput** - 键盘模拟（Windows 原生 API）
-- **rodio** - 音频播放（提示音）
-- **tauri-plugin-updater** - 自动更新功能
-
-### AI 服务
-- **Alibaba Qwen ASR** - 阿里云语音识别（实时/HTTP）
-- **Doubao ASR** - 豆包语音识别（实时/HTTP）
-- **SiliconFlow SenseVoice** - 硅基流动语音识别（HTTP）
-- **OpenAI-Compatible LLM** - 大语言模型后处理
-
----
-
-## ⚙️ 高级配置
-
-### ASR 引擎选择
-
-应用支持多种 ASR 引擎，可在设置界面选择主引擎和备用引擎：
-
-**主引擎选项**：
-- **Qwen（Realtime / HTTP）**: 千问语音识别，可按场景选择实时或 HTTP 模式
-- **Doubao（Realtime / HTTP）**: 豆包语音识别，可按场景选择实时或 HTTP 模式
-- **Doubao IME（推荐开箱即用）**: 豆包输入法接口，免费且自动注册凭据
-
-**备用引擎**：
-- **SenseVoice**: 硅基流动 HTTP 模式
-- 启用智能兜底后，主引擎失败时自动切换到备用引擎
-- 并行竞速策略：主引擎重试 2 次（每次 500ms 间隔），备用引擎并行运行
-- 说明：当主引擎为 Doubao IME 时，当前不支持配置备用引擎
-
-### 快捷键自定义
-
-支持 73 种按键的任意组合：
-- **修饰键**：Ctrl（左/右）、Shift（左/右）、Alt（左/右）、Win（左/右）
-- **字母键**：A-Z（26 个）
-- **数字键**：0-9（10 个）
-- **功能键**：F1-F12（12 个）
-- **导航键**：方向键、Home、End、PageUp、PageDown
-- **特殊键**：Space、Tab、Escape、Enter、Backspace、Delete、Insert、CapsLock
-
-**配置示例**：
-- 听写模式主键：`Ctrl + Win`（可改为 `Ctrl + Shift + A` 等）
-- 松手模式键：`F2`（可改为 `F8`、`Space` 等）
-- AI 助手键：`Alt + Space`（可改为 `Ctrl + Q` 等）
-
-### LLM 预设管理
-
-#### 听写模式预设
-可以定义不同的预设来处理识别后的文本：
-- **文本润色**：去除口语词（嗯、啊），修正标点，使语句通顺
-- **中译英**：直接将中文语音翻译成地道的英文输出
-- **邮件整理**：将口语化的指令转换为正式的邮件格式
-- **自定义**：在设置界面添加、删除或修改预设的 System Prompt
-
-#### AI 助手预设
-配置两个系统提示词：
-- **Q&A 系统提示词**：用于回答用户的问题
-  - 例如："You are a helpful AI assistant. Provide clear and concise answers."
-- **文本处理系统提示词**：用于处理选中的文本
-  - 例如："You are an expert text editor. Follow user commands to modify the selected text."
-
-### 系统托盘
-
-- **最小化到托盘**：关闭窗口时应用不会退出，而是隐藏到系统托盘
-- **开机自启动**：Windows 注册表方式实现（需要管理员权限）
-- **托盘菜单**：右键托盘图标可显示/隐藏窗口或退出应用，并支持快速切换 ASR、语句润色、词库增强
-
-### 自动更新
-
-- **自动检查**：应用启动时自动检查更新
-- **手动检查**：在设置界面点击"检查更新"按钮
-- **6 个镜像源**：确保更新下载的可靠性
-  - gh-proxy.org
-  - hk.gh-proxy.org
-  - cdn.jsdelivr.net
-  - github.com（直连）
-  - cdn.gh-proxy.org
-  - edgeone.gh-proxy.org
-- **安全验证**：Ed25519 签名验证
-- **静默安装**：下载完成后自动安装，无需用户干预
-- **跨版本说明**：如果跳过多个版本，更新弹窗会聚合展示所有中间版本的 release notes
-
----
-
-## 🚀 开发指南
-
-### 环境要求
-
-- **Node.js** >= 18.0.0
-- **Rust** >= 1.70.0
-- **Windows** 10/11 (64-bit)
-
-### 开发环境搭建
-
-```bash
-# 1. 克隆项目
-git clone <repository-url>
+**只备份 `config.json` 不等于备份全部数据。** 个人词库还有 SQLite 文件，历史记录保存在 WebView 中，最近记录最多保留 50 条。备份 Windows 数据时应同时保留上表中的两个目录。
+
+若升级或切换后历史暂时为空，先完全退出应用，再重新打开确认；仍未恢复时，保留原目录并反馈问题，不要先清空数据或反复重装。
+
+API Key 等凭据保存在本地配置中。识别音频会发送到所选 ASR 服务；启用润色、助手、学习判断或联网搜索时，相关文本或查询会发送到相应服务。分享日志或配置前请移除密钥、个人文本与其他敏感信息。
+
+## 平台差异与已知限制
+
+Windows 与 macOS 共用配置和语音处理逻辑，通过各自的原生接口处理快捷键、焦点、剪贴板和文本输入。
+
+- **录音时静音其他应用**目前仅 Windows 支持，macOS 对应选项不可用。
+- macOS 已有 TextEdit、Chrome、Safari 等场景的实机验收，但全屏悬浮窗、多屏、设备切换以及各应用的文本读取兼容性仍需继续验证。
+- 自动回填依赖目标窗口和输入控件仍然有效；焦点无法确认、目标关闭或安全控件拒绝读取时，不能保证自动插入。
+- 词库学习依赖应用暴露可读取的文本，不是所有编辑器和网页输入框都支持。
+- 更新包的 Tauri 签名与 Apple 的应用签名、公证是两套机制；有更新签名不代表 macOS 包已获 Apple 公证。
+
+具体通过项和未覆盖项见 [平台架构与验证范围](PLATFORM_ARCHITECTURE.md) 和 [macOS 实机验收](MACOS_ATDD.md)。
+
+## 本地开发
+
+前端使用 React、TypeScript、Vite 和 Tailwind CSS；桌面层使用 Tauri 2 与 Rust。请在目标系统上编译和测试，不用单个平台的构建结果代替另一平台验证。
+
+需要 Node.js 22、Rust stable，以及系统原生构建工具：Windows 使用 Visual Studio C++ Build Tools、WebView2 和 CMake；macOS 使用 Xcode Command Line Tools 和 CMake。使用仓库锁文件安装依赖。
+
+```sh
+git clone https://github.com/yyyzl/push-2-talk.git
 cd push-2-talk
-
-# 2. 安装前端依赖
-npm install
-
-# 3. 运行开发服务器（需要管理员权限）
+npm ci
 npm run tauri dev
 ```
 
-### 构建生产版本
+Windows 开发时沿用管理员运行方式；macOS 开发包也需要系统权限。`npm run dev` 仅启动前端，不能代替桌面原生功能验证。
 
-```bash
-npm run tauri build
-```
+常用检查：
 
-生成的安装包位于：`src-tauri/target/release/bundle/nsis/`
-
-**注意**：不再支持 MSI 安装包，仅提供 NSIS 安装包，以避免自动更新时创建多实例。
-
-### 前端测试（TypeScript）
-
-```bash
+```sh
 npm run test:ts
+npx playwright install chromium
+npm run test:ui
+npm run build
+cargo check --locked --manifest-path src-tauri/Cargo.toml
+cargo test --locked --features cli-tools --manifest-path src-tauri/Cargo.toml
 ```
 
-### 测试 API
+构建本地验证包（不生成自动更新签名产物）：
 
-使用独立的测试工具验证 Qwen ASR API：
-
-```bash
-cd src-tauri
-cargo run --bin test_api
+```sh
+npm run tauri build -- --config .github/tauri.prototype.conf.json -- --locked
 ```
 
-详细说明请参考 [测试工具使用说明.md](./测试工具使用说明.md)
+产物位于 `src-tauri/target/release/bundle/`；Windows 为 NSIS，macOS 为 `.app` 和 DMG。macOS 配置由 Tauri 自动合并，本地验证包使用 ad-hoc 签名。正式发布需要另外生成更新签名，流程见 [发布工作流](.github/workflows/release.yml)。
 
-### Rust 后端开发
+Opus 构建使用 CMake；仓库已设置旧版 Opus 对 CMake 4 的兼容选项。更多原生依赖、macOS 静态链接和验收命令见 [平台开发说明](PLATFORM_ARCHITECTURE.md#开发与测试)。
 
-```bash
-cd src-tauri
-cargo build    # 构建
-cargo check    # 快速检查
-cargo test     # 运行测试
-```
+### 代码与文档入口
 
----
+| 目录 / 文档 | 内容 |
+| --- | --- |
+| `src/pages/`、`src/components/`、`src/hooks/` | 主窗口页面、组件和前端状态 |
+| `src/windows/` | 录音悬浮窗、学习通知和助手结果面板 |
+| `src-tauri/src/application/`、`pipeline/` | 录音生命周期、听写与助手流程 |
+| `src-tauri/src/platform/` | Windows / macOS 原生能力 |
+| `src-tauri/src/asr/`、`tnl/`、`learning/` | 识别、文本规范化和词库学习 |
+| `tests/`、`scripts/` | 回归测试、构建与验收工具 |
+| [开发文档索引](docs/development/README.md) | 配置、数据库、事件、ASR 和窗口约定 |
+| [贡献约定](AGENTS.md) | 代码风格、测试要求和提交规范 |
 
-## 📁 项目结构
+## 反馈与贡献
 
-```
-├── src                          # 前端源码
-│   ├── App.tsx                  # 主窗口（配置界面、历史记录）
-│   ├── OverlayWindow.tsx        # 悬浮窗（录音状态显示）
-│   ├── index.css                # 全局样式
-│   ├── main.tsx                 # 主窗口入口
-│   └── overlay-main.tsx         # 悬浮窗入口
-├── src-tauri                    # 后端源码
-│   ├── capabilities             # Tauri 权限配置
-│   │   └── default.json
-│   ├── icons                    # 应用图标
-│   │   └── icon.ico
-│   ├── src
-│   │   ├── asr                  # ASR 模块（重构后的架构）
-│   │   │   ├── http             # HTTP 模式 ASR
-│   │   │   │   ├── doubao.rs
-│   │   │   │   ├── qwen.rs
-│   │   │   │   └── sensevoice.rs
-│   │   │   ├── realtime         # 实时流式 ASR
-│   │   │   │   ├── doubao.rs
-│   │   │   │   └── qwen.rs
-│   │   │   ├── mod.rs
-│   │   │   ├── race_strategy.rs # 并发请求竞速策略
-│   │   │   └── utils.rs
-│   │   ├── pipeline             # 处理管道
-│   │   │   ├── normal.rs        # 听写模式管道
-│   │   │   ├── assistant.rs     # AI 助手模式管道
-│   │   │   └── mod.rs
-│   │   ├── audio_recorder.rs    # 录音（非流式）
-│   │   ├── streaming_recorder.rs # 录音（流式）
-│   │   ├── audio_utils.rs       # 音频工具（VAD、RMS、波形）
-│   │   ├── beep_player.rs       # 提示音播放
-│   │   ├── clipboard_manager.rs # 剪贴板管理（AI 助手）
-│   │   ├── config.rs            # 配置管理
-│   │   ├── hotkey_service.rs    # 全局快捷键（支持 73 键）
-│   │   ├── lib.rs               # Tauri 主入口
-│   │   ├── llm_post_processor.rs # LLM 后处理（听写模式）
-│   │   ├── assistant_processor.rs # LLM 处理（AI 助手模式）
-│   │   ├── main.rs              # Rust 主函数
-│   │   ├── test_api.rs          # API 测试工具
-│   │   └── text_inserter.rs     # 文本插入
-│   ├── build.rs                 # 构建脚本
-│   ├── Cargo.toml               # Rust 依赖配置
-│   └── tauri.conf.json          # Tauri 配置
-├── CLAUDE.md                    # Claude Code 项目指南
-├── LICENSE                      # MIT 许可证
-├── README.md                    # 项目说明
-├── package.json                 # 前端依赖配置
-└── vite.config.ts               # Vite 构建配置
-```
+欢迎通过 [Issues](https://github.com/yyyzl/push-2-talk/issues) 提交问题或建议。问题报告请附系统与架构、应用版本、识别引擎、目标应用，以及可复现的步骤；涉及输入失败时，请说明使用的是听写还是助手模式。
 
----
+提交代码前运行与改动相关的测试。涉及快捷键、剪贴板或跨应用输入的修改，请标明实际验证的平台和场景。
 
-## ⚙️ 配置说明
-
-### 配置文件位置
-```
-%APPDATA%\PushToTalk\config.json
-```
-
-### 配置文件格式示例
-```json
-{
-  "asr_config": {
-    "primary": {
-      "provider": "qwen",
-      "mode": "realtime",
-      "dashscope_api_key": "sk-your-dashscope-key"
-    },
-    "fallback": {
-      "provider": "siliconflow",
-      "mode": "http",
-      "siliconflow_api_key": "sk-your-siliconflow-key"
-    },
-    "enable_fallback": true
-  },
-  "dual_hotkey_config": {
-    "dictation": {
-      "keys": [
-        {"key": "ControlLeft"},
-        {"key": "MetaLeft"}
-      ],
-      "mode": "Press",
-      "enable_release_lock": true,
-      "release_mode_keys": [
-        {"key": "F2"}
-      ]
-    },
-    "assistant": {
-      "keys": [
-        {"key": "AltLeft"},
-        {"key": "Space"}
-      ],
-      "mode": "Press",
-      "enable_release_lock": false,
-      "release_mode_keys": null
-    }
-  },
-  "llm_enabled": true,
-  "llm_api_key": "sk-your-llm-key",
-  "llm_base_url": "https://open.bigmodel.cn/api/paas/v4",
-  "llm_model": "glm-4-flash",
-  "llm_system_prompt": "你是一个专业的文本润色助手...",
-  "llm_presets": [
-    {
-      "name": "文本润色",
-      "prompt": "去除口语化表达，修正语法和标点..."
-    },
-    {
-      "name": "中译英",
-      "prompt": "将中文翻译成地道的英文..."
-    }
-  ],
-  "assistant_config": {
-    "enabled": true,
-    "endpoint": "https://api.openai.com/v1/chat/completions",
-    "model": "gpt-4",
-    "api_key": "sk-your-assistant-key",
-    "qa_system_prompt": "You are a helpful AI assistant...",
-    "text_processing_system_prompt": "You are an expert text editor..."
-  },
-  "minimize_to_tray": true,
-  "transcription_mode": "Dictation"
-}
-```
-
-### 获取 API Key
-
-| 服务商 | 用途 | 获取地址 | 费用 |
-|--------|------|----------|------|
-| 阿里云 DashScope | Qwen ASR | [控制台](https://bailian.console.aliyun.com/?tab=model#/api-key) | 大量免费额度（2025/03 前） |
-| 豆包（字节跳动） | Doubao ASR | [录音识别](https://console.volcengine.com/ark/region:ark+cn-beijing/tts/recordingRecognition) / [流式识别](https://console.volcengine.com/ark/region:ark+cn-beijing/tts/speechRecognition) | 按量计费 |
-| 硅基流动 | SenseVoice ASR | [账户管理](https://cloud.siliconflow.cn/me/account/ak) | 免费 |
-| 智谱 AI | GLM-4-Flash LLM | [模型文档](https://docs.bigmodel.cn/cn/guide/models/free/glm-4-flash-250414) | 免费 |
-
----
-
-## 🎯 使用技巧
-
-### 最佳实践
-
-1. **录音环境** - 在安静环境下录音，清晰发音，距离麦克风 10-30cm
-2. **文本插入** - 确保目标窗口处于活动状态，光标可见
-3. **快捷键使用** - 按住完整组合键再说话，避免部分按键误触
-4. **ASR 引擎选择**
-   - 实时模式：延迟低，适合短句（< 30 秒）
-   - HTTP 模式：稳定性好，适合长段录音
-   - 启用智能兜底：最大化成功率
-5. **LLM 预设** - 针对不同场景创建多个预设，快速切换
-6. **松手模式** - 长时间说话时使用松手模式，防止手指疲劳或误停
-7. **AI 助手模式** - 选中文本后按快捷键，用自然语言描述你想要的效果
-
-### 常见问题
-
-**Q: 按快捷键没有反应？**
-- A: 确保以管理员身份运行应用，Windows 要求管理员权限才能使用全局快捷键
-
-**Q: 转录失败？**
-- A: 检查网络连接和 API Key 是否有效。应用会自动重试最多 2 次，并在主引擎失败时切换到备用引擎
-
-**Q: 转录一直处于"转录中"状态？**
-- A: 应用有 6 秒超时机制，超时后会自动重试。如果持续失败，请检查：
-  - 网络连接是否正常
-  - API 服务是否可用
-  - API Key 是否有效
-  - 是否启用了智能兜底
-
-**Q: 文本未插入？**
-- A: 确保目标应用窗口处于前台且光标可见。如果使用松手模式，悬浮窗会自动隐藏 150ms 后再插入文本，以确保目标窗口获得焦点
-
-**Q: 悬浮窗不显示？**
-- A: 检查是否被其他窗口遮挡，或尝试重启应用
-
-**Q: 开机自启动设置失败？**
-- A: 需要以管理员身份运行应用才能修改 Windows 注册表
-
-**Q: 历史记录在哪里？**
-- A: 在主界面切换到"历史记录"标签页即可查看，支持搜索和清空
-
-**Q: 快捷键冲突怎么办？**
-- A: 在设置界面自定义快捷键，支持 73 种按键的任意组合
-
-**Q: AI 助手模式没有捕获选中的文本？**
-- A: 确保在按快捷键前已经选中文本，应用会等待 100ms 后自动复制选中内容。如果仍然失败，应用会重试最多 3 次
-
-**Q: 松手模式按钮不工作？**
-- A: 确保点击悬浮窗上的按钮（❌ 取消或 ✓ 完成），或再次按 F2 键结束录音
-
-**Q: 更新下载失败？**
-- A: 应用内置 6 个镜像源，会自动尝试其他源。如果都失败，请检查网络连接或稍后重试
-
----
-
-## 📊 性能指标
-
-| 指标 | 实时模式 (Realtime) | HTTP 模式 |
-|------|-------------------|-----------|
-| **首字延迟** | < 500ms | ~1.5s |
-| **转录精度** | 98%+ (Qwen3/Doubao) | 98%+ (SenseVoice/Qwen) |
-| **内存占用** | ~65MB（录音时） | ~60MB（录音时） |
-| **网络消耗** | 持续小包传输（~16KB/s） | 单次大包传输（~100-500KB） |
-| **超时重试** | 6s 超时，最多 2 次重试 | 6s 超时，最多 2 次重试 |
-| **智能兜底** | 主引擎失败时自动切换到备用引擎 | 主引擎失败时自动切换到备用引擎 |
-| **并行竞速** | 主引擎重试期间备用引擎并行运行 | 主引擎重试期间备用引擎并行运行 |
-
----
-
-## 🔄 更新日志
-
-### v1.5.9 (当前版本)
-
-**新增/增强：**
-- 🆕 **默认 ASR 改为 Doubao IME** - 开箱即用，首次自动注册设备凭据；初始化时具备自动回退能力
-- 🧩 **TNL 技术规范化层增强** - 覆盖拼音精确替换、英文音标匹配、连续单字母合并、连字符词重写（含空格/连字符混合输入）
-- 🎧 **Doubao 实时识别链路增强** - 引入双向流式传输策略并调整关键参数，提升实时场景稳定性
-- 📚 **内置词库后台更新** - 后端定时拉取并原子写缓存，前端通过事件动态刷新领域词库
-- 🚀 **托盘快捷切换菜单** - 支持一键切换 ASR 引擎，以及快速开关语句润色与词库增强
-- 🔄 **跨版本更新说明聚合** - 更新弹窗支持汇总展示所有中间版本 release notes
-- 🔔 **全局通知栏重构** - 采用独立浮层胶囊组件，减少布局抖动并提升状态反馈一致性
-
-**稳定性修复：**
-- 🛠️ 修复配置保存覆盖、循环保存与写路径收敛问题（引入全局配置锁与原子写入）
-- 🛠️ 修复热键录制重建与双热键配置同步问题
-- 🛠️ 修复语句润色/词库增强开关保存不生效问题，并增加润色失败提示
-- 🛠️ 修复 TNL 音标匹配歧义抑制绕过与误替换防护问题
-- 🛠️ 修复连字符词库在空格分隔输入下的匹配问题
-
-### v1.5.0 ~ v1.5.8（2026-01-20 ~ 2026-02-07）
-
-**阶段性特性：**
-- 🔧 **LLM 配置中心与连接测试落地** - 支持多提供商管理与模型连通性检测
-- 🧠 **自动学习词库链路完善** - 学习建议、词库写入与去重逻辑持续优化
-- 📖 **内置词库能力首发** - 引入领域热词快照，配合词库增强提升技术词识别
-- 🎨 **悬浮窗多风格支持** - 可在偏好页切换不同视觉风格
-- 🔄 **自动更新界面体验优化** - 更新入口和提示交互持续改进
-
-### v1.5.2
-
-**新增功能：**
-- 🧠 **自动词库学习** - 监控用户修正 ASR 识别错误，自动学习专有名词和术语
-  - 使用 Windows UI Automation API 无干扰读取文本
-  - LLM 智能判断是否为值得学习的词汇
-  - Toast 通知让用户确认或拒绝建议
-- 🔧 **LLM 配置中心** - 全新的多提供商管理界面
-  - 支持添加、编辑、删除多个 LLM 提供商
-  - 一键连接测试，显示延迟时间
-  - 为不同功能（润色、助手、学习）绑定不同提供商
-- 🎨 **主题切换** - 支持浅色/深色主题
-- 🔗 **模型测试连接** - 验证 LLM 配置是否正确
-- 📝 **词库自动识别优化** - 改进词库回显过滤，解决录音为空时返回词库内容的问题
-
-**架构改进：**
-- 🏗️ **前端架构重构** - 采用页面化设计，侧边栏导航
-- 🏗️ **LLM Provider Registry** - 统一的提供商管理，支持功能级别绑定
-- 🏗️ **UIA Text Reader** - Windows UI Automation 文本读取模块
-- 🏗️ **Learning Module** - 完整的词库学习流程（观察→验证→分析→判断→建议）
-
-**Bug 修复：**
-- 🐛 修复 release_all_modifiers 仅释放真正被按下的键，避免虚假 key_up 触发系统行为
-- 🐛 优化 LLM 智能润色基础提示词
-- 🐛 添加无效音频前置过滤，解决快速按键时返回词库内容的问题
-- 🐛 主动焦点恢复，解决悬浮窗导致文本粘贴到错误窗口的问题
-
-### v0.0.14
-
-**新增功能：**
-- ✨ **松手模式（Toggle/Release Mode）** - 按一次开始录音，再按一次结束，防止长时间说话时误停
-- 🤖 **AI 助手模式** - 用语音命令处理选中的文本，或直接提问获得答案
-- ⌨️ **自定义快捷键** - 支持 73 种按键的任意组合（修饰键、字母、数字、功能键、方向键等）
-- 🔄 **智能兜底** - 主 ASR 引擎失败时自动切换到备用引擎（SiliconFlow SenseVoice）
-- 🔄 **并行竞速** - 主引擎重试时备用引擎并行运行，返回最快成功的结果
-- 🔄 **自动更新** - 内置 6 个镜像源，自动检查并安装更新
-- 🎨 **悬浮窗优化** - 三种视觉状态（普通录音、锁定录音、转录中），实时波形可视化
-- 🔊 **音频反馈** - 录音开始/结束时播放提示音
-- 🛡️ **Ghost Key Detection** - Windows Win32 API 验证按键状态，防止卡键
-- 🔧 **配置自动迁移** - 自动从旧版本配置迁移到新版本
-
-**架构改进：**
-- 🏗️ **Pipeline 架构** - 分离听写模式和 AI 助手模式的处理流程
-- 🏗️ **双处理器设计** - AssistantProcessor 和 LlmPostProcessor 独立配置
-- 🏗️ **剪贴板管理器** - RAII ClipboardGuard 确保剪贴板自动恢复
-- 🏗️ **双系统提示词** - AI 助手模式支持 Q&A 和文本处理两种提示词
-- 🏗️ **Focus Management** - 悬浮窗隐藏 + 延迟确保文本插入成功
-- 🏗️ **Atomic State Management** - 无锁并发控制，使用原子标志防止竞态条件
-
-**Bug 修复：**
-- 🐛 修复悬浮窗卡死问题
-- 🐛 修复停止服务时的异常状态检测
-- 🐛 修复松手模式下文本无法插入的问题（焦点管理）
-- 🐛 修复快捷键卡键问题（Ghost Key Detection）
-- 🐛 修复自动更新创建多实例问题（删除 MSI 支持）
-- 🐛 修复配置迁移兼容性问题
-
----
-
-## 📈 路线图
-
-### 计划中的功能
-
-- [ ] 支持更多 ASR 引擎（Azure、Google、AWS）
-- [ ] 支持更多 LLM 模型（Claude、Gemini、DeepSeek）
-- [ ] 语音唤醒功能（无需按键，语音激活）
-- [ ] 多语言支持（界面本地化）
-- [ ] 云端配置同步
-- [ ] 插件系统（支持第三方扩展）
-- [ ] 语音命令宏（录制和回放常用命令序列）
-- [ ] 实时翻译模式（边说边翻译）
-
----
-
-## 🙏 致谢
-
-感谢以下开源项目和服务：
-
-- [Tauri](https://tauri.app/) - 强大的桌面应用框架
-- [Alibaba Cloud](https://www.aliyun.com/) - 提供 Qwen ASR 服务
-- [ByteDance](https://www.volcengine.com/) - 提供 Doubao ASR 服务
-- [SiliconFlow](https://siliconflow.cn/) - 提供 SenseVoice ASR 服务
-- [ZhipuAI](https://www.zhipuai.cn/) - 提供 GLM-4-Flash LLM 服务
-- [Rust Audio](https://github.com/RustAudio) - 音频处理库
-- 所有贡献者和用户的支持
-
----
-
-## 📄 许可证
-
-MIT License
-
----
-
-## 💬 社区与支持
-
-- **问题反馈**：[GitHub Issues](https://github.com/yyyzl/push-2-talk/issues)
-- **功能建议**：[GitHub Discussions](https://github.com/yyyzl/push-2-talk/discussions)
-
----
-
-<div align="center">
-
-**⭐ 如果这个项目对你有帮助，请给它一个 Star！**
-
-Made with ❤️ by PushToTalk Team
-
-</div>
+本项目使用 [MIT License](LICENSE)。

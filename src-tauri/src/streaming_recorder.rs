@@ -30,6 +30,13 @@ pub struct StreamingRecorder {
 }
 
 impl StreamingRecorder {
+    pub fn discard(&mut self) {
+        *self.is_recording.lock().unwrap() = false;
+        self.stream = None;
+        self.chunk_sender = None;
+        self.full_audio_data.lock().unwrap().clear();
+    }
+
     pub fn new() -> Result<Self> {
         Ok(Self {
             device_sample_rate: 48000,
@@ -472,10 +479,33 @@ impl StreamingRecorder {
     /// 检查是否正在录音
     #[allow(dead_code)]
     pub fn is_recording(&self) -> bool {
-        *self.is_recording.lock().unwrap()
+        self.stream.is_some() && *self.is_recording.lock().unwrap()
     }
 }
 
 // 实现 Send 和 Sync traits
 unsafe impl Send for StreamingRecorder {}
 unsafe impl Sync for StreamingRecorder {}
+
+#[cfg(test)]
+mod readiness_tests {
+    #[test]
+    fn incomplete_device_start_is_not_a_recording() {
+        let recorder = super::StreamingRecorder::new().unwrap();
+        *recorder.is_recording.lock().unwrap() = true;
+        assert!(!recorder.is_recording());
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    #[test]
+    fn discard_releases_partial_recording_without_encoding_audio() {
+        let mut recorder = super::StreamingRecorder::new().unwrap();
+        *recorder.is_recording.lock().unwrap() = true;
+        recorder.full_audio_data.lock().unwrap().extend([0.1, 0.2]);
+        recorder.discard();
+        assert!(!*recorder.is_recording.lock().unwrap());
+        assert!(recorder.full_audio_data.lock().unwrap().is_empty());
+    }
+}

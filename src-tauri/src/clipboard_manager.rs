@@ -1,55 +1,51 @@
 // src-tauri/src/clipboard_manager.rs
 //
-// 剪贴板管理模块 - 用于 AI 助手模式
-//
-// 提供选中文本捕获和剪贴板恢复功能
-// 使用 Win32 SendInput API 替代 enigo 实现更低延迟
+// Shared dictation/assistant clipboard transactions; native formats live in platform.
 
 use anyhow::Result;
 use arboard::Clipboard;
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::win32_input;
+use crate::platform::{self, ClipboardSession, InputTarget};
+
+static CLIPBOARD_TRANSACTION: Mutex<()> = Mutex::new(());
 
 /// RAII守卫：自动恢复剪贴板内容
 ///
-/// 当守卫被销毁时，自动将原始剪贴板内容恢复
+/// Restore only while the temporary content still belongs to this transaction.
 pub struct ClipboardGuard {
-    original_content: Option<String>,
-    clipboard: Clipboard,
+    session: ClipboardSession,
+    _transaction: MutexGuard<'static, ()>,
 }
 
 impl ClipboardGuard {
     /// 创建守卫并保存当前剪贴板内容
     pub fn new() -> Result<Self> {
-        let mut clipboard = Clipboard::new()?;
-        let original_content = clipboard.get_text().ok();
-
-        tracing::debug!("ClipboardGuard: 已保存原始剪贴板内容");
-
+        let transaction = CLIPBOARD_TRANSACTION
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("已有剪贴板操作正在执行"))?;
         Ok(Self {
-            original_content,
-            clipboard,
+            session: ClipboardSession::new()?,
+            _transaction: transaction,
         })
+    }
+
+    fn write_text(&mut self, text: &str) -> Result<()> {
+        self.session.write_text(text)
     }
 
     /// 手动恢复剪贴板（消费守卫）
     pub fn restore(mut self) -> Result<()> {
-        if let Some(ref content) = self.original_content {
-            self.clipboard.set_text(content.clone())?;
-            tracing::debug!("ClipboardGuard: 已手动恢复剪贴板");
-        }
-        Ok(())
+        self.session.restore()
     }
 }
 
 impl Drop for ClipboardGuard {
     fn drop(&mut self) {
-        if let Some(ref content) = self.original_content {
-            // 最大努力恢复，忽略错误
-            let _ = self.clipboard.set_text(content.clone());
-            tracing::debug!("ClipboardGuard: 已自动恢复剪贴板（Drop）");
+        if let Err(error) = self.session.restore() {
+            tracing::warn!("ClipboardGuard: 恢复剪贴板失败: {}", error);
         }
     }
 }
@@ -67,28 +63,35 @@ impl Drop for ClipboardGuard {
 /// # 重要
 /// 调用此函数前，请确保用户已松开所有热键（如 Alt+Space）。
 /// 建议在 on_stop 回调中等待 100ms 后再调用，以避免物理按键与模拟按键冲突。
-pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
+pub fn get_selected_text(target: Option<InputTarget>) -> Result<(ClipboardGuard, Option<String>)> {
+    // Recording may outlive a window/tab switch. Restore only the saved target;
+    // a missing or closed target must fail before touching the clipboard.
+    platform::prepare_target(platform::desktop(), target)?;
     // 1. 保存当前剪贴板
-    let guard = ClipboardGuard::new()?;
+    let mut guard = ClipboardGuard::new()?;
 
     // 2. 清空剪贴板（用于检测是否有选中内容）
     let mut clipboard = Clipboard::new()?;
-    clipboard.set_text("")?;
+    guard.write_text("")?;
 
     // 3. 等待剪贴板同步（比 enigo 版本更短）
     thread::sleep(Duration::from_millis(50));
 
     // 4. 防御性释放修饰键
-    win32_input::release_all_modifiers()?;
+    platform::desktop().release_modifiers()?;
     thread::sleep(Duration::from_millis(5));
 
     // 5. 使用 Win32 SendInput 模拟 Ctrl+C
-    win32_input::send_ctrl_c()?;
+    platform::verify_insertion_target(target)?;
+    guard.session.ensure_owned()?;
+    platform::desktop().copy_selection()?;
 
     // 6. 等待剪贴板更新（带重试机制）
     let selected_text = wait_for_clipboard_update(&mut clipboard, 3, 80)?;
 
     if let Some(ref text) = selected_text {
+        platform::verify_insertion_target(target)?;
+        guard.session.claim_copy_result(text)?;
         tracing::info!(
             "clipboard_manager: 捕获到选中文本 (长度: {} 字符)",
             text.len()
@@ -168,7 +171,10 @@ fn wait_for_clipboard_update(
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
     let mut clipboard = Clipboard::new()?;
     clipboard.set_text(text.to_string())?;
-    tracing::debug!("clipboard_manager: 已复制到剪贴板 (长度: {} 字符)", text.len());
+    tracing::debug!(
+        "clipboard_manager: 已复制到剪贴板 (长度: {} 字符)",
+        text.len()
+    );
     Ok(())
 }
 
@@ -186,11 +192,14 @@ pub fn insert_text_with_context(
     text: &str,
     has_selection: bool,
     clipboard_guard: Option<ClipboardGuard>,
+    target: Option<InputTarget>,
 ) -> Result<()> {
-    let mut clipboard = Clipboard::new()?;
-
+    let mut clipboard_guard = match clipboard_guard {
+        Some(guard) => guard,
+        None => ClipboardGuard::new()?,
+    };
     // 1. 将文本写入剪贴板
-    clipboard.set_text(text)?;
+    clipboard_guard.write_text(text)?;
     thread::sleep(Duration::from_millis(50));
 
     tracing::info!(
@@ -200,16 +209,16 @@ pub fn insert_text_with_context(
     );
 
     // 2. 使用 Win32 SendInput 模拟 Ctrl+V 粘贴
-    win32_input::send_ctrl_v()?;
+    platform::verify_insertion_target(target)?;
+    clipboard_guard.session.ensure_owned()?;
+    platform::desktop().paste()?;
 
     // 3. 等待粘贴完成
     thread::sleep(Duration::from_millis(150));
 
     // 4. 恢复原始剪贴板
-    if let Some(guard) = clipboard_guard {
-        guard.restore()?;
-        tracing::debug!("clipboard_manager: 已恢复原始剪贴板");
-    }
+    clipboard_guard.restore()?;
+    tracing::debug!("clipboard_manager: 已恢复原始剪贴板");
 
     tracing::info!("clipboard_manager: 文本插入成功");
     Ok(())
@@ -220,16 +229,18 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "Requires an interactive desktop and mutates the system clipboard"]
     fn test_clipboard_guard_creation() {
         let guard = ClipboardGuard::new();
         assert!(guard.is_ok());
     }
 
     #[test]
+    #[ignore = "Requires an interactive desktop and mutates the system clipboard"]
     fn test_get_selected_text() {
         // 注意：此测试需要手动运行，因为需要实际的剪贴板和键盘模拟
         // 仅检查函数签名是否正确
-        let result = get_selected_text();
+        let result = get_selected_text(platform::desktop().capture_target());
         // 在CI环境可能失败，所以只检查类型
         match result {
             Ok(_) | Err(_) => {}
@@ -237,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires an interactive desktop and mutates the system clipboard"]
     fn test_copy_to_clipboard_writes_text() {
         // copy_to_clipboard 应将文本写入系统剪贴板
         let text = "test_copy_to_clipboard_marker";
@@ -250,6 +262,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires an interactive desktop and mutates the system clipboard"]
     fn test_copy_to_clipboard_empty_string() {
         // 空字符串也应成功
         let result = copy_to_clipboard("");

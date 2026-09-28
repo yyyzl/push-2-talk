@@ -1,3 +1,4 @@
+import { selectedQwenModel } from "../../utils/qwenModels";
 import type { Dispatch, SetStateAction } from "react";
 import { ArrowRight, Plus, HelpCircle, Sparkles } from "lucide-react";
 import type {
@@ -9,9 +10,11 @@ import type {
   LlmConfig,
 } from "../../types";
 import type { AppPage } from "../../pages/types";
-import { ASR_PROVIDERS } from "../../constants";
+import {
+  ASR_PROVIDERS,
+} from "../../constants";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../../utils";
-import { ConfigSelect, ConfigToggle, Tooltip } from "../common";
+import { ConfigSelect, ConfigToggle, Select, Tooltip } from "../common";
 import { useConfigSave } from "../../contexts/ConfigSaveContext";
 
 // 首页词库最多显示的词条数（约两行）
@@ -71,6 +74,7 @@ export function RightPanel({
   const externalOnlySyncStatus = isExternalSyncing
     ? ("syncing" as const)
     : undefined;
+  const qwenModel = selectedQwenModel(asrConfig, useRealtime ? "realtime" : "http");
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
@@ -82,6 +86,7 @@ export function RightPanel({
           </label>
         </div>
         <ConfigSelect
+          aria-label="语音识别引擎"
           value={asrConfig.selection.active_provider}
           onChange={(newProvider) => {
             setAsrConfig((prev) => ({
@@ -102,7 +107,7 @@ export function RightPanel({
           options={[
             {
               value: "qwen" as AsrProvider,
-              label: `${ASR_PROVIDERS.qwen.name} · ${ASR_PROVIDERS.qwen.model}`,
+              label: `${ASR_PROVIDERS.qwen.name} · ${qwenModel}`,
             },
             {
               value: "doubao" as AsrProvider,
@@ -111,6 +116,10 @@ export function RightPanel({
             {
               value: "doubao_ime" as AsrProvider,
               label: `${ASR_PROVIDERS.doubao_ime.name} · ${ASR_PROVIDERS.doubao_ime.model}`,
+            },
+            {
+              value: "siliconflow" as AsrProvider,
+              label: `${ASR_PROVIDERS.siliconflow.name} · ${ASR_PROVIDERS.siliconflow.model}`,
             },
           ]}
         />
@@ -165,21 +174,10 @@ export function RightPanel({
               variant="orange"
             />
           </div>
-          <select
-            value={llmConfig.active_preset_id}
-            onChange={(e) => {
-              const id = e.target.value;
-              setLlmConfig((prev) => ({ ...prev, active_preset_id: id }));
-            }}
+          <Select aria-label="语句润色预设" value={llmConfig.active_preset_id}
+            onChange={id => setLlmConfig(prev => ({ ...prev, active_preset_id: id }))}
             disabled={!enablePostProcess || isRunning}
-            className="w-full text-[10px] font-bold text-stone-500 bg-[var(--paper)] rounded-lg px-2 py-2 outline-none border border-[var(--stone)] disabled:opacity-50"
-          >
-            {llmConfig.presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+            options={llmConfig.presets.map(preset => ({ value: preset.id, label: preset.name }))} />
           {/* 虚线分割线 */}
           <div className="my-3 border-t border-dashed border-stone-200" />
           <div className="flex items-center justify-between">
@@ -226,6 +224,11 @@ export function RightPanel({
                 </div>
               </div>
             </div>
+          </div>
+        ) : asrConfig.selection.active_provider === "siliconflow" ? (
+          <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm">
+            <div className="text-xs font-bold text-stone-700">SenseVoice 录音识别</div>
+            <div className="mt-1 text-xs text-stone-500">松开快捷键后上传录音，不使用流式接口。</div>
           </div>
         ) : (
           <div className="bg-white border border-[var(--stone)] rounded-2xl p-4 shadow-sm flex items-center justify-between">

@@ -5,39 +5,11 @@
 // - 转录上下文 (TranscriptionContext)
 // - 处理结果 (PipelineResult)
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::tnl::TnlDiagnostics;
 
-/// 转录处理模式
-///
-/// 决定 ASR 结果如何被后续处理
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TranscriptionMode {
-    /// 普通模式：ASR → 可选LLM润色 → 自动插入文本
-    #[default]
-    Normal,
-    /// AI 助手模式：语音指令 → ASR → LLM处理 → 插入结果
-    Assistant,
-}
-
-/// 转录上下文
-///
-/// 用于智能指令模式等需要额外上下文信息的场景
-#[derive(Debug, Clone, Default)]
-pub struct TranscriptionContext {
-    /// 用户选中的文本（仅 AssistantPipeline 使用）
-    #[allow(dead_code)]
-    pub selected_text: Option<String>,
-}
-
-impl TranscriptionContext {
-    /// 创建空上下文
-    pub fn empty() -> Self {
-        Self::default()
-    }
-}
+pub use crate::config::TranscriptionMode;
 
 /// Pipeline 处理结果
 ///

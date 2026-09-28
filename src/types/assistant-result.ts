@@ -26,16 +26,26 @@ export interface ConversationTurn {
   assistant_response: string;
   asr_time_ms: number;
   llm_time_ms: number;
+  search_time_ms?: number | null;
+  tool_calls?: AssistantToolCall[];
 }
 
 /** 完整会话状态（pull 模式返回值） */
 export interface ConversationStatePayload {
   session_id: string;
   turns: ConversationTurn[];
+  pending_turn?: TurnPendingPayload | null;
+  draft_assistant_response?: string;
+  draft_tool_calls?: AssistantToolCall[];
+  is_processing?: boolean;
+  status?: "idle" | "processing" | "cancelled" | "error" | string;
+  warning_message?: string | null;
+  web_search_enabled?: boolean | null;
 }
 
 /** 追问录音完成后立即发出（前端显示用户消息 + loading） */
 export interface TurnPendingPayload {
+  turn_id?: string;
   user_instruction: string;
   selected_text?: string;
   has_selection: boolean;
@@ -52,6 +62,33 @@ export interface TurnCompletePayload {
 export interface TurnErrorPayload {
   session_id: string;
   error_message: string;
+}
+
+export interface TurnDeltaPayload {
+  session_id: string;
+  turn_id?: string;
+  content_delta: string;
+  draft_assistant_response?: string;
+}
+
+export interface AssistantToolCall {
+  id: string;
+  name: string;
+  query: string;
+  status: "searching" | "success" | "error" | string;
+  results: SearchCitation[];
+  error?: string | null;
+  elapsed_ms: number;
+  round: number;
+}
+
+export interface SearchCitation {
+  index: number;
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+  source?: string | null;
 }
 
 /**
@@ -135,10 +172,30 @@ export function formatConversationForCopy(turns: ConversationTurn[]): string {
 export function formatTimingDisplay(
   asrTimeMs: number,
   llmTimeMs: number,
+  searchTimeMs?: number | null,
 ): string {
+  const searchMs = searchTimeMs ?? 0;
   if (asrTimeMs > 0) {
-    const totalTime = asrTimeMs + llmTimeMs;
-    return `ASR ${formatDuration(asrTimeMs)} · LLM ${formatDuration(llmTimeMs)} · 总计 ${formatDuration(totalTime)}`;
+    const totalTime = asrTimeMs + llmTimeMs + searchMs;
+    const parts = [`ASR ${formatDuration(asrTimeMs)}`];
+    if (searchMs > 0) {
+      parts.push(`搜索 ${formatDuration(searchMs)}`);
+    }
+    parts.push(`LLM ${formatDuration(llmTimeMs)}`);
+    parts.push(`总计 ${formatDuration(totalTime)}`);
+    return parts.join(" · ");
+  }
+  if (searchMs > 0) {
+    return `搜索 ${formatDuration(searchMs)} · LLM ${formatDuration(llmTimeMs)}`;
   }
   return `LLM ${formatDuration(llmTimeMs)}`;
+}
+
+export function findCitationByMarker(
+  citations: SearchCitation[] | undefined | null,
+  index: number,
+  id: string,
+): SearchCitation | null {
+  if (!citations) return null;
+  return citations.find((item) => item.index === index && item.id === id) ?? null;
 }

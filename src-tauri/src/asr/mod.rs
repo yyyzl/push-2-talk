@@ -1,9 +1,11 @@
 pub mod doubao_ime;
 pub mod http;
+pub mod qwen_models;
 mod race_strategy;
 pub mod realtime;
 mod utils;
 
+pub use crate::config::{AsrLanguageMode, QwenAsrProfile};
 pub use doubao_ime::{
     DeviceCredentials as DoubaoImeCredentials, DoubaoImeClient, DoubaoImeClientConfig,
     DoubaoImeRealtimeClient, DoubaoImeRealtimeSession,

@@ -6,18 +6,26 @@
 //
 // 设计原则：Pipeline 不持有锁，所有依赖通过参数传入
 
+use crate::platform::InputTarget;
 use anyhow::Result;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
-use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
-use crate::config::AppConfig;
+use super::types::{PipelineResult, TranscriptionMode};
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
-use crate::text_inserter::TextInserter;
-use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 
-const CANDIDATE_ARBITRATION_TIMEOUT_MS: u64 = 800;
+use crate::text_inserter::TextInserter;
+use crate::tnl::{TnlCandidateDecision, TnlDiagnostics};
+
+fn require_transcript(result: Result<String>) -> Result<String> {
+    let text = result?;
+    anyhow::ensure!(
+        !text.trim().is_empty(),
+        "未识别到语音，请检查麦克风输入后重试"
+    );
+    Ok(text)
+}
 
 /// 普通模式处理管道
 ///
@@ -42,7 +50,7 @@ impl NormalPipeline {
     /// * `text_inserter` - 文本插入器（调用方负责从锁中获取）
     /// * `asr_result` - ASR 转录结果
     /// * `asr_time_ms` - ASR 耗时（毫秒）
-    /// * `_context` - 上下文（普通模式不使用）
+    /// * `settings` - 本轮录音启动时的配置快照
     /// * `target_hwnd` - 目标窗口句柄（用于焦点恢复）
     ///
     /// # Returns
@@ -58,43 +66,24 @@ impl NormalPipeline {
         text_inserter: &mut Option<TextInserter>,
         asr_result: Result<String>,
         asr_time_ms: u64,
-        _context: TranscriptionContext, // 普通模式不使用上下文
-        target_hwnd: Option<isize>,     // 目标窗口句柄（用于焦点恢复）
+        settings: &crate::config::AppConfig,
+        target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果
-        let asr_text = asr_result?;
+        // Empty provider responses must not reach focus restoration, paste, learning or history.
+        let asr_text = require_transcript(asr_result)?;
         tracing::info!(
             "NormalPipeline: 收到 ASR 结果: {} (耗时: {}ms)",
             asr_text,
             asr_time_ms
         );
 
-        // 2. TNL 技术规范化（如果启用）
-        let (text, tnl_changed, tnl_diagnostics) = {
-            // 从配置加载 TNL 开关
-            let tnl_enabled = AppConfig::load()
-                .map(|(c, _)| c.tnl_config.enabled)
-                .unwrap_or(true);
+        let prepared = super::text::prepare(&asr_text, &dictionary, &settings.tnl_config);
+        let text = prepared.text;
+        let text_changed = prepared.changed;
+        let tnl_diagnostics = prepared.diagnostics;
 
-            if tnl_enabled {
-                let engine = TnlEngine::new(dictionary.clone());
-                let tnl_result = engine.normalize(&asr_text);
-                if tnl_result.changed {
-                    tracing::info!(
-                        "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
-                        asr_text,
-                        tnl_result.text,
-                        tnl_result.elapsed_us,
-                        tnl_result.applied.len()
-                    );
-                }
-                (tnl_result.text, tnl_result.changed, tnl_result.diagnostics)
-            } else {
-                (asr_text.clone(), false, None)
-            }
-        };
-
-        // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL 后文本（text）
+        // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL/个性化后的文本（text）
 
         // 3. 可选候选仲裁（绑定词库增强开关，不改变全文润色逻辑）
         let pre_arbitration_text = text.clone();
@@ -106,6 +95,7 @@ impl NormalPipeline {
         )
         .await;
         let candidate_changed = text != pre_arbitration_text;
+        super::text::record_personalization_arbitration_feedback(&tnl_diagnostics);
 
         // 4. 可选 LLM 后处理
         let (final_text, original_text, llm_time_ms) = Self::maybe_polish(
@@ -121,23 +111,27 @@ impl NormalPipeline {
 
         // 5. 插入前隐藏窗口并主动恢复焦点到目标应用
         // 使用新的焦点恢复机制，确保文本插入到正确的窗口
-        super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
+        let focus_ready = super::focus::hide_overlay_and_restore_focus(app, target_hwnd).await;
 
         // 6. 插入文本
-        let inserted = Self::insert_text(text_inserter, &final_text);
+        let inserted = focus_ready && Self::insert_text(text_inserter, &final_text, target_hwnd);
+        if !inserted {
+            let _ = app.emit(
+                "error",
+                "无法自动粘贴到原输入位置，识别结果已保留在历史记录中，请手动复制",
+            );
+        }
 
         // 7. 触发学习观察（如果启用且插入成功）
         if inserted {
             if let Some(hwnd) = target_hwnd {
-                if let Ok((config, _)) = AppConfig::load() {
-                    if config.learning_config.enabled {
-                        start_learning_observation(
-                            app.clone(),
-                            final_text.clone(),
-                            hwnd,
-                            config.learning_config,
-                        );
-                    }
+                if settings.learning_config.enabled {
+                    start_learning_observation(
+                        app.clone(),
+                        final_text.clone(),
+                        hwnd,
+                        settings.learning_config.clone(),
+                    );
                 }
             }
         }
@@ -150,7 +144,7 @@ impl NormalPipeline {
         // - 无 LLM 处理且 TNL 未改变文本 → 不显示双栏（original_text = None）
         let history_original = if original_text.is_some() {
             original_text
-        } else if tnl_changed || candidate_changed {
+        } else if text_changed || candidate_changed {
             Some(asr_text)
         } else {
             None
@@ -202,55 +196,22 @@ impl NormalPipeline {
             return (text, Some(diagnostics), None);
         };
 
-        tracing::info!(
-            "NormalPipeline: 开始 TNL 候选仲裁，候选数: {}",
-            diagnostics.pending_llm_count()
-        );
+        super::text::arbitrate(text, Some(diagnostics), |text, diagnostics| async move {
+            processor.arbitrate_tnl_candidates(&text, diagnostics).await
+        })
+        .await
+    }
 
-        let fallback_diagnostics = diagnostics.clone();
-        let arbitration = tokio::time::timeout(
-            Duration::from_millis(CANDIDATE_ARBITRATION_TIMEOUT_MS),
-            processor.arbitrate_tnl_candidates(&text, diagnostics),
-        )
-        .await;
+    #[cfg(test)]
+    fn apply_personalization_with_store(
+        text: String,
+        store: crate::personalization::CorrectionPairStore,
+    ) -> (String, bool) {
+        let source_text = text.clone();
+        let result = crate::personalization::apply_personalization_with_store(text, store);
+        super::text::log_personalization_result(&source_text, &result.conversion);
 
-        match arbitration {
-            Ok(Ok(result)) => {
-                tracing::info!(
-                    "NormalPipeline: TNL 候选仲裁完成 (耗时: {}ms)",
-                    result.elapsed_ms
-                );
-                (
-                    result.text,
-                    Some(result.diagnostics),
-                    Some(result.elapsed_ms),
-                )
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("NormalPipeline: TNL 候选仲裁失败，保守跳过: {}", e);
-                let mut diagnostics = fallback_diagnostics;
-                diagnostics.mark_pending_skipped(
-                    TnlCandidateDecision::SkippedError,
-                    "arbitration_error",
-                    None,
-                );
-                (text, Some(diagnostics), None)
-            }
-            Err(_) => {
-                tracing::warn!("NormalPipeline: TNL 候选仲裁超时，保守跳过");
-                let mut diagnostics = fallback_diagnostics;
-                diagnostics.mark_pending_skipped(
-                    TnlCandidateDecision::SkippedTimeout,
-                    "arbitration_timeout",
-                    Some(CANDIDATE_ARBITRATION_TIMEOUT_MS),
-                );
-                (
-                    text,
-                    Some(diagnostics),
-                    Some(CANDIDATE_ARBITRATION_TIMEOUT_MS),
-                )
-            }
-        }
+        (result.text, result.changed)
     }
 
     fn sum_llm_time(first: Option<u64>, second: Option<u64>) -> Option<u64> {
@@ -322,9 +283,13 @@ impl NormalPipeline {
     /// 插入文本到当前活动窗口
     ///
     /// 返回是否成功插入
-    fn insert_text(text_inserter: &mut Option<TextInserter>, text: &str) -> bool {
+    fn insert_text(
+        text_inserter: &mut Option<TextInserter>,
+        text: &str,
+        target: Option<InputTarget>,
+    ) -> bool {
         if let Some(ref mut inserter) = text_inserter {
-            match inserter.insert_text(text) {
+            match inserter.insert_text(text, target) {
                 Ok(()) => {
                     tracing::info!("NormalPipeline: 文本插入成功");
                     true
@@ -350,10 +315,109 @@ impl Default for NormalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::personalization::{CorrectionPair, CorrectionPairStore};
+
+    #[test]
+    fn empty_transcript_is_rejected_before_processing_or_insertion() {
+        for text in ["", " \t\n", "\u{3000}"] {
+            let error = require_transcript(Ok(text.to_string())).unwrap_err();
+            assert!(error.to_string().contains("未识别到语音"));
+        }
+    }
+
+    #[test]
+    fn nonempty_transcript_preserves_content_and_spacing() {
+        let text = "  测试语音，123。\n";
+        assert_eq!(require_transcript(Ok(text.to_string())).unwrap(), text);
+    }
+
+    #[test]
+    fn transcript_provider_error_is_preserved() {
+        let error = require_transcript(Err(anyhow::anyhow!("provider unavailable"))).unwrap_err();
+        assert_eq!(error.to_string(), "provider unavailable");
+    }
 
     #[test]
     fn test_pipeline_creation() {
         let _pipeline = NormalPipeline::new();
         // Pipeline 现在是无状态的，只需要能创建即可
+    }
+
+    #[test]
+    fn test_apply_personalization_with_store_changes_known_pair() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        pair.alias_keys.push("kelaode|code".to_string());
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed) = NormalPipeline::apply_personalization_with_store(
+            "我打开 克劳德 code".to_string(),
+            store,
+        );
+
+        assert!(changed);
+        assert_eq!(text, "我打开 Claude Code");
+    }
+
+    #[test]
+    fn test_apply_personalization_with_store_keeps_unrelated_text() {
+        let mut pair = CorrectionPair::new("claude-code", "cloud code", "Claude Code");
+        pair.source = "manual".to_string();
+        pair.confidence = 0.98;
+        let store = CorrectionPairStore::new(vec![pair]);
+
+        let (text, changed) = NormalPipeline::apply_personalization_with_store(
+            "I use cloud storage".to_string(),
+            store,
+        );
+
+        assert!(!changed);
+        assert_eq!(text, "I use cloud storage");
+    }
+
+    #[test]
+    fn test_merge_tnl_diagnostics_keeps_existing_and_personalization_candidates() {
+        let existing = TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "tnl-0".to_string(),
+                original: "Cruiser".to_string(),
+                target: "Cursor".to_string(),
+                start: 0,
+                end: 7,
+                score: 0.72,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::DictionaryPhonetic,
+                evidence: vec!["tnl".to_string()],
+                decision: TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+        let personalization = TnlDiagnostics {
+            candidates: vec![crate::tnl::TnlCandidate {
+                id: "personalization-8-18-0".to_string(),
+                original: "cloud code".to_string(),
+                target: "Claude Code".to_string(),
+                start: 8,
+                end: 18,
+                score: 0.80,
+                risk: crate::tnl::TnlCandidateRisk::Medium,
+                source: crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair,
+                evidence: vec!["pair_id:claude-code".to_string()],
+                decision: TnlCandidateDecision::PendingLlm,
+            }],
+            arbitration: None,
+        };
+
+        let merged =
+            super::super::text::merge_tnl_diagnostics(Some(existing), Some(personalization))
+                .expect("merged diagnostics");
+
+        assert_eq!(merged.candidates.len(), 2);
+        assert_eq!(merged.pending_llm_count(), 2);
+        assert_eq!(
+            merged.candidates[1].source,
+            crate::tnl::TnlCandidateSource::PersonalizationCorrectionPair
+        );
     }
 }

@@ -1,49 +1,7 @@
-# Project-scoped Codex defaults for Trellis workflows.
-# Codex merges this layer after the user-level config when the project
-# is marked as a trusted project. To trust this project, add it under
-# `[projects]` in ~/.codex/config.toml, e.g.:
-#
-#   [projects."/abs/path/to/this/repo"]
-#   trust_level = "trusted"
-#
-# Without trust, the [features] block below is loaded but disabled.
-
-# Keep AGENTS.md as the primary project instruction file.
-project_doc_fallback_filenames = ["AGENTS.md"]
-
-# Codex hooks (`hooks.json` in this directory) only fire when the user
-# has enabled them in their USER-level config: `[features].hooks = true`
-# in ~/.codex/config.toml (Codex 0.129+; legacy name: `codex_hooks = true`,
-# still works but emits a deprecation warning on 0.129+). Project-level
-# config.toml cannot set feature flags; they must be user-level.
-# Codex 0.129+ additionally gates each installed hook behind a one-time
-# `/hooks` TUI review; until the user approves it, the hook stays inactive.
-
-# multi_agent_v2 forces structured subagent orchestration with the
-# `wait` tool — parent must block on terminal status before acting,
-# instead of cancelling / re-spawning. Incompatible with
-# [agents].max_threads (codex will reject the combination).
-# `enabled = true` is required inside the table — the table form does
-# NOT auto-enable the feature without it.
-# - max_concurrent_threads_per_session: bumps default 4 → 6.
-# - min_wait_timeout_ms: 480000 ms = 8 min. Codex default is 10 s, too
-#   short for Trellis subagents that routinely take 2-10 min. Hard
-#   ceiling is 3,600,000 (1 h).
-[features.multi_agent_v2]
-enabled = true
-max_concurrent_threads_per_session = 6
-min_wait_timeout_ms = 480000
-
-# === Local MCP servers (project-scoped) ===
-# TODO(security): CONTEXT7_API_KEY is committed in plaintext. Consider
-# moving these mcp_servers entries to user-level ~/.codex/config.toml
-# and rotating the key.
+# 项目本地 MCP 配置。
 [mcp_servers.context7]
 url = "https://mcp.context7.com/mcp"
 
-[mcp_servers.context7.http_headers]
-CONTEXT7_API_KEY = "ctx7sk-9ecff11a-7a88-4fcf-892a-b77b2d45b064"
-
-[mcp_servers.gitnexus]
-command = "npx"
-args = ["-y", "gitnexus", "mcp"]
+# Read the optional credential from the local environment; never commit its value.
+[mcp_servers.context7.env_http_headers]
+CONTEXT7_API_KEY = "CONTEXT7_API_KEY"

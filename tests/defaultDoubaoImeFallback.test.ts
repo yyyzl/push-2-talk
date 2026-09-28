@@ -7,6 +7,7 @@ import { isAsrConfigValid, normalizeAsrConfigWithFallback } from "../src/utils";
 
 const readSource = (path: string) => readFile(path, "utf8");
 
+
 const createAsrConfig = (
   activeProvider: AsrProvider,
   credentials: Partial<AsrConfig["credentials"]> = {},
@@ -26,6 +27,7 @@ const createAsrConfig = (
     enable_fallback: false,
     fallback_provider: null,
   },
+  qwen_profile: "qwen_audio_3",
   language_mode: "auto",
 });
 
@@ -73,24 +75,6 @@ test("normalizeAsrConfigWithFallback: doubao 缺凭据时应回退到 fallback",
   assert.equal(isAsrConfigValid(invalidDoubaoConfig), false);
   assert.equal(normalized.didFallback, true);
   assert.equal(normalized.config.selection.active_provider, FALLBACK_ASR_PROVIDER);
-});
-
-test("loadConfig 回退持久化应携带完整配置快照", async () => {
-  const source = await readSource("src/hooks/useAppServiceController.ts");
-  const marker = source.indexOf("// 回退后持久化修正后的配置，避免下次启动重复回退");
-
-  assert.ok(marker >= 0, "未找到初始化回退持久化代码块");
-
-  const block = source.slice(marker, marker + 1600);
-
-  assert.match(block, /saveConfigThroughGateway\(\{/);
-  assert.match(block, /llmConfig:/);
-  assert.match(block, /assistantConfig:/);
-  assert.match(block, /dualHotkeyConfig:/);
-  assert.match(block, /learningConfig:/);
-  assert.match(block, /dictionaryEntries:/);
-  assert.match(block, /builtinDictionaryDomains:/);
-  assert.match(block, /theme:/);
 });
 
 test("手动启停回退提示应走通知通道而非 error 通道", async () => {

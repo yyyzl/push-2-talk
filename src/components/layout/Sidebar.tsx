@@ -24,6 +24,7 @@ export type SidebarProps = {
   onNavigate: (page: AppPage) => void;
 
   updateStatus?: UpdateStatus;
+  integratedToolbar?: boolean;
 };
 
 export function Sidebar({
@@ -32,6 +33,7 @@ export function Sidebar({
   activePage,
   onNavigate,
   updateStatus,
+  integratedToolbar = false,
 }: SidebarProps) {
   const containerWidth = collapsed ? "w-[72px]" : "w-60";
 
@@ -58,7 +60,8 @@ export function Sidebar({
   return (
     <aside
       className={[
-        "shrink-0 h-screen bg-[var(--panel)] border-r border-[var(--stone)]",
+        "shrink-0 h-full min-h-0 bg-[var(--panel)]",
+        integratedToolbar ? "" : "border-r border-[var(--stone)]",
         "flex flex-col p-4 z-30 transition-[width] duration-200 ease-in-out font-sans",
         containerWidth,
       ].join(" ")}
@@ -75,10 +78,12 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="flex-1 space-y-1">
+      <nav className="flex-1 min-h-0 overflow-y-auto custom-scroll space-y-1">
         <button
           onClick={() => onNavigate("dashboard")}
           className={navItem("dashboard")}
+          aria-label="主页看板"
+          title="主页看板"
         >
           <LayoutDashboard className="shrink-0 w-5 h-5" />
           <span className={navTextClass}>主页看板</span>
@@ -203,7 +208,7 @@ export function Sidebar({
         </button>
       </nav>
 
-      <div className="pt-3 border-t border-[var(--stone)]">
+      {!integratedToolbar && <div className="pt-3 border-t border-[var(--stone)]">
         <button
           onClick={onToggleCollapsed}
           className={[
@@ -216,7 +221,7 @@ export function Sidebar({
           {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
           <span className={navTextClass}>{collapsed ? "" : "收起侧栏"}</span>
         </button>
-      </div>
+      </div>}
     </aside>
   );
 }

@@ -5,10 +5,9 @@
 // - Assistant: AI 助手模式（双系统提示词，上下文感知）
 // - 未来可扩展更多模式...
 
-mod assistant;
 pub mod focus;
 mod normal;
 mod types;
 
 pub use normal::NormalPipeline;
-pub use types::*;
+pub(crate) mod text;
