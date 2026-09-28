@@ -1,4 +1,5 @@
 // src/App.tsx
+import { createConfigInitialization } from "./utils/configInitialization";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -197,7 +198,7 @@ function App() {
   const [currentMode, setCurrentMode] = useState<string | null>(null); // 当前转录模式: "normal" | "smartcommand"
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const hasCheckedUpdateOnStartup = useRef(false);
-  const hasLoadedConfigRef = useRef(false);
+  const configInitializationRef = useRef(createConfigInitialization());
   const autoSaveTimerRef = useRef<number | null>(null);
   const configSyncWindowControllerRef = useRef(createConfigSyncWindowController());
   const [syncWindowSnapshot, setSyncWindowSnapshot] = useState<ConfigSyncWindowSnapshot>(
@@ -560,26 +561,26 @@ function App() {
     }
   }, [transcript, originalTranscript]);
   useEffect(() => {
-    if (hasLoadedConfigRef.current) return;
-    hasLoadedConfigRef.current = true;
+    if (configInitializationRef.current.isStarted()) return;
 
     const init = async () => {
       try {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        const syncToken = configSyncWindowControllerRef.current.begin("initial_load");
-        updateSyncWindowSnapshot();
-        try {
-          await loadConfig();
-        } finally {
-          releaseConfigSyncWindow(syncToken);
-        }
+        await configInitializationRef.current.run(async () => {
+          const syncToken = configSyncWindowControllerRef.current.begin("initial_load");
+          updateSyncWindowSnapshot();
+          try {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            await loadConfig();
+          } finally {
+            releaseConfigSyncWindow(syncToken);
+          }
+        });
         // 启动时自动检查更新（只执行一次）
         if (!hasCheckedUpdateOnStartup.current) {
           hasCheckedUpdateOnStartup.current = true;
           await checkForUpdates({ openModal: true, silentOnNoUpdate: true, silentOnError: true });
         }
       } catch (err) {
-        hasLoadedConfigRef.current = false;
         console.error("初始化失败:", err);
         setError("应用初始化失败: " + String(err));
       }
@@ -626,7 +627,7 @@ function App() {
   const lastAppliedConfigHashRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!hasLoadedConfigRef.current) return;
+    if (!configInitializationRef.current.isReady()) return;
     if (status !== "running") return;
 
     const configHash = JSON.stringify({
@@ -682,13 +683,13 @@ function App() {
       "[App.tsx] 自动保存 useEffect 触发, theme=",
       theme,
       "hasLoaded=",
-      hasLoadedConfigRef.current,
+      configInitializationRef.current.isReady(),
       "syncSuppressed=",
       configSyncWindowControllerRef.current.isSuppressed(),
       "syncSource=",
       configSyncWindowControllerRef.current.currentSource(),
     );
-    if (!hasLoadedConfigRef.current) return;
+    if (!configInitializationRef.current.isReady()) return;
     if (status === "recording" || status === "transcribing") return;
 
     if (configSyncWindowControllerRef.current.isSuppressed()) {
@@ -706,6 +707,8 @@ function App() {
     }
 
     autoSaveTimerRef.current = window.setTimeout(() => {
+      if (!configInitializationRef.current.isReady()) return;
+      if (configSyncWindowControllerRef.current.isSuppressed()) return;
       if (statusRef.current === "recording" || statusRef.current === "transcribing") return;
       console.log("[App.tsx] debounce 到期，执行 handleSaveConfig");
       if (syncTimeoutRef.current) {

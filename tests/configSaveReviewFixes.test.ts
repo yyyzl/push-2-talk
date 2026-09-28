@@ -26,10 +26,10 @@ test("M1: learningConfig 应在 resolveSaveConfig 中状态兜底", async () => 
   assert.match(source, /learningConfig:\s*finalLearningConfig/);
 });
 
-test("P0: App 初始化 effect 应有 hasLoadedConfigRef 守卫避免重复初始化", async () => {
+test("P0: App 初始化 effect 应区分加载中与加载完成，避免重复初始化", async () => {
   const source = await readSource("src/App.tsx");
 
-  assert.match(source, /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(hasLoadedConfigRef\.current\)\s*return;/);
+  assert.match(source, /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(configInitializationRef\.current\.isStarted\(\)\)\s*return;/);
 });
 
 test("P1-D: 迁移保存应显式传入 learningConfig，避免默认值覆盖", async () => {
