@@ -213,7 +213,16 @@ test("公共选择器保留未知值，支持空值继承、搜索及禁用项�
   await page.keyboard.press("Enter");
   assert.equal(await page.getByLabel("当前值").innerText(), '"model-0"');
   await select.click();
-  await page.mouse.click(700, 550);
-  await popup.waitFor({ state: "hidden" });
+  // Radix 在 effect 中延迟注册外部点击监听；先等弹层定位和焦点就绪。
+  // 使用带可操作性等待的点击，避免裸 mouse.click 抢在监听安装前到达。
+  await popup.waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.activeElement?.textContent === "Model 0");
+  const outside = { x: 700, y: 550 };
+  const openedBox = await popup.boundingBox();
+  assert.ok(outside.x > openedBox.x + openedBox.width, "关闭测试必须点击弹层外部");
+  await page.locator("html").click({ position: outside });
+  await popup.waitFor({ state: "hidden", timeout: 2000 });
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "模型选择");
+  assert.equal(await page.getByLabel("当前值").innerText(), '"model-0"', "外部关闭不能改变选择");
   assert.equal(await page.getByRole("combobox", { name: "空列表", exact: true }).isDisabled(), true);
 });
