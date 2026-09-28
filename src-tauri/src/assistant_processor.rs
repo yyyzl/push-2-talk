@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::application::assistant::{ConversationTurn, PromptMode};
 use crate::config::{AssistantConfig, LlmFeatureConfig, SearchConfig, SharedLlmConfig};
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::openai_client::{
@@ -18,7 +19,6 @@ use crate::openai_client::{
 };
 use crate::search::{AssistantToolCall, SearchRegistry};
 use crate::tnl::{TnlCandidateArbitrationResult, TnlDiagnostics};
-use crate::{ConversationTurn, PromptMode};
 
 /// AI 助手处理器
 ///
@@ -127,63 +127,6 @@ impl AssistantProcessor {
             PromptMode::QA => self.qa_options.clone(),
             PromptMode::TextProcessing => self.text_processing_options.clone(),
         }
-    }
-
-    /// 处理用户指令（无上下文 - 问答模式）
-    ///
-    /// # Arguments
-    /// * `user_input` - 用户的语音转写文本（问题/指令）
-    ///
-    /// # Returns
-    /// * LLM 的回答
-    pub async fn process(&self, user_input: &str) -> Result<String> {
-        if user_input.trim().is_empty() {
-            return Ok(String::new());
-        }
-
-        tracing::info!("AssistantProcessor: 问答模式处理指令: {}", user_input);
-
-        self.qa_client
-            .chat_simple(&self.qa_system_prompt, user_input, self.qa_options.clone())
-            .await
-    }
-
-    /// 带上下文的指令处理（文本处理模式）
-    ///
-    /// # Arguments
-    /// * `user_instruction` - 用户的语音指令
-    /// * `selected_text` - 选中的文本
-    ///
-    /// # Returns
-    /// * LLM 处理后的结果
-    pub async fn process_with_context(
-        &self,
-        user_instruction: &str,
-        selected_text: &str,
-    ) -> Result<String> {
-        if user_instruction.trim().is_empty() {
-            return Ok(String::new());
-        }
-
-        tracing::info!(
-            "AssistantProcessor: 文本处理模式 (指令: {}, 上下文长度: {} 字符)",
-            user_instruction,
-            selected_text.len()
-        );
-
-        // 构建包含上下文的用户消息
-        let user_message = format!(
-            "【选中的文本】\n{}\n\n【用户指令】\n{}",
-            selected_text, user_instruction
-        );
-
-        self.text_processing_client
-            .chat_simple(
-                &self.text_processing_system_prompt,
-                &user_message,
-                self.text_processing_options.clone(),
-            )
-            .await
     }
 
     /// 对 AI 助手语音指令中的 TNL/个性化中置信候选执行轻量 LLM 仲裁。
@@ -998,13 +941,13 @@ fn remap_citations_in_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::assistant::ConversationTurn;
     use crate::config::{
         LlmFeatureConfig, SearchConfig, SearchProviderConfig, SearchProviderType, SharedLlmConfig,
         DEFAULT_ASSISTANT_QA_PROMPT, DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT,
     };
     use crate::openai_client::Role;
     use crate::search::{AssistantToolCall, SearchResultItem};
-    use crate::ConversationTurn;
 
     fn create_test_config() -> AssistantConfig {
         AssistantConfig {

@@ -1,6 +1,7 @@
 use crate::{clipboard_manager, platform::InputTarget};
 use anyhow::Result;
 
+#[derive(Clone, Copy)]
 pub struct TextInserter;
 
 impl TextInserter {

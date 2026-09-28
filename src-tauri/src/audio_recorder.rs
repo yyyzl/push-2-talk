@@ -21,6 +21,12 @@ pub struct AudioRecorder {
 }
 
 impl AudioRecorder {
+    pub fn discard(&mut self) {
+        *self.is_recording.lock().unwrap() = false;
+        self.stream = None;
+        self.audio_data.lock().unwrap().clear();
+    }
+
     pub fn new() -> Result<Self> {
         Ok(Self {
             device_sample_rate: 48000, // 默认值，会在 start_recording 时更新
@@ -366,5 +372,18 @@ mod readiness_tests {
         let recorder = super::AudioRecorder::new().unwrap();
         *recorder.is_recording.lock().unwrap() = true;
         assert!(!recorder.is_recording());
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    #[test]
+    fn discard_releases_partial_recording_without_encoding_audio() {
+        let mut recorder = super::AudioRecorder::new().unwrap();
+        *recorder.is_recording.lock().unwrap() = true;
+        recorder.audio_data.lock().unwrap().extend([0.1, 0.2]);
+        recorder.discard();
+        assert!(!*recorder.is_recording.lock().unwrap());
+        assert!(recorder.audio_data.lock().unwrap().is_empty());
     }
 }

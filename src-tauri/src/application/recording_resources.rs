@@ -16,6 +16,7 @@ use std::{
 
 #[derive(Clone, Default)]
 pub(crate) struct RecordingResources {
+    pub settings: Arc<Mutex<Option<crate::config::AppConfig>>>,
     pub audio_recorder: Arc<Mutex<Option<AudioRecorder>>>,
     pub streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
     pub active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
@@ -71,12 +72,13 @@ impl RecordingResources {
     pub async fn cleanup(&self) {
         // Stop producers first, including partially initialized microphone streams.
         if let Some(recorder) = self.streaming_recorder.lock().unwrap().as_mut() {
-            let _ = recorder.stop_streaming();
+            recorder.discard();
         }
         if let Some(recorder) = self.audio_recorder.lock().unwrap().as_mut() {
-            let _ = recorder.stop_recording_to_memory();
+            recorder.discard();
         }
         self.restore_audio();
+        self.settings.lock().unwrap().take();
         let sender = self.audio_sender_handle.lock().unwrap().take();
         if let Some(sender) = sender {
             sender.abort();
@@ -108,5 +110,48 @@ impl RecordingResources {
         self.is_recording_locked.store(false, Ordering::SeqCst);
         self.current_trigger_mode.lock().unwrap().take();
         self.recording_start_instant.lock().unwrap().take();
+    }
+}
+
+pub(crate) fn join_audio_sender(
+    task: tokio::task::JoinHandle<()>,
+) -> impl std::future::Future<Output = ()> {
+    // Construct the guard before polling, so even a never-polled drain owns cancellation.
+    struct AbortOnDrop(tokio::task::AbortHandle);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let abort = AbortOnDrop(task.abort_handle());
+    async move {
+        let _guard = abort;
+        let _ = task.await;
+    }
+}
+
+#[cfg(test)]
+mod sender_tests {
+    #[tokio::test]
+    async fn cancelling_a_drain_also_cancels_the_sender_it_owns() {
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let (late, result) = tokio::sync::oneshot::channel();
+        let sender = tokio::spawn(async {
+            started.send(()).unwrap();
+            let _ = wait.await;
+            let _ = late.send(());
+        });
+        let drain = tokio::spawn(super::join_audio_sender(sender));
+        ready.await.unwrap();
+        drain.abort();
+        let _ = drain.await;
+        let _ = release.send(());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), result)
+                .await
+                .unwrap()
+                .is_err()
+        );
     }
 }

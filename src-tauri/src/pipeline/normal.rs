@@ -8,22 +8,15 @@
 
 use crate::platform::InputTarget;
 use anyhow::Result;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
-use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
+use super::types::{PipelineResult, TranscriptionMode};
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
-use crate::personalization::{
-    apply_default_personalization_with_config_and_spans,
-    personalization_candidates_to_tnl_diagnostics,
-    record_personalization_arbitration_feedback_from_tnl, write_runtime_diagnostic,
-    ConversionResult, PersonalizationEngineConfig,
-};
-use crate::text_inserter::TextInserter;
-use crate::tnl::{TnlCandidateDecision, TnlDiagnostics, TnlEngine};
 
-const CANDIDATE_ARBITRATION_TIMEOUT_MS: u64 = 800;
+use crate::text_inserter::TextInserter;
+use crate::tnl::{TnlCandidateDecision, TnlDiagnostics};
 
 fn require_transcript(result: Result<String>) -> Result<String> {
     let text = result?;
@@ -57,7 +50,7 @@ impl NormalPipeline {
     /// * `text_inserter` - 文本插入器（调用方负责从锁中获取）
     /// * `asr_result` - ASR 转录结果
     /// * `asr_time_ms` - ASR 耗时（毫秒）
-    /// * `_context` - 上下文（普通模式不使用）
+    /// * `settings` - 本轮录音启动时的配置快照
     /// * `target_hwnd` - 目标窗口句柄（用于焦点恢复）
     ///
     /// # Returns
@@ -73,7 +66,7 @@ impl NormalPipeline {
         text_inserter: &mut Option<TextInserter>,
         asr_result: Result<String>,
         asr_time_ms: u64,
-        _context: TranscriptionContext,   // 普通模式不使用上下文
+        settings: &crate::config::AppConfig,
         target_hwnd: Option<InputTarget>, // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果
@@ -85,46 +78,10 @@ impl NormalPipeline {
             asr_time_ms
         );
 
-        // 2. TNL 技术规范化（如果启用）
-        let tnl_config = crate::application::configuration::load_persisted_config()
-            .map(|c| c.tnl_config)
-            .unwrap_or_default();
-        let tnl_enabled = tnl_config.enabled;
-        let (text, tnl_changed, tnl_diagnostics, technical_spans) = if tnl_enabled {
-            let engine =
-                TnlEngine::new_with_disfluency_mode(dictionary.clone(), tnl_config.disfluency_mode);
-            let tnl_result = engine.normalize(&asr_text);
-            if tnl_result.changed {
-                tracing::info!(
-                    "NormalPipeline: TNL 规范化: {} → {} (耗时: {}us, 替换: {})",
-                    asr_text,
-                    tnl_result.text,
-                    tnl_result.elapsed_us,
-                    tnl_result.applied.len()
-                );
-            }
-            (
-                tnl_result.text,
-                tnl_result.changed,
-                tnl_result.diagnostics,
-                tnl_result.technical_spans,
-            )
-        } else {
-            (asr_text.clone(), false, None, Vec::new())
-        };
-
-        // 2.5. 本地个性化二次解码（MVP：仅当 correction_pairs.json 存在时启用）
-        let (text, personalization_changed, personalization_diagnostics) = if tnl_enabled {
-            Self::maybe_apply_personalization(
-                text,
-                PersonalizationEngineConfig::from_tnl_config(&tnl_config),
-                &technical_spans,
-            )
-        } else {
-            (text, false, None)
-        };
-        let tnl_diagnostics =
-            Self::merge_tnl_diagnostics(tnl_diagnostics, personalization_diagnostics);
+        let prepared = super::text::prepare(&asr_text, &dictionary, &settings.tnl_config);
+        let text = prepared.text;
+        let text_changed = prepared.changed;
+        let tnl_diagnostics = prepared.diagnostics;
 
         // 注意：历史记录存储 ASR 原文（asr_text），LLM 处理使用 TNL/个性化后的文本（text）
 
@@ -138,7 +95,7 @@ impl NormalPipeline {
         )
         .await;
         let candidate_changed = text != pre_arbitration_text;
-        Self::record_personalization_arbitration_feedback(&tnl_diagnostics);
+        super::text::record_personalization_arbitration_feedback(&tnl_diagnostics);
 
         // 4. 可选 LLM 后处理
         let (final_text, original_text, llm_time_ms) = Self::maybe_polish(
@@ -168,15 +125,13 @@ impl NormalPipeline {
         // 7. 触发学习观察（如果启用且插入成功）
         if inserted {
             if let Some(hwnd) = target_hwnd {
-                if let Ok(config) = crate::application::configuration::load_persisted_config() {
-                    if config.learning_config.enabled {
-                        start_learning_observation(
-                            app.clone(),
-                            final_text.clone(),
-                            hwnd,
-                            config.learning_config,
-                        );
-                    }
+                if settings.learning_config.enabled {
+                    start_learning_observation(
+                        app.clone(),
+                        final_text.clone(),
+                        hwnd,
+                        settings.learning_config.clone(),
+                    );
                 }
             }
         }
@@ -189,7 +144,7 @@ impl NormalPipeline {
         // - 无 LLM 处理且 TNL 未改变文本 → 不显示双栏（original_text = None）
         let history_original = if original_text.is_some() {
             original_text
-        } else if tnl_changed || personalization_changed || candidate_changed {
+        } else if text_changed || candidate_changed {
             Some(asr_text)
         } else {
             None
@@ -241,128 +196,10 @@ impl NormalPipeline {
             return (text, Some(diagnostics), None);
         };
 
-        tracing::info!(
-            "NormalPipeline: 开始 TNL 候选仲裁，候选数: {}",
-            diagnostics.pending_llm_count()
-        );
-
-        let fallback_diagnostics = diagnostics.clone();
-        let arbitration = tokio::time::timeout(
-            Duration::from_millis(CANDIDATE_ARBITRATION_TIMEOUT_MS),
-            processor.arbitrate_tnl_candidates(&text, diagnostics),
-        )
-        .await;
-
-        match arbitration {
-            Ok(Ok(result)) => {
-                tracing::info!(
-                    "NormalPipeline: TNL 候选仲裁完成 (耗时: {}ms)",
-                    result.elapsed_ms
-                );
-                (
-                    result.text,
-                    Some(result.diagnostics),
-                    Some(result.elapsed_ms),
-                )
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("NormalPipeline: TNL 候选仲裁失败，保守跳过: {}", e);
-                let mut diagnostics = fallback_diagnostics;
-                diagnostics.mark_pending_skipped(
-                    TnlCandidateDecision::SkippedError,
-                    "arbitration_error",
-                    None,
-                );
-                (text, Some(diagnostics), None)
-            }
-            Err(_) => {
-                tracing::warn!("NormalPipeline: TNL 候选仲裁超时，保守跳过");
-                let mut diagnostics = fallback_diagnostics;
-                diagnostics.mark_pending_skipped(
-                    TnlCandidateDecision::SkippedTimeout,
-                    "arbitration_timeout",
-                    Some(CANDIDATE_ARBITRATION_TIMEOUT_MS),
-                );
-                (
-                    text,
-                    Some(diagnostics),
-                    Some(CANDIDATE_ARBITRATION_TIMEOUT_MS),
-                )
-            }
-        }
-    }
-
-    fn record_personalization_arbitration_feedback(diagnostics: &Option<TnlDiagnostics>) {
-        let Some(diagnostics) = diagnostics else {
-            return;
-        };
-
-        match record_personalization_arbitration_feedback_from_tnl(diagnostics) {
-            Ok(updated_count) if updated_count > 0 => {
-                tracing::info!(
-                    "NormalPipeline: 个性化 LLM 仲裁反馈已写入，更新纠错对: {}",
-                    updated_count
-                );
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!("NormalPipeline: 写入个性化 LLM 仲裁反馈失败，已忽略: {}", e);
-            }
-        }
-    }
-
-    fn merge_tnl_diagnostics(
-        existing: Option<TnlDiagnostics>,
-        personalization: Option<TnlDiagnostics>,
-    ) -> Option<TnlDiagnostics> {
-        match (existing, personalization) {
-            (None, None) => None,
-            (Some(diagnostics), None) | (None, Some(diagnostics)) => Some(diagnostics),
-            (Some(mut existing), Some(personalization)) => {
-                existing.candidates.extend(personalization.candidates);
-                if existing.arbitration.is_none() {
-                    existing.arbitration = personalization.arbitration;
-                }
-                Some(existing)
-            }
-        }
-    }
-
-    fn maybe_apply_personalization(
-        text: String,
-        config: PersonalizationEngineConfig,
-        technical_spans: &[crate::tnl::Span],
-    ) -> (String, bool, Option<TnlDiagnostics>) {
-        let source_text = text.clone();
-        let result = match apply_default_personalization_with_config_and_spans(
-            text,
-            config,
-            technical_spans,
-        ) {
-            Ok(Some(result)) => result,
-            Ok(None) => return (source_text, false, None),
-            Err(e) => {
-                tracing::warn!("NormalPipeline: 加载个性化纠错对失败，保守跳过: {}", e);
-                return (source_text, false, None);
-            }
-        };
-
-        if let Err(e) = write_runtime_diagnostic(&source_text, &result) {
-            tracing::warn!("NormalPipeline: 写入个性化诊断失败，已忽略: {}", e);
-        }
-        Self::log_personalization_result(&source_text, &result.conversion);
-
-        let diagnostics = personalization_candidates_to_tnl_diagnostics(&result.conversion);
-        if let Some(diagnostics) = &diagnostics {
-            if diagnostics.has_pending_llm() {
-                tracing::info!(
-                    "NormalPipeline: 个性化候选进入 LLM 仲裁，候选数: {}",
-                    diagnostics.pending_llm_count()
-                );
-            }
-        }
-
-        (result.text, result.changed, diagnostics)
+        super::text::arbitrate(text, Some(diagnostics), |text, diagnostics| async move {
+            processor.arbitrate_tnl_candidates(&text, diagnostics).await
+        })
+        .await
     }
 
     #[cfg(test)]
@@ -372,21 +209,9 @@ impl NormalPipeline {
     ) -> (String, bool) {
         let source_text = text.clone();
         let result = crate::personalization::apply_personalization_with_store(text, store);
-        Self::log_personalization_result(&source_text, &result.conversion);
+        super::text::log_personalization_result(&source_text, &result.conversion);
 
         (result.text, result.changed)
-    }
-
-    fn log_personalization_result(source_text: &str, result: &ConversionResult) {
-        if result.changed {
-            tracing::info!(
-                "NormalPipeline: 个性化二次解码: {} → {} (应用: {}, 候选: {})",
-                source_text,
-                result.text,
-                result.diagnostics.applied.len(),
-                result.diagnostics.candidates.len()
-            );
-        }
     }
 
     fn sum_llm_time(first: Option<u64>, second: Option<u64>) -> Option<u64> {
@@ -584,8 +409,9 @@ mod tests {
             arbitration: None,
         };
 
-        let merged = NormalPipeline::merge_tnl_diagnostics(Some(existing), Some(personalization))
-            .expect("merged diagnostics");
+        let merged =
+            super::super::text::merge_tnl_diagnostics(Some(existing), Some(personalization))
+                .expect("merged diagnostics");
 
         assert_eq!(merged.candidates.len(), 2);
         assert_eq!(merged.pending_llm_count(), 2);

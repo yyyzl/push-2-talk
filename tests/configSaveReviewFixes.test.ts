@@ -310,7 +310,7 @@ test("A11: AssistantPage 搜索 API 连接测试成功反馈应是绿色结构�
 });
 
 test("A12: 结果面板 pending 联网状态应要求搜索引擎运行可用", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
+  const source = await readSource("src-tauri/src/application/assistant.rs");
 
   assert.match(source, /fn resolve_pending_web_search_enabled/);
   assert.match(

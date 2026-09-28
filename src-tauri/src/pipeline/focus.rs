@@ -7,12 +7,12 @@ pub async fn hide_overlay_and_restore_focus(app: &AppHandle, target: Option<Inpu
         let _ = overlay.hide();
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let restored =
-        tokio::task::spawn_blocking(move || platform::prepare_target(platform::desktop(), target))
-            .await;
+    // Keep focus restoration inside the recording task. A detached blocking task could
+    // move focus after cancellation and after the next recording has already begun.
+    let restored = platform::prepare_target(platform::desktop(), target);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     match restored {
-        Ok(Ok(_)) => true,
+        Ok(_) => true,
         error => {
             tracing::warn!("目标焦点恢复失败: {:?}", error);
             false

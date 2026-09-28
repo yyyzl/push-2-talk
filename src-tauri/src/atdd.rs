@@ -151,8 +151,8 @@ pub(crate) async fn run(
     {
         return Err("需要正常启动服务并授予全部权限".into());
     }
-    if state.conversation_session.lock().unwrap().is_some()
-        || state.is_assistant_processing.load(Ordering::SeqCst)
+    if state.assistant.conversation.lock().unwrap().is_some()
+        || state.assistant.processing.load(Ordering::SeqCst)
     {
         return Err("请先结束现有助手会话，再开始独立验收".into());
     }
@@ -181,7 +181,7 @@ pub(crate) async fn run(
     {
         return Err("请等待现有录音与处理结束，再检查目标".into());
     }
-    let llm_ready = state.assistant_processor.lock().unwrap().is_some();
+    let llm_ready = state.assistant.processor.lock().unwrap().is_some();
     if !lifecycle::wait_delay(Duration::from_secs(5), &mut cancelled).await {
         return Ok("已取消准备，没有启动录音".into());
     }
