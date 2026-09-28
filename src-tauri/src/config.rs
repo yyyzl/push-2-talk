@@ -2508,3 +2508,6 @@ mod tests {
 
 #[cfg(test)]
 mod compatibility_tests;
+
+#[cfg(test)]
+mod release_upgrade_tests;
