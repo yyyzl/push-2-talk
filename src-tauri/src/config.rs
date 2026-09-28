@@ -792,7 +792,7 @@ impl Default for TnlConfig {
             enable_personalization_exact_text_pass,
             enable_personalization_syllable_match_pass,
             enable_personalization_hotwords: true,
-            enable_context_hotwords: true,
+            enable_context_hotwords: false,
             personalization_max_window_tokens: default_personalization_max_window_tokens(),
             personalization_apply_threshold: default_personalization_apply_threshold(),
         }
@@ -2274,6 +2274,19 @@ mod tests {
         assert!(cfg.enable_personalization_syllable_match_pass);
         assert_eq!(cfg.personalization_max_window_tokens, 5);
         assert!((cfg.personalization_apply_threshold - 0.88).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn experimental_context_hotwords_require_opt_in_without_resetting_saved_choice() {
+        assert!(!TnlConfig::default().enable_context_hotwords);
+        let old: TnlConfig = serde_json::from_str("{}").unwrap();
+        assert!(!old.enable_context_hotwords);
+        let configured: TnlConfig =
+            serde_json::from_str(r#"{"enable_context_hotwords":true}"#).unwrap();
+        assert!(configured.enable_context_hotwords);
+        let reloaded: TnlConfig =
+            serde_json::from_str(&serde_json::to_string(&configured).unwrap()).unwrap();
+        assert!(reloaded.enable_context_hotwords);
     }
 
     #[test]

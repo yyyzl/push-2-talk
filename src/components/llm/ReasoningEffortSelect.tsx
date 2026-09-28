@@ -1,56 +1,60 @@
+import { useEffect, useId, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { ReasoningEffort } from "../../types";
+import { reasoningSelectOptions, type ReasoningContext, type ReasoningOptions } from "../../utils/reasoningOptions";
 
 export type ReasoningEffortSelectProps = {
   value?: ReasoningEffort;
+  context: ReasoningContext;
   disabled?: boolean;
   label?: string;
   description?: string;
   onChange: (value: ReasoningEffort | undefined) => void;
 };
 
-const OPTIONS: Array<{ value: ReasoningEffort; label: string }> = [
-  { value: "default", label: "默认（不额外传参）" },
-  { value: "none", label: "关闭（适合润色/翻译）" },
-  { value: "auto", label: "自动" },
-  { value: "low", label: "低" },
-  { value: "medium", label: "中" },
-  { value: "high", label: "高" },
-  { value: "xhigh", label: "极高" },
-];
+export function ReasoningEffortSelect({ value, context, disabled, label = "思考模式", description, onChange }: ReasoningEffortSelectProps) {
+  const id = useId();
+  const [retry, setRetry] = useState(0);
+  const [result, setResult] = useState<{ key: string; data?: ReasoningOptions; failed?: boolean }>();
+  // Resolve through the same backend methods as requests, including legacy and
+  // per-mode overrides. A late response must never expose another model's options.
+  const key = JSON.stringify({ context, current: value ?? null });
+  const current = result?.key === key ? result : undefined;
+  useEffect(() => {
+    let cancelled = false;
+    setResult(undefined);
+    invoke<ReasoningOptions>("get_reasoning_options", JSON.parse(key)).then(
+      (data) => { if (!cancelled) setResult({ key, data }); },
+      () => { if (!cancelled) setResult({ key, failed: true }); },
+    );
+    return () => { cancelled = true; };
+  }, [key, retry]);
 
-export function ReasoningEffortSelect({
-  value,
-  disabled,
-  label = "思考模式",
-  description,
-  onChange,
-}: ReasoningEffortSelectProps) {
-  const selectedValue = value ?? "default";
+  const options = reasoningSelectOptions(value, current?.data);
+  const hint = !current ? "正在读取当前模型的可用选项…"
+    : current.failed ? "暂时无法读取可用选项，已有设置未改动。"
+    : current.data?.legacy_hint ?? (current.data?.efforts.length === 1
+      ? "当前模型暂无已确认的思考选项，沿用已有配置。"
+      : "仅显示当前适配支持的选项；默认沿用已有配置。");
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <label className="text-xs font-bold text-stone-500 uppercase tracking-widest">
-          {label}
-        </label>
-        <span className="text-[11px] text-stone-400">默认不改变旧行为</span>
-      </div>
-      <select
-        value={selectedValue}
-        disabled={disabled}
+    <div className="space-y-2 min-w-0">
+      <label htmlFor={id} className="text-sm font-semibold text-stone-700">{label}</label>
+      {current?.data?.model && <p className="text-xs text-stone-600 break-all">{current.data.model}</p>}
+      <select id={id} value={value ?? "default"} disabled={disabled || !current || current.failed}
+        aria-describedby={`${id}-hint`}
         onChange={(event) => {
           const next = event.target.value as ReasoningEffort;
-          onChange(next === "default" ? undefined : next);
+          if (options.some((option) => option.value === next && !option.disabled)) {
+            onChange(next === "default" ? undefined : next);
+          }
         }}
-        className="w-full px-4 py-3 bg-white border border-[var(--stone)] rounded-2xl text-sm font-semibold focus:outline-none focus:border-[var(--steel)] disabled:opacity-60"
-      >
-        {OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
+        className="w-full px-4 py-3 bg-white border border-[var(--stone)] rounded-2xl text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--steel)] disabled:opacity-60">
+        {options.map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}
       </select>
-      {description && <p className="text-xs text-stone-500 leading-relaxed">{description}</p>}
+      <p id={`${id}-hint`} className="text-xs text-stone-600 leading-relaxed" role="status">{hint}</p>
+      {current?.failed && <button type="button" disabled={disabled} onClick={() => setRetry((n) => n + 1)} className="text-sm text-[var(--steel)] underline underline-offset-4">重新读取</button>}
+      {description && <p className="text-xs text-stone-600 leading-relaxed">{description}</p>}
     </div>
   );
 }

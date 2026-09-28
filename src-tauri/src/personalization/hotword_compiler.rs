@@ -37,35 +37,10 @@ pub enum HotwordSource {
     Builtin,
 }
 
-#[derive(Debug, Clone)]
-pub struct TnlDictionaryPack {
-    pub words: Vec<String>,
-    pub correction_pairs: Vec<CorrectionPair>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LlmContextPack {
-    pub lines: Vec<String>,
-    pub correction_hints: Vec<CorrectionHint>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CorrectionHint {
-    pub original: String,
-    pub corrected: String,
-}
-
 struct RankedHotword {
     hotword: AsrHotword,
     rank: i32,
     order: usize,
-}
-
-pub fn compile_user_dictionary_asr_pack(
-    dictionary_entries: &[String],
-    max_count: usize,
-) -> AsrHotwordPack {
-    compile_asr_pack_with_correction_pairs(dictionary_entries, &[], max_count)
 }
 
 pub fn compile_asr_pack_with_correction_pairs(
@@ -98,61 +73,6 @@ pub fn compile_asr_pack_with_correction_pairs(
         .collect();
 
     AsrHotwordPack { words, max_count }
-}
-
-pub fn compile_tnl_dictionary_pack(dictionary_entries: &[String]) -> TnlDictionaryPack {
-    compile_tnl_dictionary_pack_with_pairs(dictionary_entries, &[])
-}
-
-pub fn compile_tnl_dictionary_pack_with_pairs(
-    dictionary_entries: &[String],
-    correction_pairs: &[CorrectionPair],
-) -> TnlDictionaryPack {
-    let mut words = Vec::new();
-    let mut seen_words = HashMap::new();
-    for entry in dictionary_entries {
-        let word = extract_word(entry).trim();
-        if !word.is_empty() {
-            push_unique_word(&mut words, &mut seen_words, word);
-        }
-    }
-
-    let correction_pairs = valid_correction_pairs(correction_pairs);
-    for pair in &correction_pairs {
-        push_unique_word(&mut words, &mut seen_words, pair.corrected_text.trim());
-    }
-
-    TnlDictionaryPack {
-        words,
-        correction_pairs,
-    }
-}
-
-pub fn compile_llm_context_pack(dictionary_entries: &[String], max_count: usize) -> LlmContextPack {
-    compile_llm_context_pack_with_pairs(dictionary_entries, &[], max_count)
-}
-
-pub fn compile_llm_context_pack_with_pairs(
-    dictionary_entries: &[String],
-    correction_pairs: &[CorrectionPair],
-    max_count: usize,
-) -> LlmContextPack {
-    let asr_pack =
-        compile_asr_pack_with_correction_pairs(dictionary_entries, correction_pairs, max_count);
-    LlmContextPack {
-        lines: asr_pack
-            .words
-            .iter()
-            .map(|hotword| hotword.text.clone())
-            .collect(),
-        correction_hints: valid_correction_pairs(correction_pairs)
-            .into_iter()
-            .map(|pair| CorrectionHint {
-                original: pair.original_text,
-                corrected: pair.corrected_text,
-            })
-            .collect(),
-    }
 }
 
 pub fn render_qwen_corpus_text(pack: &AsrHotwordPack) -> String {
@@ -265,21 +185,6 @@ fn insert_ranked_hotword(
     }
 }
 
-fn valid_correction_pairs(correction_pairs: &[CorrectionPair]) -> Vec<CorrectionPair> {
-    correction_pairs
-        .iter()
-        .filter(|pair| pair.enabled && !pair.corrected_text.trim().is_empty())
-        .cloned()
-        .collect()
-}
-
-fn push_unique_word(words: &mut Vec<String>, seen_words: &mut HashMap<String, ()>, word: &str) {
-    let key = word.to_lowercase();
-    if seen_words.insert(key, ()).is_none() {
-        words.push(word.to_string());
-    }
-}
-
 fn aliases_for_entry(text: &str, entry: &str) -> Vec<String> {
     let category = entry.split('|').nth(2).map(str::trim);
     let mut aliases = Vec::new();
@@ -305,7 +210,7 @@ mod tests {
             " ".to_string(),
         ];
 
-        let pack = compile_user_dictionary_asr_pack(&entries, 10);
+        let pack = compile_asr_pack_with_correction_pairs(&entries, &[], 10);
 
         assert_eq!(pack.words.len(), 3);
         assert_eq!(pack.words[0].text, "Claude Code");
@@ -319,7 +224,7 @@ mod tests {
     fn compiles_dictionary_entries_with_provider_limit() {
         let entries = vec!["一号".to_string(), "二号".to_string(), "三号".to_string()];
 
-        let pack = compile_user_dictionary_asr_pack(&entries, 2);
+        let pack = compile_asr_pack_with_correction_pairs(&entries, &[], 2);
 
         assert_eq!(pack.max_count, 2);
         assert_eq!(
@@ -337,7 +242,7 @@ mod tests {
             "Claude Code|manual|product".to_string(),
             "Rust|auto|tool".to_string(),
         ];
-        let pack = compile_user_dictionary_asr_pack(&entries, 10);
+        let pack = compile_asr_pack_with_correction_pairs(&entries, &[], 10);
 
         assert_eq!(render_qwen_corpus_text(&pack), "Claude Code、Rust");
     }
@@ -345,7 +250,7 @@ mod tests {
     #[test]
     fn renders_doubao_hotwords_with_legacy_word_shape() {
         let entries = vec!["Claude Code|manual|product".to_string()];
-        let pack = compile_user_dictionary_asr_pack(&entries, 10);
+        let pack = compile_asr_pack_with_correction_pairs(&entries, &[], 10);
 
         assert_eq!(
             render_doubao_hotwords(&pack),
@@ -354,26 +259,10 @@ mod tests {
     }
 
     #[test]
-    fn builds_tnl_and_llm_packs_from_same_pure_words() {
-        let entries = vec![
-            "Claude Code|manual|product".to_string(),
-            "Rust|auto|tool".to_string(),
-        ];
-
-        let tnl_pack = compile_tnl_dictionary_pack(&entries);
-        let llm_pack = compile_llm_context_pack(&entries, 10);
-
-        assert_eq!(tnl_pack.words, vec!["Claude Code", "Rust"]);
-        assert!(tnl_pack.correction_pairs.is_empty());
-        assert_eq!(llm_pack.lines, vec!["Claude Code", "Rust"]);
-        assert!(llm_pack.correction_hints.is_empty());
-    }
-
-    #[test]
     fn records_code_symbol_alias_for_future_provider_formats() {
         let entries = vec!["GPT-5.3-Codex|manual|code_symbol".to_string()];
 
-        let pack = compile_user_dictionary_asr_pack(&entries, 10);
+        let pack = compile_asr_pack_with_correction_pairs(&entries, &[], 10);
 
         assert_eq!(pack.words[0].aliases, vec!["GPT 5.3 Codex"]);
     }
@@ -466,29 +355,5 @@ mod tests {
         let pack = compile_asr_pack_with_correction_pairs(&[], &[disabled, empty], 10);
 
         assert!(pack.words.is_empty());
-    }
-
-    #[test]
-    fn tnl_and_llm_packs_include_correction_pair_outputs() {
-        let entries = vec!["Claude Code|manual|product".to_string()];
-        let pairs = vec![CorrectionPair::new(
-            "cloud-code",
-            "cloud code",
-            "Cloud Code",
-        )];
-
-        let tnl_pack = compile_tnl_dictionary_pack_with_pairs(&entries, &pairs);
-        let llm_pack = compile_llm_context_pack_with_pairs(&entries, &pairs, 10);
-
-        assert_eq!(tnl_pack.words, vec!["Claude Code", "Cloud Code"]);
-        assert_eq!(tnl_pack.correction_pairs.len(), 1);
-        assert_eq!(llm_pack.lines, vec!["Claude Code", "Cloud Code"]);
-        assert_eq!(
-            llm_pack.correction_hints,
-            vec![CorrectionHint {
-                original: "cloud code".to_string(),
-                corrected: "Cloud Code".to_string(),
-            }]
-        );
     }
 }

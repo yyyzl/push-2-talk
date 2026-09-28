@@ -33,6 +33,7 @@ export type PreferencesPageProps = {
   setLearningConfig: (next: LearningConfig) => void;
   onSetLearningEnabled: (enabled: boolean) => Promise<void>;
   onSetDisfluencyMode: (mode: DisfluencyMode) => Promise<void>;
+  onSetContextHotwords: (enabled: boolean) => Promise<void>;
   onNavigateToModels?: () => void;
 };
 
@@ -42,8 +43,7 @@ const DISFLUENCY_MODE_OPTIONS: Array<{
   summary: string;
 }> = [
   { value: "off", label: "关闭", summary: "保留原始口语" },
-  { value: "conservative", label: "保守", summary: "默认清理" },
-  { value: "aggressive", label: "强力", summary: "更干净" },
+  { value: "conservative", label: "保守", summary: "仅清理句首短停顿词，保留内容词和重复字" },
 ];
 
 export function PreferencesPage({
@@ -66,10 +66,13 @@ export function PreferencesPage({
   setLearningConfig,
   onSetLearningEnabled,
   onSetDisfluencyMode,
+  onSetContextHotwords,
   onNavigateToModels,
 }: PreferencesPageProps) {
   const platformState = usePlatformStatus();
   const [startingService, setStartingService] = useState(false);
+  const [savingContext, setSavingContext] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
   const startService = async () => {
     setStartingService(true);
     try {
@@ -83,7 +86,7 @@ export function PreferencesPage({
 
   // 自动学习配置状态
   const learningEnabled = learningConfig.enabled;
-  const disfluencyMode = tnlConfig.disfluency_mode;
+  const disfluencyMode = tnlConfig.disfluency_mode === "aggressive" ? "conservative" : tnlConfig.disfluency_mode;
   const disfluencySummary =
     DISFLUENCY_MODE_OPTIONS.find((option) => option.value === disfluencyMode)?.summary
     ?? DISFLUENCY_MODE_OPTIONS[1].summary;
@@ -132,7 +135,7 @@ export function PreferencesPage({
             <div>
               <div className="flex items-center gap-1.5">
                 <div className="text-sm font-bold text-[var(--ink)]">口语流畅化</div>
-                <Tooltip content="关闭会保留口头填充词；保守只处理明确句首填充；强力会额外处理重复字和 false start。">
+                <Tooltip content="保守模式只清理带停顿的句首“嗯、呃”，保留内容词和重复字；旧强力设置也按此规则处理。">
                   <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
                 </Tooltip>
               </div>
@@ -140,7 +143,7 @@ export function PreferencesPage({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 overflow-hidden rounded-xl border border-[var(--stone)] bg-white">
+          <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-[var(--stone)] bg-white">
             {DISFLUENCY_MODE_OPTIONS.map((option) => {
               const selected = disfluencyMode === option.value;
               return (
@@ -165,6 +168,36 @@ export function PreferencesPage({
               );
             })}
           </div>
+        </div>
+
+        <div className="space-y-2 border-t border-[var(--stone)] pt-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div id="context-hotword-label" className="text-sm font-semibold text-[var(--ink)]">上下文热词（实验性）</div>
+              <p id="context-hotword-hint" className="mt-1 text-xs text-stone-600 leading-relaxed">从当前输入窗口和近 24 小时历史提取技术词，随录音作为热词发送给所选识别服务。默认关闭。</p>
+              <p className="mt-1 text-xs text-stone-600">停止服务后调整，下次启动生效。</p>
+            </div>
+            <Toggle
+              aria-labelledby="context-hotword-label"
+              aria-describedby="context-hotword-hint"
+              checked={tnlConfig.enable_context_hotwords}
+              disabled={status !== "idle" || savingContext}
+              size="sm"
+              className="mt-1 shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--steel)]"
+              onCheckedChange={async (enabled) => {
+                setSavingContext(true);
+                setContextError(null);
+                try {
+                  await onSetContextHotwords(enabled);
+                } catch {
+                  setContextError("保存失败，已恢复原设置，请重试。");
+                } finally {
+                  setSavingContext(false);
+                }
+              }}
+            />
+          </div>
+          {contextError && <p className="text-sm text-red-700" role="alert">{contextError}</p>}
         </div>
 
         <div className="flex items-center justify-between p-4 bg-[var(--paper)] border border-[var(--stone)] rounded-2xl">

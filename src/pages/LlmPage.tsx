@@ -197,9 +197,10 @@ export function LlmPage({
                   />
 
                   <ReasoningEffortSelect
+                    context={{ kind: "polishing", config: llmConfig }}
                     value={activePreset.reasoning?.effort}
                     disabled={isRunning}
-                    description="润色、翻译、格式整理通常建议关闭思考；默认表示不额外传任何思考参数。"
+                    description="默认沿用已有配置；支持关闭的模型可用于减少简单文本处理的等待。"
                     onChange={(effort) => {
                       setLlmConfig((prev) => ({
                         ...prev,

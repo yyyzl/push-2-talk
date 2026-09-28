@@ -8,8 +8,9 @@ use super::PersonalizationRuntimeResult;
 
 const MAX_RUNTIME_DIAGNOSTIC_TEXT_CHARS: usize = 160;
 const MAX_RUNTIME_DIAGNOSTIC_CANDIDATES: usize = 20;
-const MAX_RUNTIME_DIAGNOSTIC_FILES_PER_DAY: usize = 200;
-const SECS_PER_DAY: u64 = 86_400;
+const MAX_RUNTIME_DIAGNOSTIC_FILES: usize = 200;
+const MAX_RUNTIME_DIAGNOSTIC_AGE_MS: u128 = 7 * 86_400_000;
+const DIAGNOSTICS_ENV: &str = "PUSHTOTALK_PERSONALIZATION_DIAGNOSTICS";
 
 #[derive(Debug, Serialize)]
 struct PersonalizationRuntimeDiagnosticPayload {
@@ -30,9 +31,26 @@ struct PersonalizationRuntimeDiagnosticPayload {
 pub fn write_runtime_diagnostic(
     source_text: &str,
     result: &PersonalizationRuntimeResult,
-) -> Result<PathBuf> {
-    let diagnostics_dir = runtime_diagnostics_dir()?;
-    write_runtime_diagnostic_to_dir(&diagnostics_dir, source_text, result, current_unix_millis())
+) -> Result<Option<PathBuf>> {
+    write_runtime_diagnostic_when_enabled(
+        std::env::var(DIAGNOSTICS_ENV).as_deref() == Ok("1"),
+        runtime_diagnostics_dir,
+        source_text,
+        result,
+    )
+}
+
+fn write_runtime_diagnostic_when_enabled(
+    enabled: bool,
+    directory: impl FnOnce() -> Result<PathBuf>,
+    source_text: &str,
+    result: &PersonalizationRuntimeResult,
+) -> Result<Option<PathBuf>> {
+    if !enabled {
+        return Ok(None);
+    }
+    write_runtime_diagnostic_to_dir(&directory()?, source_text, result, current_unix_millis())
+        .map(Some)
 }
 
 fn runtime_diagnostics_dir() -> Result<PathBuf> {
@@ -40,10 +58,10 @@ fn runtime_diagnostics_dir() -> Result<PathBuf> {
     let config_dir = config_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("无法获取配置目录"))?;
-    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    // New owned namespace: never prune historical daily diagnostic directories.
     Ok(config_dir
         .join("diagnostics")
-        .join(runtime_diagnostic_date_dir_from_unix_secs(now_secs)))
+        .join("personalization-session"))
 }
 
 fn write_runtime_diagnostic_to_dir(
@@ -61,7 +79,7 @@ fn write_runtime_diagnostic_to_dir(
     let payload = runtime_diagnostic_payload(source_text, result, timestamp_ms);
     let content = serde_json::to_string_pretty(&payload)?;
     std::fs::write(&path, content)?;
-    prune_runtime_diagnostics(output_dir, MAX_RUNTIME_DIAGNOSTIC_FILES_PER_DAY)?;
+    prune_runtime_diagnostics(output_dir, MAX_RUNTIME_DIAGNOSTIC_FILES)?;
     Ok(path)
 }
 
@@ -70,7 +88,7 @@ fn prune_runtime_diagnostics(output_dir: &Path, max_files: usize) -> Result<()> 
     for entry in std::fs::read_dir(output_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() {
+        if !entry.file_type()?.is_file() {
             continue;
         }
 
@@ -85,7 +103,13 @@ fn prune_runtime_diagnostics(output_dir: &Path, max_files: usize) -> Result<()> 
             .metadata()
             .and_then(|metadata| metadata.modified())
             .unwrap_or(UNIX_EPOCH);
-        let timestamp = runtime_diagnostic_timestamp_from_name(&file_name).unwrap_or_default();
+        let Some(timestamp) = runtime_diagnostic_timestamp_from_name(&file_name) else {
+            continue;
+        };
+        if current_unix_millis().saturating_sub(timestamp) > MAX_RUNTIME_DIAGNOSTIC_AGE_MS {
+            std::fs::remove_file(path)?;
+            continue;
+        }
         files.push((timestamp, modified, file_name, path));
     }
 
@@ -158,28 +182,6 @@ fn current_unix_millis() -> u128 {
         .unwrap_or_default()
 }
 
-fn runtime_diagnostic_date_dir_from_unix_secs(secs: u64) -> String {
-    let days = (secs / SECS_PER_DAY) as i64;
-    let (year, month, day) = civil_from_unix_days(days);
-    format!("{year:04}-{month:02}-{day:02}")
-}
-
-fn civil_from_unix_days(days: i64) -> (i32, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = month_index + if month_index < 10 { 3 } else { -9 };
-    let year = year + i64::from(month <= 2);
-
-    (year as i32, month as u32, day as u32)
-}
-
 fn bounded_json<T: Serialize>(payload: &T) -> Value {
     let mut value = serde_json::to_value(payload).unwrap_or(Value::Null);
     truncate_json_strings(&mut value, MAX_RUNTIME_DIAGNOSTIC_TEXT_CHARS);
@@ -222,12 +224,39 @@ mod tests {
     };
 
     #[test]
-    fn runtime_diagnostic_date_dir_uses_utc_day() {
-        assert_eq!(runtime_diagnostic_date_dir_from_unix_secs(0), "1970-01-01");
-        assert_eq!(
-            runtime_diagnostic_date_dir_from_unix_secs(1_704_067_200),
-            "2024-01-01"
+    fn disabled_diagnostics_never_resolve_or_create_a_directory() {
+        let result = apply_personalization_with_store(
+            "private text".to_string(),
+            CorrectionPairStore::new(vec![]),
         );
+        let path = write_runtime_diagnostic_when_enabled(
+            false,
+            || panic!("disabled diagnostics must not access the config or filesystem"),
+            "private text",
+            &result,
+        )
+        .unwrap();
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn diagnostics_expire_across_days_without_touching_unrelated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = current_unix_millis();
+        let old = dir
+            .path()
+            .join(format!("personalization-{}-old.json", now - 8 * 86_400_000));
+        let recent = dir
+            .path()
+            .join(format!("personalization-{now}-recent.json"));
+        let unrelated = dir.path().join("notes.json");
+        for path in [&old, &recent, &unrelated] {
+            std::fs::write(path, "{}").unwrap();
+        }
+        prune_runtime_diagnostics(dir.path(), 200).unwrap();
+        assert!(!old.exists());
+        assert!(recent.exists());
+        assert!(unrelated.exists());
     }
 
     #[test]
@@ -250,8 +279,9 @@ mod tests {
             CorrectionPairStore::new(pairs),
         );
 
+        let now = current_unix_millis();
         let path =
-            write_runtime_diagnostic_to_dir(temp.path(), &"cloud code ".repeat(200), &result, 456)
+            write_runtime_diagnostic_to_dir(temp.path(), &"cloud code ".repeat(200), &result, now)
                 .expect("write diagnostic");
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).expect("read diagnostic"))
@@ -260,7 +290,7 @@ mod tests {
         assert_eq!(payload["schema_version"], 1);
         assert_eq!(payload["stage"], "personalization");
         assert_eq!(payload["elapsed_us"], result.elapsed_us);
-        assert_eq!(payload["timestamp_ms"], 456);
+        assert_eq!(payload["timestamp_ms"], now as u64);
         assert_eq!(
             payload["candidates"].as_array().expect("candidates").len(),
             20
@@ -284,16 +314,18 @@ mod tests {
             CorrectionPairStore::new(vec![]),
         );
 
-        for idx in 0..(MAX_RUNTIME_DIAGNOSTIC_FILES_PER_DAY + 3) {
-            let path = temp
-                .path()
-                .join(format!("personalization-old-{idx:04}.json"));
+        let now = current_unix_millis();
+        for idx in 0..(MAX_RUNTIME_DIAGNOSTIC_FILES + 3) {
+            let path = temp.path().join(format!(
+                "personalization-{}-{idx:04}.json",
+                now - 1000 + idx as u128
+            ));
             std::fs::write(path, "{}").expect("write old diagnostic");
         }
         let unrelated_path = temp.path().join("other-diagnostic.json");
         std::fs::write(&unrelated_path, "{}").expect("write unrelated diagnostic");
 
-        let new_path = write_runtime_diagnostic_to_dir(temp.path(), "plain text", &result, 999)
+        let new_path = write_runtime_diagnostic_to_dir(temp.path(), "plain text", &result, now)
             .expect("write diagnostic");
 
         let personalization_count = std::fs::read_dir(temp.path())
@@ -307,9 +339,12 @@ mod tests {
             })
             .count();
 
-        assert_eq!(personalization_count, MAX_RUNTIME_DIAGNOSTIC_FILES_PER_DAY);
+        assert_eq!(personalization_count, MAX_RUNTIME_DIAGNOSTIC_FILES);
         assert!(new_path.exists());
         assert!(unrelated_path.exists());
-        assert!(!temp.path().join("personalization-old-0000.json").exists());
+        assert!(!temp
+            .path()
+            .join(format!("personalization-{}-0000.json", now - 1000))
+            .exists());
     }
 }

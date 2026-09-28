@@ -2,6 +2,153 @@ use serde_json::{Map, Value};
 
 use crate::config::{LlmReasoningConfig, ReasoningEffort};
 
+// This is the supported subset of the current Chat Completions adapter, not a
+// claim that every similarly named or future model has the same capabilities.
+// Legacy request mappings below remain unchanged until the user edits a value.
+pub fn selectable_efforts(model: &str) -> Vec<ReasoningEffort> {
+    use ReasoningEffort::*;
+    let model = model.to_ascii_lowercase();
+    if model.starts_with("qwen3-max-20") && model.as_str() < "qwen3-max-2026-01-23" {
+        return vec![Default];
+    }
+    if model_variant(
+        &model,
+        &[
+            "qwen3-max",
+            "qwen3-max-preview",
+            "qwen3.5-plus",
+            "qwen3.5-flash",
+            "qwen3.6-plus",
+            "qwen3.6-flash",
+            "qwen3.6-max-preview",
+            "qwen3.7-plus",
+            "qwen3.7-flash",
+            "qwen3.8-max",
+            "qwen3.8-flash",
+            "qwen3-235b-a22b",
+            "qwen3-32b",
+            "qwen3-30b-a3b",
+            "qwen3-14b",
+            "qwen3-8b",
+        ],
+    ) {
+        vec![Default, None, Auto]
+    } else if model_variant(
+        &model,
+        &["deepseek-v4", "deepseek-v4-pro", "deepseek-v4-flash"],
+    ) {
+        // medium maps to high at the provider; xhigh is our existing max mapping.
+        vec![Default, None, Low, High, Xhigh]
+    } else if model_variant(
+        &model,
+        &[
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5.1",
+            "gpt-5.2",
+            "gpt-5.4",
+            "gpt-5.5",
+            "o1",
+            "o3",
+            "o3-mini",
+            "o4-mini",
+        ],
+    ) {
+        // The existing adapter maps xhigh to high and does not implement none.
+        vec![Default, Low, Medium, High]
+    } else if model_variant(&model, &["gemini-2.5-flash", "gemini-2.5-flash-lite"]) {
+        vec![Default, None]
+    } else {
+        vec![Default]
+    }
+}
+
+fn model_variant(model: &str, names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        model == *name
+            || model
+                .strip_prefix(&format!("{name}-"))
+                .is_some_and(|suffix| {
+                    suffix.len() == 10
+                        && suffix.bytes().enumerate().all(|(i, ch)| {
+                            if i == 4 || i == 7 {
+                                ch == b'-'
+                            } else {
+                                ch.is_ascii_digit()
+                            }
+                        })
+                })
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReasoningContext {
+    Polishing {
+        config: crate::config::LlmConfig,
+    },
+    Assistant {
+        config: crate::config::AssistantConfig,
+        shared: crate::config::SharedLlmConfig,
+        text_processing: bool,
+    },
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ReasoningOptions {
+    model: String,
+    efforts: Vec<ReasoningEffort>,
+    legacy_hint: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_reasoning_options(
+    context: ReasoningContext,
+    current: Option<ReasoningEffort>,
+) -> ReasoningOptions {
+    let model = match context {
+        ReasoningContext::Polishing { config } => config.resolve_polishing().model,
+        ReasoningContext::Assistant {
+            config,
+            shared,
+            text_processing,
+        } => {
+            if text_processing {
+                config.resolve_text_processing_llm(&shared).model
+            } else {
+                config.resolve_qa_llm(&shared).model
+            }
+        }
+    };
+    let efforts = selectable_efforts(&model);
+    let legacy_hint = current
+        .filter(|effort| !efforts.contains(effort))
+        .map(|effort| {
+            let patch = reasoning_patch(&model, &effort);
+            if patch.is_empty() {
+                "这项旧设置未产生额外思考参数，已保留。可选择默认或当前可用选项。".to_string()
+            } else if let Some(equivalent) = efforts
+                .iter()
+                .find(|candidate| reasoning_patch(&model, candidate) == patch)
+            {
+                let label = match equivalent {
+                    ReasoningEffort::Auto => "开启",
+                    ReasoningEffort::High => "高",
+                    _ => "已有模式",
+                };
+                format!("这项旧设置实际按「{label}」执行，已保留；可改选对应选项。")
+            } else {
+                "当前适配未将这项旧设置列为可选项；原请求参数已保留，也可改选默认。".to_string()
+            }
+        });
+    ReasoningOptions {
+        model,
+        efforts,
+        legacy_hint,
+    }
+}
+
 const BLOCKED_CUSTOM_BODY_KEYS: &[&str] = &[
     "model",
     "messages",
@@ -180,6 +327,120 @@ fn is_openai_reasoning_model(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selector_only_offers_effective_distinct_choices() {
+        use ReasoningEffort::*;
+        assert_eq!(selectable_efforts("qwen3-max"), vec![Default, None, Auto]);
+        assert_eq!(
+            selectable_efforts("gpt-5"),
+            vec![Default, Low, Medium, High]
+        );
+        assert_eq!(
+            selectable_efforts("deepseek-v4-pro"),
+            vec![Default, None, Low, High, Xhigh]
+        );
+        for model in [
+            "unknown",
+            "qwen3-asr-flash",
+            "qwen3-235b-a22b-thinking-2507",
+            "gpt-5-pro",
+            "o1-preview",
+            "gemini-3-flash",
+        ] {
+            assert_eq!(selectable_efforts(model), vec![Default], "{model}");
+        }
+    }
+
+    #[test]
+    fn selector_uses_effective_model_and_preserves_legacy_request_mapping() {
+        let mut config = crate::config::LlmConfig::default();
+        config.feature_override.use_shared = false;
+        config.feature_override.model = Some("gpt-5".to_string());
+        let options = get_reasoning_options(
+            ReasoningContext::Polishing { config },
+            Some(ReasoningEffort::Xhigh),
+        );
+        assert_eq!(options.model, "gpt-5");
+        assert!(!options.efforts.contains(&ReasoningEffort::Xhigh));
+        assert!(options.legacy_hint.unwrap().contains("高"));
+        assert_eq!(
+            reasoning_patch("gpt-5", &ReasoningEffort::Xhigh)["reasoning_effort"],
+            "high"
+        );
+
+        let mut assistant = crate::config::AssistantConfig::default();
+        assistant.llm.use_shared = false;
+        assistant.llm.model = Some("qwen3-max".to_string());
+        assistant.qa_llm = Some(crate::config::LlmFeatureConfig {
+            reasoning: Some(LlmReasoningConfig {
+                effort: ReasoningEffort::Low,
+            }),
+            ..Default::default()
+        });
+        assistant.text_processing_llm = Some(crate::config::LlmFeatureConfig {
+            use_shared: false,
+            model: Some("gpt-5".to_string()),
+            ..Default::default()
+        });
+        let qa = get_reasoning_options(
+            ReasoningContext::Assistant {
+                config: assistant.clone(),
+                shared: Default::default(),
+                text_processing: false,
+            },
+            Some(ReasoningEffort::Low),
+        );
+        assert_eq!(qa.model, "qwen3-max");
+        assert!(qa.legacy_hint.unwrap().contains("开启"));
+        let text = get_reasoning_options(
+            ReasoningContext::Assistant {
+                config: assistant,
+                shared: Default::default(),
+                text_processing: true,
+            },
+            None,
+        );
+        assert_eq!(text.model, "gpt-5");
+        assert!(text.efforts.contains(&ReasoningEffort::Medium));
+    }
+
+    #[test]
+    fn selector_reports_noop_legacy_settings_without_losing_them() {
+        let mut config = crate::config::LlmConfig::default();
+        config.feature_override.use_shared = false;
+        config.feature_override.model = Some("unknown-proxy-model".to_string());
+        let options = get_reasoning_options(
+            ReasoningContext::Polishing { config },
+            Some(ReasoningEffort::High),
+        );
+        assert_eq!(options.efforts, vec![ReasoningEffort::Default]);
+        assert!(options.legacy_hint.unwrap().contains("未产生"));
+        for value in ["default", "none", "auto", "low", "medium", "high", "xhigh"] {
+            let saved = serde_json::json!({ "effort": value });
+            let parsed: LlmReasoningConfig = serde_json::from_value(saved.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    fn selectable_efforts_produce_distinct_nonempty_payloads() {
+        for model in [
+            "qwen3-max",
+            "gpt-5",
+            "gpt-5.2",
+            "deepseek-v4-pro",
+            "gemini-2.5-flash",
+        ] {
+            let mut patches = Vec::new();
+            for effort in selectable_efforts(model).into_iter().skip(1) {
+                let patch = reasoning_patch(model, &effort);
+                assert!(!patch.is_empty(), "{model}: {effort:?}");
+                assert!(!patches.contains(&patch), "duplicate {model}: {effort:?}");
+                patches.push(patch);
+            }
+        }
+    }
 
     #[test]
     fn default_effort_returns_empty_patch() {

@@ -457,10 +457,11 @@ export function AssistantPage({
           <h4 className="text-sm font-bold text-stone-700">问答模式提示词</h4>
           <p className="text-xs text-stone-500">无选中文本时，用于回答问题。</p>
           <ReasoningEffortSelect
+            context={{ kind: "assistant", config: assistantConfig, shared: sharedConfig, text_processing: false }}
             value={assistantConfig.qa_llm?.reasoning?.effort}
             disabled={isRunning}
             label="问答思考模式"
-            description="默认表示沿用旧行为；复杂问答可选择中/高，日常问答可保持默认。"
+            description="默认沿用已有行为；需要调整时选择当前模型提供的选项。"
             onChange={(effort) =>
               setAssistantConfig((prev) => ({
                 ...prev,
@@ -481,10 +482,11 @@ export function AssistantPage({
           <h4 className="text-sm font-bold text-stone-700">文本处理提示词</h4>
           <p className="text-xs text-stone-500">有选中文本时，用于翻译、润色、总结等。</p>
           <ReasoningEffortSelect
+            context={{ kind: "assistant", config: assistantConfig, shared: sharedConfig, text_processing: true }}
             value={assistantConfig.text_processing_llm?.reasoning?.effort}
             disabled={isRunning}
             label="文本处理思考模式"
-            description="润色、翻译、总结通常建议关闭思考；默认表示沿用旧行为。"
+            description="默认沿用已有行为；支持关闭的模型可用于减少简单文本处理的等待。"
             onChange={(effort) =>
               setAssistantConfig((prev) => ({
                 ...prev,

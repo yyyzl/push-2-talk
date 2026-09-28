@@ -1,3 +1,5 @@
+> 历史路线图，已归档；不再作为当前实现规范。现行约定见 [TNL 文档](../development/tnl-normalization.md)。
+
 # ASR 个性化识别质变方案 v3（MVP-first 执行版）
 
 > 本方案基于对豆包输入法 v0.8.1 离线 ASR 流水线的逆向分析（见 `/Users/yzl/Documents/project/reverse_doubao/`）和当前项目的现状评估，给出一份 9 阶段、可执行的演进路线。

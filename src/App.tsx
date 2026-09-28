@@ -458,6 +458,7 @@ function App() {
     closeAction?: "close" | "minimize" | null;
     tnlConfig?: {
       disfluencyMode?: TnlConfig["disfluency_mode"];
+      enableContextHotwords?: boolean;
     };
   }) => {
     cancelAutoSaveDebounce();
@@ -488,10 +489,11 @@ function App() {
     if (patch.closeAction !== undefined) {
       setCloseAction(patch.closeAction);
     }
-    if (patch.tnlConfig?.disfluencyMode) {
+    if (patch.tnlConfig) {
       setTnlConfig(normalizeTnlConfig({
         ...tnlConfig,
-        disfluency_mode: patch.tnlConfig.disfluencyMode,
+        disfluency_mode: patch.tnlConfig.disfluencyMode ?? tnlConfig.disfluency_mode,
+        enable_context_hotwords: patch.tnlConfig.enableContextHotwords ?? tnlConfig.enable_context_hotwords,
       }));
     }
 
@@ -516,7 +518,7 @@ function App() {
       if (patch.closeAction !== undefined) {
         setCloseAction(previousCloseAction);
       }
-      if (patch.tnlConfig?.disfluencyMode) {
+      if (patch.tnlConfig) {
         setTnlConfig(previousTnlConfig);
       }
 
@@ -930,6 +932,9 @@ function App() {
             sharedConfig={llmConfig.shared}
             onSetLearningEnabled={async (enabled) => {
               await saveFieldPatchWithStatus({ learningEnabled: enabled });
+            }}
+            onSetContextHotwords={async (enabled) => {
+              await saveFieldPatchWithStatus({ tnlConfig: { enableContextHotwords: enabled } });
             }}
             onSetDisfluencyMode={async (mode) => {
               await saveFieldPatchWithStatus({ tnlConfig: { disfluencyMode: mode } });

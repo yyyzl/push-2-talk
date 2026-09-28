@@ -2178,6 +2178,18 @@ fn normalize_dictionary_for_config_storage(mut dictionary: Vec<String>) -> Vec<S
 #[serde(default, rename_all = "camelCase")]
 struct TnlConfigFieldPatch {
     disfluency_mode: Option<crate::tnl::DisfluencyMode>,
+    enable_context_hotwords: Option<bool>,
+}
+
+impl TnlConfigFieldPatch {
+    fn apply(self, config: &mut crate::config::TnlConfig) {
+        if let Some(mode) = self.disfluency_mode {
+            config.disfluency_mode = mode;
+        }
+        if let Some(enabled) = self.enable_context_hotwords {
+            config.enable_context_hotwords = enabled;
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, serde::Deserialize)]
@@ -2193,6 +2205,29 @@ struct ConfigFieldPatch {
 #[cfg(test)]
 mod config_field_patch_tests {
     use super::*;
+
+    #[test]
+    fn context_hotword_patch_round_trips_explicit_false_and_preserves_other_settings() {
+        let mut config = crate::config::TnlConfig::default();
+        config.disfluency_mode = crate::tnl::DisfluencyMode::Aggressive;
+        config.personalization_apply_threshold = 0.97;
+        for enabled in [true, false] {
+            let patch: TnlConfigFieldPatch =
+                serde_json::from_value(serde_json::json!({"enableContextHotwords": enabled}))
+                    .unwrap();
+            patch.apply(&mut config);
+            let config = serde_json::from_value::<crate::config::TnlConfig>(
+                serde_json::to_value(&config).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(config.enable_context_hotwords, enabled);
+            assert_eq!(
+                config.disfluency_mode,
+                crate::tnl::DisfluencyMode::Aggressive
+            );
+            assert_eq!(config.personalization_apply_threshold, 0.97);
+        }
+    }
 
     #[test]
     fn should_deserialize_tnl_disfluency_mode_patch() {
@@ -2480,9 +2515,7 @@ async fn patch_config_fields(app: AppHandle, patch: ConfigFieldPatch) -> Result<
         }
 
         if let Some(tnl_patch) = patch.tnl_config {
-            if let Some(mode) = tnl_patch.disfluency_mode {
-                config.tnl_config.disfluency_mode = mode;
-            }
+            tnl_patch.apply(&mut config.tnl_config);
         }
 
         Ok(())
@@ -6826,6 +6859,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            llm_reasoning::get_reasoning_options,
             #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]
             atdd::run,
             #[cfg(all(feature = "atdd", target_os = "macos", debug_assertions))]

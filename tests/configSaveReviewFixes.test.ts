@@ -408,5 +408,5 @@ test("A14: 口语流畅化模式应通过 tnl_config 字段级 patch 完成前�
 
   assert.match(backendSource, /struct\s+TnlConfigFieldPatch\s*\{[\s\S]*disfluency_mode:\s*Option<crate::tnl::DisfluencyMode>/);
   assert.match(backendSource, /tnl_config:\s*Option<TnlConfigFieldPatch>/);
-  assert.match(backendSource, /config\.tnl_config\.disfluency_mode\s*=\s*mode;/);
+  // Patch application is covered behaviorally by Rust config_field_patch_tests.
 });

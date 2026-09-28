@@ -38,7 +38,7 @@
 - `get_dictionary_entries` may bootstrap from `AppConfig.dictionary` only when the database has no rows at all. Disabled rows count as initialized, so deleting the last entry must not resurrect it on the next load. `add_learned_word` and `delete_dictionary_entries` return an error if the sidecar cannot be opened.
 - `save_config` may sync `AppConfig.dictionary` into `user_terms` only when the frontend sends an explicit `dictionary` field, for import/migration compatibility. Field patches, tray switches, ASR fallback repair, and ordinary settings saves must leave the sidecar untouched.
 - `user_terms.en_phonetic_key` stores the first English phonetic key from `build_key_bundle`; `user_terms.zh_pinyin_fuzzy_key` stores the bundle's fuzzy pinyin key. Leave the column `NULL` when the key does not apply.
-- `user_terms` key lookup APIs must query enabled rows only, return empty results for empty keys, and order manual terms before automatic terms for deterministic candidate selection.
+- Unused phonetic-key lookup APIs have been removed. Keep existing key columns/indexes and hydration compatible; runtime correction matching uses the correction-pair store. Do not drop user data or schema merely to remove unused query code.
 
 ## Correction Pair Files
 

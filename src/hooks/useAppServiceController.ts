@@ -115,6 +115,7 @@ type ConfigFieldPatchPayload = {
   closeAction?: "close" | "minimize" | null;
   tnlConfig?: {
     disfluencyMode?: DisfluencyMode;
+    enableContextHotwords?: boolean;
   };
 };
 

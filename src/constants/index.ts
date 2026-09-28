@@ -138,7 +138,7 @@ export const DEFAULT_TNL_CONFIG: TnlConfig = {
   enable_personalization_exact_text_pass: true,
   enable_personalization_syllable_match_pass: true,
   enable_personalization_hotwords: true,
-  enable_context_hotwords: true,
+  enable_context_hotwords: false,
   personalization_max_window_tokens: 5,
   personalization_apply_threshold: 0.88
 };
