@@ -79,6 +79,13 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "PushToTalk",
+    "homepage": "https://github.com/yyyzl/push-2-talk",
+    "license": "MIT",
+    "category": "Productivity",
+    "shortDescription": "跨平台语音输入与 AI 助手",
+    "longDescription": "按快捷键录音，将语音转换为文字并写回当前应用；支持多种识别引擎、语句润色、选区处理和个人词库。",
+    "copyright": "Copyright (c) 2024 PushToTalk",
     "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",

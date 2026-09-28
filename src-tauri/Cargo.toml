@@ -1,10 +1,11 @@
 [package]
 name = "push-to-talk"
 version = "1.7.0"
-description = "A push-to-talk speech-to-text application"
-authors = ["you"]
-license = ""
-repository = ""
+description = "Cross-platform voice typing and AI assistant for Windows and macOS"
+authors = ["PushToTalk contributors"]
+license = "MIT"
+repository = "https://github.com/yyyzl/push-2-talk"
+homepage = "https://github.com/yyyzl/push-2-talk"
 edition = "2021"
 default-run = "push-to-talk"
 
