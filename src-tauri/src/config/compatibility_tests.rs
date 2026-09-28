@@ -275,6 +275,35 @@ fn local_config_copy_upgrades_without_losing_asr_credentials_or_selection() {
         );
     }
     assert!(migrated["asr_config"]["selection"] == original["asr_config"]["selection"]);
+    for field in [
+        "use_realtime_asr",
+        "enable_llm_post_process",
+        "enable_dictionary_enhancement",
+        "dual_hotkey_config",
+        "theme",
+        "close_action",
+        "enable_mute_other_apps",
+    ] {
+        if let Some(value) = original.get(field) {
+            assert!(
+                &migrated[field] == value,
+                "saved preference changed: {field}"
+            );
+        }
+    }
+    for field in ["qa_system_prompt", "text_processing_system_prompt"] {
+        if let Some(value) = original["assistant_config"].get(field) {
+            assert!(
+                &migrated["assistant_config"][field] == value,
+                "saved prompt changed: {field}"
+            );
+        }
+    }
+    let old: AppConfig = serde_json::from_value(original.clone()).unwrap();
+    assert!(
+        resolved_connections(&config) == resolved_connections(&old),
+        "effective LLM connection changed"
+    );
     config.save_to_path(&path).unwrap();
     let (reloaded, migrated_again) = AppConfig::load_from_path(&path).unwrap();
     assert!(!migrated_again);
@@ -292,5 +321,206 @@ fn provider_capabilities_prevent_legacy_flags_from_routing_keys_to_another_provi
         assert!(AsrProvider::DoubaoIme.realtime_enabled(requested));
         assert_eq!(AsrProvider::Qwen.realtime_enabled(requested), requested);
         assert_eq!(AsrProvider::Doubao.realtime_enabled(requested), requested);
+    }
+}
+
+#[test]
+fn upgrade_preserves_every_saved_assistant_prompt_including_old_defaults_and_empty_strings() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    for prompt in [
+        LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string(),
+        LEGACY_FRONTEND_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string(),
+        LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT.replace('\n', "\r\n"),
+        String::new(),
+        "My custom prompt".into(),
+    ] {
+        let mut value = fixture();
+        value["assistant_config"]["text_processing_system_prompt"] = json!(prompt);
+        value["assistant_config"]["qa_system_prompt"] = json!("");
+        write_fixture(&path, &value);
+        for _ in 0..2 {
+            let (config, _) = AppConfig::load_from_path(&path).unwrap();
+            assert_eq!(
+                config.assistant_config.text_processing_system_prompt,
+                prompt
+            );
+            assert_eq!(config.assistant_config.qa_system_prompt, "");
+            config.save_to_path(&path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn absent_legacy_assistant_prompt_uses_the_old_default_while_new_install_uses_new_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    assert_eq!(
+        AppConfig::load_from_path(&path)
+            .unwrap()
+            .0
+            .assistant_config
+            .text_processing_system_prompt,
+        DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT
+    );
+    for value in [json!({}), json!({"assistant_config": {"enabled": true}})] {
+        write_fixture(&path, &value);
+        let (config, _) = AppConfig::load_from_path(&path).unwrap();
+        assert_eq!(
+            config.assistant_config.text_processing_system_prompt,
+            LEGACY_ASSISTANT_TEXT_PROCESSING_PROMPT
+        );
+    }
+}
+
+#[test]
+fn upgrade_does_not_enable_new_text_transformations_even_when_tnl_section_is_absent() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    for section in [
+        None,
+        Some(json!({"enabled": true})),
+        Some(json!({"enabled": false})),
+    ] {
+        let mut value = fixture();
+        if let Some(section) = section {
+            value["tnl_config"] = section;
+        } else {
+            value.as_object_mut().unwrap().remove("tnl_config");
+        }
+        write_fixture(&path, &value);
+        for _ in 0..2 {
+            let (config, _) = AppConfig::load_from_path(&path).unwrap();
+            assert_eq!(
+                config.tnl_config.enabled,
+                value["tnl_config"]["enabled"].as_bool().unwrap_or(true)
+            );
+            assert_eq!(
+                config.tnl_config.disfluency_mode,
+                crate::tnl::DisfluencyMode::Off
+            );
+            assert!(!config.tnl_config.enable_personalization_exact_text_pass);
+            assert!(!config.tnl_config.enable_personalization_syllable_match_pass);
+            // Check the actual transformation engine, with a preexisting learned pair.
+            let mut pair =
+                crate::personalization::CorrectionPair::new("fixture", "cloud code", "Claude Code");
+            pair.source = "manual".into();
+            pair.confidence = 0.98;
+            let output = crate::personalization::apply_personalization_with_store_and_config(
+                "open cloud code".into(),
+                crate::personalization::CorrectionPairStore::new(vec![pair]),
+                crate::personalization::PersonalizationEngineConfig::from_tnl_config(
+                    &config.tnl_config,
+                ),
+            );
+            assert_eq!(output.text, "open cloud code");
+            assert!(output.conversion.diagnostics.candidates.is_empty());
+            config.save_to_path(&path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn explicit_new_feature_choices_survive_unrelated_save_and_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    let mut value = fixture();
+    value["tnl_config"] = json!({"enabled":true, "disfluency_mode":"aggressive", "enable_personalization_exact_text_pass":true, "enable_personalization_syllable_match_pass":false, "personalization_max_window_tokens":3, "personalization_apply_threshold":0.9375, "enable_personalization_hotwords":true, "enable_context_hotwords":false});
+    value["assistant_config"]["enable_web_search"] = json!(true);
+    value["assistant_config"]["text_processing_system_prompt"] =
+        json!(DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT);
+    write_fixture(&path, &value);
+    for _ in 0..2 {
+        let (mut config, _) = AppConfig::load_from_path(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(&config.tnl_config).unwrap(),
+            value["tnl_config"]
+        );
+        assert!(config.assistant_config.enable_web_search);
+        assert_eq!(
+            config.assistant_config.text_processing_system_prompt,
+            DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT
+        );
+        config.theme = "light".into();
+        config.save_to_path(&path).unwrap();
+    }
+}
+
+fn resolved_connections(config: &AppConfig) -> Vec<(String, String, String)> {
+    let shared = &config.llm_config.shared;
+    [
+        config.llm_config.resolve_polishing(),
+        config.assistant_config.resolve_qa_llm(shared),
+        config.assistant_config.resolve_text_processing_llm(shared),
+        config.learning_config.resolve_llm(shared),
+    ]
+    .into_iter()
+    .map(|c| (c.endpoint, c.api_key, c.model))
+    .collect()
+}
+
+#[test]
+fn legacy_learning_endpoint_keeps_inherited_authentication_and_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    let value = json!({
+        "llm_config": {"shared": {"endpoint":"https://shared.invalid/v1", "api_key":"fixture-shared", "default_model":"shared-model", "learning_model":"learning-model"}},
+        "learning_config": {"enabled":true, "llm_endpoint":"https://learning.invalid/v1"}
+    });
+    let old: AppConfig = serde_json::from_value(value.clone()).unwrap();
+    let expected = resolved_connections(&old);
+    write_fixture(&path, &value);
+    for _ in 0..2 {
+        let (config, _) = AppConfig::load_from_path(&path).unwrap();
+        assert_eq!(resolved_connections(&config), expected);
+        config.save_to_path(&path).unwrap();
+    }
+}
+
+#[test]
+fn explicit_dual_hotkeys_take_precedence_over_stale_legacy_hotkey() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    let dual = serde_json::to_value(DualHotkeyConfig::default()).unwrap();
+    write_fixture(
+        &path,
+        &json!({"hotkey_config":{"keys":["f7"]}, "dual_hotkey_config":dual}),
+    );
+    let (config, _) = AppConfig::load_from_path(&path).unwrap();
+    assert_eq!(
+        serde_json::to_value(config.dual_hotkey_config).unwrap(),
+        dual
+    );
+}
+
+#[test]
+fn legacy_asr_does_not_implicitly_add_new_context_or_correction_hotwords() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    write_fixture(&path, &fixture());
+    let (config, _) = AppConfig::load_from_path(&path).unwrap();
+    let tnl = serde_json::to_value(config.tnl_config).unwrap();
+    assert_eq!(tnl["enable_context_hotwords"], json!(false));
+    assert_eq!(tnl["enable_personalization_hotwords"], json!(false));
+}
+
+#[test]
+fn older_shared_llm_migration_preserves_effective_connections_for_every_feature() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.json");
+    for mask in 0..8 {
+        let mut value = fixture();
+        value["llm_config"]["shared"] = json!({"endpoint":"https://shared.invalid/v1", "api_key":"fixture-shared", "default_model":"shared-default", "polishing_model":"polish-default", "assistant_model":"assistant-default", "learning_model":"learning-default"});
+        value["llm_config"]["feature_override"] = json!({"use_shared":mask & 1 == 0, "endpoint":"https://polishing.invalid/v1", "api_key":"fixture-polishing", "model":"custom-polishing"});
+        value["assistant_config"]["llm"] = json!({"use_shared":mask & 2 == 0, "endpoint":"https://assistant.invalid/v1", "api_key":"fixture-assistant", "model":"custom-assistant"});
+        value["learning_config"]["feature_override"] = json!({"use_shared":mask & 4 == 0, "endpoint":"https://learning.invalid/v1", "api_key":"fixture-learning", "model":"custom-learning"});
+        let old: AppConfig = serde_json::from_value(value.clone()).unwrap();
+        let expected = resolved_connections(&old);
+        write_fixture(&path, &value);
+        for _ in 0..2 {
+            let (config, _) = AppConfig::load_from_path(&path).unwrap();
+            assert_eq!(resolved_connections(&config), expected);
+            config.save_to_path(&path).unwrap();
+        }
     }
 }

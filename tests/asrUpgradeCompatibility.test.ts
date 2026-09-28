@@ -59,3 +59,27 @@ test("升级保留用户清空的预设列表，补全一个提示词不能覆�
   assert.equal(loaded.enabled, true);
   assert.equal(loaded.web_search_max_loops, 1);
 });
+
+test("加载旧配置不得恢复用户主动清空的助手提示词", () => {
+  const assistant = { ...DEFAULT_ASSISTANT_CONFIG, qa_system_prompt: "", text_processing_system_prompt: "" };
+  assert.deepEqual(normalizeLoadedAssistant(assistant), assistant);
+});
+
+test("旧配置中缺失的新纠错开关保持关闭，包括整个 TNL 段缺失", () => {
+  for (const tnl of [undefined, null, {}, { enabled: true }, { enabled: false }]) {
+    const loaded = normalizeTnlConfig(tnl);
+    assert.equal(loaded.disfluency_mode, "off");
+    assert.equal(loaded.enable_personalization_exact_text_pass, false);
+    assert.equal(loaded.enable_personalization_syllable_match_pass, false);
+    assert.equal(loaded.enable_personalization_hotwords, false);
+    assert.equal(loaded.enable_context_hotwords, false);
+    assert.equal(normalizeTnlConfig(JSON.parse(JSON.stringify(loaded))).enable_personalization_exact_text_pass, false);
+  }
+});
+
+test("用户明确开启的新功能不被兼容处理关闭", () => {
+  const loaded = normalizeTnlConfig({ enabled: true, disfluency_mode: "aggressive", enable_personalization_exact_text_pass: true, enable_personalization_syllable_match_pass: false });
+  assert.equal(loaded.disfluency_mode, "aggressive");
+  assert.equal(loaded.enable_personalization_exact_text_pass, true);
+  assert.equal(loaded.enable_personalization_syllable_match_pass, false);
+});

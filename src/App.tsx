@@ -137,8 +137,8 @@ function App() {
     handleClearHistory,
   } = useHistoryController();
   const recentHotwordEntries = useMemo(
-    () => buildRecentHotwordEntries(history),
-    [history],
+    () => tnlConfig.enable_context_hotwords ? buildRecentHotwordEntries(history) : [],
+    [history, tnlConfig.enable_context_hotwords],
   );
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   // R8.2 (v4): cross-page focus state — set by ModelsPage callback, consumed by LlmPage useEffect

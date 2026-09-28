@@ -14,7 +14,7 @@ export function normalizeLoadedAssistant(config: AssistantConfig | null | undefi
   return {
     ...DEFAULT_ASSISTANT_CONFIG,
     ...config,
-    qa_system_prompt: config?.qa_system_prompt || DEFAULT_ASSISTANT_CONFIG.qa_system_prompt,
-    text_processing_system_prompt: config?.text_processing_system_prompt || DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt,
+    qa_system_prompt: config?.qa_system_prompt ?? DEFAULT_ASSISTANT_CONFIG.qa_system_prompt,
+    text_processing_system_prompt: config?.text_processing_system_prompt ?? DEFAULT_ASSISTANT_CONFIG.text_processing_system_prompt,
   };
 }

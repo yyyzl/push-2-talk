@@ -463,33 +463,59 @@ impl OpenAiClient {
             options.temperature
         );
 
-        let request = self
-            .client
-            .post(&self.config.endpoint)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request_body);
-
-        let response = tokio::select! {
-            _ = cancel_token.cancelled() => {
-                anyhow::bail!("AI 助手生成已取消");
+        let response = loop {
+            let request = self
+                .client
+                .post(&self.config.endpoint)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .json(&request_body);
+            let response = tokio::select! {
+                _ = cancel_token.cancelled() => anyhow::bail!("AI 助手生成已取消"),
+                response = request.send() => response?,
+            };
+            let status = response.status();
+            if status.is_success() {
+                break response;
             }
-            response = request.send() => response?,
-        };
-
-        let status = response.status();
-        if !status.is_success() {
             let text = tokio::select! {
-                _ = cancel_token.cancelled() => {
-                    anyhow::bail!("AI 助手生成已取消");
-                }
+                _ = cancel_token.cancelled() => anyhow::bail!("AI 助手生成已取消"),
                 text = response.text() => text.unwrap_or_default(),
             };
+            // Only retry an explicit protocol rejection before generation starts.
+            // Authentication, quota, network failures and partial output never retry.
+            if request_body["stream"] == true && rejects_streaming(status.as_u16(), &text) {
+                request_body["stream"] = Value::Bool(false);
+                continue;
+            }
             anyhow::bail!("OpenAI API 请求失败 ({}): {}", status, text);
+        };
+
+        let is_json = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .eq_ignore_ascii_case("application/json")
+            });
+        if is_json || request_body["stream"] == false {
+            let payload: Value = tokio::select! {
+                _ = cancel_token.cancelled() => anyhow::bail!("AI 助手生成已取消"),
+                payload = response.json() => payload?,
+            };
+            let chunk = completion_as_stream_chunk(&payload)?;
+            on_chunk(chunk.clone());
+            return Ok(accumulate_stream_chunks(&[chunk]));
         }
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut pending_utf8 = Vec::new();
         let mut chunks = Vec::new();
         let read_timeout = Duration::from_secs(self.config.timeout_secs.unwrap_or(30).max(1));
 
@@ -507,8 +533,15 @@ impl OpenAiClient {
             };
 
             let bytes = item?;
-            let text = String::from_utf8_lossy(&bytes);
-            buffer.push_str(&text);
+            // TCP/HTTP chunk boundaries can split a Chinese character or emoji.
+            pending_utf8.extend_from_slice(&bytes);
+            let valid_len = match std::str::from_utf8(&pending_utf8) {
+                Ok(text) => text.len(),
+                Err(error) if error.error_len().is_none() => error.valid_up_to(),
+                Err(error) => return Err(error.into()),
+            };
+            buffer.push_str(std::str::from_utf8(&pending_utf8[..valid_len])?);
+            pending_utf8.drain(..valid_len);
 
             while let Some(event) = pop_next_sse_event(&mut buffer) {
                 if let Some(chunk) = parse_sse_event(&event)? {
@@ -518,6 +551,10 @@ impl OpenAiClient {
             }
         }
 
+        anyhow::ensure!(
+            pending_utf8.is_empty(),
+            "OpenAI stream 返回不完整 UTF-8 数据"
+        );
         if !buffer.trim().is_empty() {
             if let Some(chunk) = parse_sse_event(&buffer)? {
                 on_chunk(chunk.clone());
@@ -527,6 +564,51 @@ impl OpenAiClient {
 
         Ok(accumulate_stream_chunks(&chunks))
     }
+}
+
+fn rejects_streaming(status: u16, text: &str) -> bool {
+    if !matches!(status, 400 | 422 | 501) {
+        return false;
+    }
+    let text = text.to_lowercase();
+    text.contains("stream")
+        && [
+            "not supported",
+            "unsupported",
+            "not implemented",
+            "does not support",
+            "不支持",
+        ]
+        .iter()
+        .any(|phrase| text.contains(phrase))
+}
+
+fn completion_as_stream_chunk(payload: &Value) -> Result<StreamChunk> {
+    let choice = payload["choices"]
+        .as_array()
+        .and_then(|choices| choices.first())
+        .ok_or_else(|| anyhow::anyhow!("OpenAI API 返回缺少 choices 的响应"))?;
+    let message = &choice["message"];
+    let tool_calls: Vec<ToolCall> = match message.get("tool_calls").filter(|value| !value.is_null())
+    {
+        Some(calls) => serde_json::from_value(calls.clone())?,
+        None => Vec::new(),
+    };
+    Ok(StreamChunk {
+        delta_content: message["content"].as_str().map(str::to_string),
+        finish_reason: choice["finish_reason"].as_str().map(str::to_string),
+        delta_tool_calls: tool_calls
+            .into_iter()
+            .enumerate()
+            .map(|(index, call)| StreamToolCallDelta {
+                index,
+                id: Some(call.id),
+                call_type: Some(call.call_type),
+                function_name: Some(call.function.name),
+                function_arguments_delta: Some(call.function.arguments),
+            })
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -590,7 +672,7 @@ fn parse_sse_event(event: &str) -> Result<Option<StreamChunk>> {
         anyhow::anyhow!(
             "OpenAI stream 返回非 JSON 数据: {} (片段: {})",
             e,
-            &data[..data.len().min(120)]
+            data.chars().take(120).collect::<String>()
         )
     })?;
 
@@ -802,3 +884,7 @@ mod tests {
         assert_eq!(chunks[1].finish_reason.as_deref(), Some("stop"));
     }
 }
+
+#[cfg(test)]
+#[path = "openai_client_compatibility_tests.rs"]
+mod compatibility_tests;

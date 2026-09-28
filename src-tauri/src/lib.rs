@@ -1819,13 +1819,26 @@ fn sync_asr_provider_checks(
 }
 
 fn load_asr_correction_pairs_or_empty() -> Vec<CorrectionPair> {
+    let enabled = AppConfig::load()
+        .map(|(config, _)| config.tnl_config.enable_personalization_hotwords)
+        .unwrap_or(false);
     match crate::personalization::default_correction_pairs_path() {
-        Ok(path) => load_asr_correction_pairs_from_path_or_empty(&path),
+        Ok(path) => load_asr_correction_pairs_from_path_if_enabled(&path, enabled),
         Err(e) => {
             tracing::warn!("ASR 热词纠错对路径解析失败，跳过 correction pairs: {}", e);
             Vec::new()
         }
     }
+}
+
+fn load_asr_correction_pairs_from_path_if_enabled(
+    path: &std::path::Path,
+    enabled: bool,
+) -> Vec<CorrectionPair> {
+    if !enabled {
+        return Vec::new();
+    }
+    load_asr_correction_pairs_from_path_or_empty(path)
 }
 
 fn load_asr_correction_pairs_from_path_or_empty(path: &std::path::Path) -> Vec<CorrectionPair> {
@@ -1885,6 +1898,11 @@ mod asr_hotword_runtime_tests {
 
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].corrected_text, "Claude Code");
+        assert!(load_asr_correction_pairs_from_path_if_enabled(&path, false).is_empty());
+        assert_eq!(
+            load_asr_correction_pairs_from_path_if_enabled(&path, true).len(),
+            1
+        );
     }
 }
 
@@ -3559,7 +3577,10 @@ async fn start_app(
 
             // 从 state 获取最新词库（支持热更新），并为本次录音追加临时上下文热词。
             let mut dictionary = dictionary_state.lock().unwrap().clone();
-            if let Some(hwnd) = target_hwnd {
+            let context_hotwords_enabled = AppConfig::load()
+                .map(|(config, _)| config.tnl_config.enable_context_hotwords)
+                .unwrap_or(false);
+            if let Some(hwnd) = target_hwnd.filter(|_| context_hotwords_enabled) {
                 let context_read_start = std::time::Instant::now();
                 match tokio::task::spawn_blocking(move || platform::desktop().read_text(hwnd)).await
                 {

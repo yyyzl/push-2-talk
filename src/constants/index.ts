@@ -137,6 +137,8 @@ export const DEFAULT_TNL_CONFIG: TnlConfig = {
   disfluency_mode: "conservative",
   enable_personalization_exact_text_pass: true,
   enable_personalization_syllable_match_pass: true,
+  enable_personalization_hotwords: true,
+  enable_context_hotwords: true,
   personalization_max_window_tokens: 5,
   personalization_apply_threshold: 0.88
 };
@@ -147,7 +149,7 @@ const isDisfluencyMode = (mode: unknown): mode is DisfluencyMode =>
 export function normalizeTnlConfig(
   tnlConfig: Partial<TnlConfig> | null | undefined,
 ): TnlConfig {
-  if (!tnlConfig) return DEFAULT_TNL_CONFIG;
+  tnlConfig = tnlConfig ?? {};
 
   const maxWindowTokens = Number(tnlConfig.personalization_max_window_tokens);
   const applyThreshold = Number(tnlConfig.personalization_apply_threshold);
@@ -155,6 +157,10 @@ export function normalizeTnlConfig(
   return {
     ...DEFAULT_TNL_CONFIG,
     ...tnlConfig,
+    enable_personalization_exact_text_pass: tnlConfig.enable_personalization_exact_text_pass ?? false,
+    enable_personalization_syllable_match_pass: tnlConfig.enable_personalization_syllable_match_pass ?? false,
+    enable_personalization_hotwords: tnlConfig.enable_personalization_hotwords ?? false,
+    enable_context_hotwords: tnlConfig.enable_context_hotwords ?? false,
     disfluency_mode: isDisfluencyMode(tnlConfig.disfluency_mode)
       ? tnlConfig.disfluency_mode
       : tnlConfig.disfluency_mode == null ? "off" : DEFAULT_TNL_CONFIG.disfluency_mode,

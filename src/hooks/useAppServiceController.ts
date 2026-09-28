@@ -660,7 +660,7 @@ export function useAppServiceController({
             dictionary: buildRuntimeDictionary(
               loadedDictionary,
               loadedBuiltinDictionaryDomains,
-              recentHotwordEntries,
+              config.tnl_config?.enable_context_hotwords ? recentHotwordEntries : [],
             ),
             theme: config.theme || "light",
           });

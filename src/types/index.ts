@@ -167,6 +167,8 @@ export interface TnlConfig {
   disfluency_mode: DisfluencyMode;
   enable_personalization_exact_text_pass: boolean;
   enable_personalization_syllable_match_pass: boolean;
+  enable_personalization_hotwords: boolean;
+  enable_context_hotwords: boolean;
   personalization_max_window_tokens: number;
   personalization_apply_threshold: number;
 }
