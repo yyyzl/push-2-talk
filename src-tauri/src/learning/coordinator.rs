@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
-use crate::config::{AppConfig, LearningConfig};
+use crate::config::LearningConfig;
 use crate::learning::diff_analyzer::{analyze_diff, merge_word_level_diffs, DiffResult};
 use crate::learning::llm_judge::LlmJudge;
 use crate::learning::observations::Observations;
@@ -199,8 +199,8 @@ pub fn start_learning_observation(
         );
 
         // 加载 LLM 配置
-        let app_config = match AppConfig::load() {
-            Ok((cfg, _)) => cfg,
+        let app_config = match crate::application::configuration::load_persisted_config() {
+            Ok(cfg) => cfg,
             Err(e) => {
                 tracing::warn!("Learning [{}]: 加载配置失败: {}", &observation_id[..8], e);
                 return;

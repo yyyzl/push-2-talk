@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
-use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::llm_post_processor::LlmPostProcessor;
 use crate::personalization::{
@@ -87,8 +86,8 @@ impl NormalPipeline {
         );
 
         // 2. TNL 技术规范化（如果启用）
-        let tnl_config = AppConfig::load()
-            .map(|(c, _)| c.tnl_config)
+        let tnl_config = crate::application::configuration::load_persisted_config()
+            .map(|c| c.tnl_config)
             .unwrap_or_default();
         let tnl_enabled = tnl_config.enabled;
         let (text, tnl_changed, tnl_diagnostics, technical_spans) = if tnl_enabled {
@@ -169,7 +168,7 @@ impl NormalPipeline {
         // 7. 触发学习观察（如果启用且插入成功）
         if inserted {
             if let Some(hwnd) = target_hwnd {
-                if let Ok((config, _)) = AppConfig::load() {
+                if let Ok(config) = crate::application::configuration::load_persisted_config() {
                     if config.learning_config.enabled {
                         start_learning_observation(
                             app.clone(),

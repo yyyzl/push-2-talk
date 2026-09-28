@@ -1,3 +1,5 @@
+pub(crate) mod patch;
+pub(crate) mod repository;
 // src-tauri/src/config.rs
 
 use anyhow::{Context, Result};
@@ -5,28 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 // 词典相关函数已移至独立的 dictionary_utils 模块
-
-// ============================================================================
-// 全局配置操作锁
-// ============================================================================
-
-lazy_static::lazy_static! {
-    /// 全局配置操作锁
-    ///
-    /// 保护所有 config 的读写操作，防止并发 load->modify->save 导致的数据丢失
-    ///
-    /// 使用方式：
-    /// ```ignore
-    /// let _guard = CONFIG_LOCK.lock().unwrap();
-    /// let (mut config, _) = AppConfig::load()?;
-    /// // 修改 config...
-    /// config.save()?;
-    /// ```
-    pub static ref CONFIG_LOCK: Mutex<()> = Mutex::new(());
-}
 
 // ============================================================================
 // 热键触发模式
@@ -1720,10 +1702,6 @@ impl AppConfig {
         crate::dictionary_utils::backfill_inferred_categories(&mut self.dictionary)
     }
 
-    pub fn load() -> Result<(Self, bool)> {
-        Self::load_from_path(&Self::config_path()?)
-    }
-
     pub(crate) fn load_from_path(path: &Path) -> Result<(Self, bool)> {
         tracing::info!("尝试从以下路径加载配置: {:?}", path);
 
@@ -2030,10 +2008,6 @@ impl AppConfig {
             tracing::warn!("配置文件不存在，创建并返回默认配置");
             Ok((Self::new(), false))
         }
-    }
-
-    pub fn save(&self) -> Result<()> {
-        self.save_to_path(&Self::config_path()?)
     }
 
     pub(crate) fn save_to_path(&self, path: &Path) -> Result<()> {

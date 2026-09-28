@@ -54,14 +54,7 @@ test("P1-A: saveFieldPatchWithStatus 应主动开启同步窗口并在 finally �
   );
 });
 
-test("P1-B: load_config 命令应持有 CONFIG_LOCK，避免与 save rename 竞态", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
 
-  assert.match(
-    source,
-    /async fn load_config\(\) -> Result<AppConfig, String> \{[\s\S]*let _guard = CONFIG_LOCK[\s\S]*\.lock\(\)/,
-  );
-});
 
 test("P2-B: save_config 未传 hotkey_config 时应保留旧值", async () => {
   const source = await readSource("src-tauri/src/lib.rs");
@@ -93,13 +86,7 @@ test("M2: PreferencesPage 不应再在切换学习开关时 load_config", async 
   assert.match(source, /\.\.\.learningConfig/);
 });
 
-test("S3: 托盘配置切换应拆分磁盘保存与事件派发，避免长时间持锁", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
 
-  assert.match(source, /fn\s+save_persisted_config_without_emit\s*\(/);
-  assert.match(source, /save_persisted_config_without_emit\(&config\)\?;/);
-  assert.match(source, /emit_config_updated\(app_handle,\s*&updated_config\);/);
-});
 
 test("m1: 热键录制 handleKeyUp 应仅 stopPropagation", async () => {
   const source = await readSource("src/hooks/useHotkeyRecording.ts");
@@ -116,12 +103,7 @@ test("m2: 顶部全局提示条应使用高度过渡避免布局抖动", async (
   assert.match(source, /globalNotice\s*\?\s*\"max-h-10 opacity-100\"\s*:\s*\"max-h-0 opacity-0\"/);
 });
 
-test("m3: CONFIG_LOCK 应仅在 lib.rs 顶部统一导入", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
 
-  assert.match(source, /use\s+config::\{\s*AppConfig\s*,\s*CONFIG_LOCK\s*\};/);
-  assert.doesNotMatch(source, /use\s+crate::config::CONFIG_LOCK\s*;/);
-});
 
 test("S5: 即时保存 overrides 命名应统一为 dictionaryEntries", async () => {
   const contextSource = await readSource("src/contexts/ConfigSaveContext.tsx");
@@ -158,14 +140,7 @@ test("S2: Preferences 学习开关应改为调用 set_learning_enabled", async (
   assert.match(source, /await\s+onSetLearningEnabled\(newValue\)/);
 });
 
-test("S2+: 后端配置写入应通过统一 mutate helper", async () => {
-  const source = await readSource("src-tauri/src/lib.rs");
 
-  assert.match(source, /fn\s+mutate_persisted_config_with_result<\s*R\s*,\s*F\s*>\s*\(/);
-  assert.match(source, /fn\s+mutate_persisted_config<\s*F\s*>\s*\(/);
-  assert.match(source, /save_persisted_config_without_emit\(&config\)\?;/);
-  assert.match(source, /let\s+\(updated_config\s*,\s*new_value\)\s*=\s*mutate_persisted_config_with_result\(/);
-});
 
 test("S2+: 前端应通过 patch_config_fields 保存轻量字段", async () => {
   const controllerSource = await readSource("src/hooks/useAppServiceController.ts");

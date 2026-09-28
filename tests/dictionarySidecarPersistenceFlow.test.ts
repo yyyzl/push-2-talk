@@ -10,26 +10,6 @@ function commandBlock(source: string, name: string): string {
   return source.slice(start, nextCommand === -1 ? undefined : nextCommand);
 }
 
-function functionBlock(source: string, name: string): string {
-  const start = source.indexOf(`fn ${name}`);
-  assert.notEqual(start, -1, `missing function ${name}`);
-
-  const braceStart = source.indexOf("{", start);
-  assert.notEqual(braceStart, -1, `missing function body ${name}`);
-
-  let depth = 0;
-  for (let index = braceStart; index < source.length; index += 1) {
-    const char = source[index];
-    if (char === "{") depth += 1;
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return source.slice(start, index + 1);
-    }
-  }
-
-  throw new Error(`unterminated function ${name}`);
-}
-
 test("词库管理命令应以 user_terms sidecar 为主要持久化源", async () => {
   const backendSource = await readFile("src-tauri/src/lib.rs", "utf8");
 
@@ -47,10 +27,6 @@ test("词库管理命令应以 user_terms sidecar 为主要持久化源", async 
 
 test("普通配置保存不应把 AppConfig.dictionary 快照默认同步回 sidecar", async () => {
   const backendSource = await readFile("src-tauri/src/lib.rs", "utf8");
-
-  const saveHelperBlock = functionBlock(backendSource, "save_persisted_config_without_emit");
-  assert.match(saveHelperBlock, /config\.save\(\)/);
-  assert.doesNotMatch(saveHelperBlock, /sync_user_terms_sidecar_from_dictionary_or_warn/);
 
   const saveConfigBlock = commandBlock(backendSource, "save_config");
   assert.match(saveConfigBlock, /let should_sync_user_terms_sidecar = dictionary\.is_some\(\);/);

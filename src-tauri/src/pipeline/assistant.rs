@@ -13,7 +13,6 @@ use tauri::{AppHandle, Emitter};
 
 use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::assistant_processor::AssistantProcessor;
-use crate::config::AppConfig;
 use crate::tnl::TnlEngine;
 
 /// AI 助手模式处理管道
@@ -68,8 +67,8 @@ impl AssistantPipeline {
 
         // 2. TNL 技术规范化（如果启用）
         let user_instruction = {
-            let tnl_enabled = AppConfig::load()
-                .map(|(c, _)| c.tnl_config.enabled)
+            let tnl_enabled = crate::application::configuration::load_persisted_config()
+                .map(|c| c.tnl_config.enabled)
                 .unwrap_or(true);
 
             if tnl_enabled {

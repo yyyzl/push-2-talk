@@ -1,6 +1,8 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod application;
+use application::configuration::*;
 pub mod asr;
 use asr::qwen_models::{profile_model, QwenMode, QwenModel};
 mod assistant_processor;
@@ -39,11 +41,11 @@ use assistant_processor::{
     AssistantProcessor, AssistantStreamEvent, TurnOutcome, WebSearchPreference,
 };
 use audio_recorder::AudioRecorder;
-use config::{AppConfig, CONFIG_LOCK};
+use config::AppConfig;
 use futures_util::FutureExt;
 use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
-use personalization::{default_user_terms_db_path, CorrectionPair, UserTermStore};
+use personalization::CorrectionPair;
 use pipeline::{NormalPipeline, TranscriptionContext};
 use platform::AudioMuteManager;
 use platform::HotkeyService;
@@ -51,7 +53,6 @@ use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -325,8 +326,8 @@ fn emit_assistant_stream_event(
 }
 
 fn load_search_runtime_config() -> config::SearchConfig {
-    config::AppConfig::load()
-        .map(|(cfg, _)| cfg.search_config)
+    crate::application::configuration::load_persisted_config()
+        .map(|cfg| cfg.search_config)
         .unwrap_or_else(|e| {
             tracing::warn!("加载联网搜索配置失败，使用默认值: {}", e);
             config::SearchConfig::default()
@@ -1062,592 +1063,20 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     );
 }
 
-fn sync_user_terms_sidecar_from_dictionary_or_warn(dictionary: &[String], lifecycle: &str) {
-    let _ = sync_user_terms_sidecar_from_dictionary_result_or_warn(
-        sync_user_terms_sidecar_from_dictionary(dictionary),
-        lifecycle,
-    );
-}
-
-fn sync_user_terms_sidecar_from_dictionary(dictionary: &[String]) -> anyhow::Result<usize> {
-    let path = default_user_terms_db_path()?;
-    sync_user_terms_sidecar_from_dictionary_at_path(dictionary, &path)
-}
-
-#[cfg(test)]
-fn sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
-    dictionary: &[String],
-    path: &std::path::Path,
-    lifecycle: &str,
-) -> Option<usize> {
-    sync_user_terms_sidecar_from_dictionary_result_or_warn(
-        sync_user_terms_sidecar_from_dictionary_at_path(dictionary, path),
-        lifecycle,
-    )
-}
-
-fn sync_user_terms_sidecar_from_dictionary_result_or_warn(
-    result: anyhow::Result<usize>,
-    lifecycle: &str,
-) -> Option<usize> {
-    match result {
-        Ok(count) => {
-            tracing::debug!(
-                "同步 user_terms sidecar 完成（{}）：{} 个词条",
-                lifecycle,
-                count
-            );
-            Some(count)
-        }
-        Err(e) => {
-            tracing::warn!(
-                "同步 user_terms sidecar 失败（{}），继续使用配置词典: {}",
-                lifecycle,
-                e
-            );
-            None
-        }
-    }
-}
-
-fn sync_user_terms_sidecar_from_dictionary_at_path(
-    dictionary: &[String],
-    path: &std::path::Path,
-) -> anyhow::Result<usize> {
-    let mut normalized_dictionary = dictionary.to_vec();
-    crate::dictionary_utils::backfill_inferred_categories(&mut normalized_dictionary);
-
-    let mut store = UserTermStore::open(path)?;
-    store.hydrate_dictionary_entries(&normalized_dictionary)
-}
-
-fn dictionary_entries_from_user_terms_or_config(config_dictionary: &[String]) -> Vec<String> {
-    match default_user_terms_db_path() {
-        Ok(path) => dictionary_entries_from_user_terms_or_config_at_path(config_dictionary, &path),
-        Err(e) => {
-            tracing::warn!(
-                "解析 user_terms sidecar 路径失败，使用配置词典读取词库: {}",
-                e
-            );
-            normalize_dictionary_for_config_storage(config_dictionary.to_vec())
-        }
-    }
-}
-
-fn dictionary_entries_from_user_terms_or_config_at_path(
-    config_dictionary: &[String],
-    path: &std::path::Path,
-) -> Vec<String> {
-    let normalized_config = normalize_dictionary_for_config_storage(config_dictionary.to_vec());
-
-    let mut store = match UserTermStore::open(path) {
-        Ok(store) => store,
-        Err(e) => {
-            tracing::warn!("读取 user_terms sidecar 失败，回退配置词典: {}", e);
-            return normalized_config;
-        }
-    };
-
-    match store.list_enabled_dictionary_entries() {
-        Ok(entries) if !entries.is_empty() => entries,
-        Ok(_) if !normalized_config.is_empty() && matches!(store.has_entries(), Ok(false)) => {
-            tracing::debug!("user_terms sidecar 为空，从配置词典水合词库");
-            if let Err(e) = store.hydrate_dictionary_entries(&normalized_config) {
-                tracing::warn!("水合 user_terms sidecar 失败，回退配置词典: {}", e);
-                return normalized_config;
-            }
-            match store.list_enabled_dictionary_entries() {
-                Ok(entries) => entries,
-                Err(e) => {
-                    tracing::warn!("水合后读取 user_terms sidecar 失败，回退配置词典: {}", e);
-                    normalized_config
-                }
-            }
-        }
-        Ok(_) => Vec::new(),
-        Err(e) => {
-            tracing::warn!("读取 user_terms sidecar 词条失败，回退配置词典: {}", e);
-            normalized_config
-        }
-    }
-}
-
-fn upsert_user_term_sidecar_entry_and_snapshot_config(
-    word: &str,
-    source: &str,
-    category: Option<&str>,
-) -> Result<(AppConfig, Vec<String>), String> {
-    let path = default_user_terms_db_path()
-        .map_err(|e| format!("解析 user_terms sidecar 路径失败: {}", e))?;
-    upsert_user_term_sidecar_entry_and_snapshot_config_at_path(word, source, category, &path)
-}
-
-fn upsert_user_term_sidecar_entry_and_snapshot_config_at_path(
-    word: &str,
-    source: &str,
-    category: Option<&str>,
-    path: &std::path::Path,
-) -> Result<(AppConfig, Vec<String>), String> {
-    let mut store =
-        UserTermStore::open(path).map_err(|e| format!("打开 user_terms sidecar 失败: {}", e))?;
-    store
-        .upsert_dictionary_entry(word, source, category)
-        .map_err(|e| format!("写入 user_terms sidecar 失败: {}", e))?;
-    let entries = store
-        .list_enabled_dictionary_entries()
-        .map_err(|e| format!("读取 user_terms sidecar 失败: {}", e))?;
-    snapshot_config_dictionary_from_user_term_entries(entries)
-}
-
-fn delete_user_term_sidecar_entries_and_snapshot_config(
-    words: &[String],
-) -> Result<(AppConfig, Vec<String>), String> {
-    let path = default_user_terms_db_path()
-        .map_err(|e| format!("解析 user_terms sidecar 路径失败: {}", e))?;
-    delete_user_term_sidecar_entries_and_snapshot_config_at_path(words, &path)
-}
-
-fn delete_user_term_sidecar_entries_and_snapshot_config_at_path(
-    words: &[String],
-    path: &std::path::Path,
-) -> Result<(AppConfig, Vec<String>), String> {
-    let mut store =
-        UserTermStore::open(path).map_err(|e| format!("打开 user_terms sidecar 失败: {}", e))?;
-    store
-        .disable_dictionary_entries(words)
-        .map_err(|e| format!("删除 user_terms sidecar 词条失败: {}", e))?;
-    let entries = store
-        .list_enabled_dictionary_entries()
-        .map_err(|e| format!("读取 user_terms sidecar 失败: {}", e))?;
-    snapshot_config_dictionary_from_user_term_entries(entries)
-}
-
-fn snapshot_config_dictionary_from_user_term_entries(
-    entries: Vec<String>,
-) -> Result<(AppConfig, Vec<String>), String> {
-    let normalized_entries = normalize_dictionary_for_config_storage(entries);
-    mutate_persisted_config_with_result(|config| {
-        config.dictionary = normalized_entries;
-        Ok(config.dictionary.clone())
-    })
-}
-
-fn runtime_dictionary_entries_from_user_terms_or_input(input_dictionary: &[String]) -> Vec<String> {
-    match default_user_terms_db_path() {
-        Ok(path) => {
-            runtime_dictionary_entries_from_user_terms_or_input_at_path(input_dictionary, &path)
-        }
-        Err(e) => {
-            tracing::warn!(
-                "解析 user_terms sidecar 路径失败，使用输入词典启动运行时词库: {}",
-                e
-            );
-            normalized_runtime_dictionary_from_input(input_dictionary)
-        }
-    }
-}
-
-fn runtime_dictionary_entries_from_user_terms_or_input_at_path(
-    input_dictionary: &[String],
-    path: &std::path::Path,
-) -> Vec<String> {
-    let normalized_input = normalized_runtime_dictionary_from_input(input_dictionary);
-    match UserTermStore::open(path).and_then(|store| {
-        Ok((
-            store.list_enabled_dictionary_entries()?,
-            store.has_entries()?,
-        ))
-    }) {
-        Ok((sidecar_entries, true)) => {
-            tracing::debug!(
-                "从 user_terms sidecar 合并运行时词库：{} 个用户词条，{} 个输入词条",
-                sidecar_entries.len(),
-                normalized_input.len()
-            );
-            merge_sidecar_user_terms_with_runtime_dictionary(sidecar_entries, normalized_input)
-        }
-        Ok(_) => {
-            tracing::warn!("user_terms sidecar 没有启用词条，使用输入词典启动运行时词库");
-            normalized_input
-        }
-        Err(e) => {
-            tracing::warn!(
-                "读取 user_terms sidecar 失败，使用输入词典启动运行时词库: {}",
-                e
-            );
-            normalized_input
-        }
-    }
-}
-
-fn merge_sidecar_user_terms_with_runtime_dictionary(
-    sidecar_entries: Vec<String>,
-    runtime_entries: Vec<String>,
-) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut merged = Vec::new();
-
-    let dynamic_entries = runtime_entries.into_iter().filter(|entry| {
-        entry
-            .split('|')
-            .nth(1)
-            .is_some_and(is_runtime_only_dictionary_source)
-    });
-    for entry in sidecar_entries.into_iter().chain(dynamic_entries) {
-        let key = runtime_dictionary_entry_key(&entry);
-        if key.is_empty() || !seen.insert(key) {
-            continue;
-        }
-        merged.push(entry);
-    }
-
-    merged
-}
-
-fn runtime_dictionary_entry_key(entry: &str) -> String {
-    crate::dictionary_utils::extract_word(entry)
-        .trim()
-        .to_lowercase()
-}
-
-fn normalized_runtime_dictionary_from_input(input_dictionary: &[String]) -> Vec<String> {
-    input_dictionary
-        .iter()
-        .filter_map(|entry| normalize_runtime_dictionary_entry(entry))
-        .collect()
-}
-
-fn normalize_runtime_dictionary_entry(entry: &str) -> Option<String> {
-    let word =
-        crate::dictionary_utils::normalize_word(crate::dictionary_utils::extract_word(entry));
-    if word.is_empty() {
-        return None;
-    }
-
-    let mut parts = entry.split('|');
-    let _ = parts.next();
-    let source = parts
-        .next()
-        .map(str::trim)
-        .filter(|source| !source.is_empty());
-    let category = parts
-        .next()
-        .map(str::trim)
-        .filter(|category| !category.is_empty());
-
-    if let Some(source) = source.filter(|source| is_runtime_only_dictionary_source(source)) {
-        let category = crate::dictionary_utils::normalize_category(category)
-            .unwrap_or_else(|| crate::dictionary_utils::infer_dictionary_category(&word));
-        return Some(format!("{}|{}|{}", word, source, category));
-    }
-
-    let source = match source {
-        Some("auto") => "auto",
-        _ => "manual",
-    };
-    let category = crate::dictionary_utils::normalize_or_infer_category(&word, category);
-    Some(crate::dictionary_utils::format_entry_with_category(
-        &word,
-        source,
-        Some(category),
-    ))
-}
-
-fn is_runtime_only_dictionary_source(source: &str) -> bool {
-    matches!(source, "domain" | "recent" | "builtin" | "app_context")
-}
-
-fn load_persisted_config() -> Result<AppConfig, String> {
-    match AppConfig::load() {
-        Ok((mut config, migrated)) => {
-            config.dictionary = dictionary_entries_from_user_terms_or_config(&config.dictionary);
-            if migrated {
-                config
-                    .save()
-                    .map_err(|e| format!("保存迁移后的配置失败: {}", e))?;
-            }
-            Ok(config)
-        }
-        Err(e) => Err(format!("加载配置失败: {}", e)),
-    }
-}
-
-fn save_persisted_config_without_emit(config: &AppConfig) -> Result<(), String> {
-    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
-    Ok(())
-}
-
-fn mutate_persisted_config_with_result<R, F>(mutator: F) -> Result<(AppConfig, R), String>
-where
-    F: FnOnce(&mut AppConfig) -> Result<R, String>,
-{
-    let _guard = CONFIG_LOCK
-        .lock()
-        .map_err(|e| format!("获取配置锁失败: {}", e))?;
-
-    let mut config = load_persisted_config()?;
-    let result = mutator(&mut config)?;
-    save_persisted_config_without_emit(&config)?;
-
-    Ok((config, result))
-}
-
-fn mutate_persisted_config<F>(mutator: F) -> Result<AppConfig, String>
-where
-    F: FnOnce(&mut AppConfig) -> Result<(), String>,
-{
-    mutate_persisted_config_with_result(|config| {
-        mutator(config)?;
-        Ok(())
-    })
-    .map(|(config, _)| config)
-}
-
-#[cfg(test)]
-mod user_terms_sidecar_sync_tests {
-    use super::*;
-
-    #[test]
-    fn sync_user_terms_sidecar_from_dictionary_at_path_hydrates_terms() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("personalization").join("user_terms.db");
-        let dictionary = vec![
-            "useState|auto".to_string(),
-            "Claude Code|manual|product".to_string(),
-            "  ".to_string(),
-        ];
-
-        let synced = sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
-            &dictionary,
-            &path,
-            "test success",
-        );
-
-        assert_eq!(synced, Some(2));
-
-        let store = crate::personalization::UserTermStore::open(&path).expect("open synced store");
-        let use_state = store
-            .find_by_term("useState")
-            .expect("find useState")
-            .unwrap();
-        assert_eq!(use_state.source, "auto");
-        assert_eq!(use_state.category, "code_symbol");
-
-        let claude_code = store
-            .find_by_term("claude code")
-            .expect("find Claude Code")
-            .unwrap();
-        assert_eq!(claude_code.source, "manual");
-        assert_eq!(claude_code.category, "product");
-    }
-
-    #[test]
-    fn sync_user_terms_sidecar_from_dictionary_at_path_or_warn_ignores_open_error() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("db_directory");
-        std::fs::create_dir(&path).expect("create directory at db path");
-        let dictionary = vec!["Claude Code|manual|product".to_string()];
-
-        let synced = sync_user_terms_sidecar_from_dictionary_at_path_or_warn(
-            &dictionary,
-            &path,
-            "test failure",
-        );
-
-        assert_eq!(synced, None);
-    }
-}
-
-#[cfg(test)]
-mod runtime_user_terms_dictionary_tests {
-    use super::*;
-
-    #[test]
-    fn runtime_dictionary_merges_enabled_sidecar_entries_with_dynamic_runtime_entries() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("personalization").join("user_terms.db");
-        let mut store = crate::personalization::UserTermStore::open(&path).expect("open store");
-        store
-            .hydrate_dictionary_entries(&[
-                "Claude Code|manual|product".to_string(),
-                "useState|auto".to_string(),
-                "禁用短语|manual|phrase".to_string(),
-            ])
-            .expect("hydrate first snapshot");
-        store
-            .hydrate_dictionary_entries(&[
-                "Claude Code|manual|product".to_string(),
-                "useState|auto".to_string(),
-            ])
-            .expect("hydrate second snapshot");
-
-        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
-            &[
-                "Claude Code|recent|generic".to_string(),
-                "useState|recent|generic".to_string(),
-                "领域术语|domain|domain_term".to_string(),
-                "最近工具|recent|generic".to_string(),
-            ],
-            &path,
-        );
-
-        assert_eq!(
-            entries,
-            vec![
-                "Claude Code|manual|product".to_string(),
-                "useState|auto|code_symbol".to_string(),
-                "领域术语|domain|domain_term".to_string(),
-                "最近工具|recent|generic".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn runtime_dictionary_falls_back_to_config_when_sidecar_read_fails() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("db_directory");
-        std::fs::create_dir(&path).expect("create directory at db path");
-
-        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
-            &[
-                "useState|auto".to_string(),
-                "Claude Code|manual|product".to_string(),
-                "最近工具|recent|generic".to_string(),
-                "领域术语|domain|domain_term".to_string(),
-            ],
-            &path,
-        );
-
-        assert_eq!(
-            entries,
-            vec![
-                "useState|auto|code_symbol".to_string(),
-                "Claude Code|manual|product".to_string(),
-                "最近工具|recent|generic".to_string(),
-                "领域术语|domain|domain_term".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn runtime_dictionary_falls_back_to_config_when_sidecar_is_empty() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("personalization").join("user_terms.db");
-
-        let entries = runtime_dictionary_entries_from_user_terms_or_input_at_path(
-            &[
-                "Claude Code|manual|product".to_string(),
-                "最近工具|recent|generic".to_string(),
-            ],
-            &path,
-        );
-
-        assert_eq!(
-            entries,
-            vec![
-                "Claude Code|manual|product".to_string(),
-                "最近工具|recent|generic".to_string(),
-            ]
-        );
-    }
-}
-
-#[cfg(test)]
-mod dictionary_sidecar_persistence_tests {
-    use super::*;
-
-    #[test]
-    fn deleted_dictionary_stays_empty_when_a_stale_config_snapshot_is_loaded() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("user_terms.db");
-        let stale = vec!["Deleted Term|manual|phrase".to_string()];
-        let mut store = UserTermStore::open(&path).unwrap();
-        store.hydrate_dictionary_entries(&stale).unwrap();
-        store
-            .disable_dictionary_entries(&["Deleted Term".to_string()])
-            .unwrap();
-        drop(store);
-        assert!(dictionary_entries_from_user_terms_or_config_at_path(&stale, &path).is_empty());
-        assert_eq!(
-            runtime_dictionary_entries_from_user_terms_or_input_at_path(
-                &[stale[0].clone(), "Runtime Word|recent|phrase".to_string()],
-                &path,
-            ),
-            vec!["Runtime Word|recent|phrase".to_string()]
-        );
-    }
-
-    #[test]
-    fn dictionary_entries_bootstrap_empty_sidecar_from_config_snapshot() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("personalization").join("user_terms.db");
-
-        let entries = dictionary_entries_from_user_terms_or_config_at_path(
-            &[
-                "Claude Code|manual|product".to_string(),
-                "useState|auto".to_string(),
-            ],
-            &path,
-        );
-
-        assert_eq!(
-            entries,
-            vec![
-                "Claude Code|manual|product".to_string(),
-                "useState|auto|code_symbol".to_string(),
-            ]
-        );
-
-        let store = UserTermStore::open(&path).expect("open hydrated store");
-        assert_eq!(
-            store
-                .list_enabled_dictionary_entries()
-                .expect("list hydrated entries"),
-            entries
-        );
-    }
-
-    #[test]
-    fn dictionary_entries_prefer_existing_sidecar_over_config_snapshot() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("personalization").join("user_terms.db");
-        let mut store = UserTermStore::open(&path).expect("open store");
-        store
-            .upsert_dictionary_entry("Claude Code", "manual", Some("product"))
-            .expect("upsert sidecar term");
-
-        let entries = dictionary_entries_from_user_terms_or_config_at_path(
-            &["Old Config Term|manual|phrase".to_string()],
-            &path,
-        );
-
-        assert_eq!(entries, vec!["Claude Code|manual|product".to_string()]);
-    }
-
-    #[test]
-    fn dictionary_entries_fall_back_to_config_when_sidecar_open_fails() {
-        let temp = tempfile::tempdir().expect("create temp dir");
-        let path = temp.path().join("db_directory");
-        std::fs::create_dir(&path).expect("create directory at db path");
-
-        let entries = dictionary_entries_from_user_terms_or_config_at_path(
-            &[
-                "useState|auto".to_string(),
-                "rust|manual|generic".to_string(),
-            ],
-            &path,
-        );
-
-        assert_eq!(
-            entries,
-            vec!["useState|auto|code_symbol".to_string(), "rust".to_string()]
-        );
-    }
-}
-
 fn emit_config_updated(app: &AppHandle, config: &AppConfig) {
-    sync_tray_menu_from_config(app, config);
-    let _ = app.emit("config_updated", config);
+    // Concurrent commits may finish emitting out of order. Versioned consumers ignore stale snapshots.
+    match load_config_snapshot() {
+        Ok(snapshot) => {
+            sync_tray_menu_from_config(app, &snapshot.config);
+            let _ = app.emit("config_updated", &snapshot.config);
+            let _ = app.emit("config_snapshot_updated", &snapshot);
+        }
+        Err(error) => {
+            tracing::warn!("读取已提交配置快照失败: {error}");
+            sync_tray_menu_from_config(app, config);
+            let _ = app.emit("config_updated", config);
+        }
+    }
 }
 
 fn hotwords_content_changed(current: &str, next: &str) -> bool {
@@ -1819,8 +1248,8 @@ fn sync_asr_provider_checks(
 }
 
 fn load_asr_correction_pairs_or_empty() -> Vec<CorrectionPair> {
-    let enabled = AppConfig::load()
-        .map(|(config, _)| config.tnl_config.enable_personalization_hotwords)
+    let enabled = crate::application::configuration::load_persisted_config()
+        .map(|config| config.tnl_config.enable_personalization_hotwords)
         .unwrap_or(false);
     match crate::personalization::default_correction_pairs_path() {
         Ok(path) => load_asr_correction_pairs_from_path_if_enabled(&path, enabled),
@@ -2089,35 +1518,35 @@ async fn switch_asr_provider_from_tray_inner(
     doubao_item: &CheckMenuItem<tauri::Wry>,
     doubao_ime_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    let config = {
-        let _guard = CONFIG_LOCK
-            .lock()
-            .map_err(|e| format!("获取配置锁失败: {}", e))?;
-
-        let mut config = load_persisted_config()?;
-
-        if !is_asr_provider_configured(&config, &target_provider) {
-            sync_asr_provider_checks(
-                qwen_item,
-                doubao_item,
-                doubao_ime_item,
-                &config.asr_config.selection.active_provider,
-            );
+    let change = mutate_persisted_config_with_result(|config| {
+        if !is_asr_provider_configured(config, &target_provider) {
             return Err(format!(
                 "{} 未配置凭证，无法切换",
                 asr_provider_name(&target_provider)
             ));
         }
-
-        if config.asr_config.selection.active_provider == target_provider {
-            sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
-            return Ok(());
-        }
-
+        let changed = config.asr_config.selection.active_provider != target_provider;
         config.asr_config.selection.active_provider = target_provider.clone();
-        save_persisted_config_without_emit(&config)?;
-        config
+        Ok(changed)
+    });
+    let (config, changed) = match change {
+        Ok(result) => result,
+        Err(error) => {
+            if let Ok(config) = load_persisted_config() {
+                sync_asr_provider_checks(
+                    qwen_item,
+                    doubao_item,
+                    doubao_ime_item,
+                    &config.asr_config.selection.active_provider,
+                );
+            }
+            return Err(error);
+        }
     };
+    if !changed {
+        sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
+        return Ok(());
+    }
 
     emit_config_updated(app_handle, &config);
 
@@ -2167,11 +1596,6 @@ fn merge_asr_config_for_save(
             fallback
         }
     }
-}
-
-fn normalize_dictionary_for_config_storage(mut dictionary: Vec<String>) -> Vec<String> {
-    crate::dictionary_utils::backfill_inferred_categories(&mut dictionary);
-    dictionary
 }
 
 #[derive(Debug, Default, Clone, serde::Deserialize)]
@@ -2469,11 +1893,23 @@ mod save_config_merge_tests {
 }
 
 #[tauri::command]
+fn get_config_snapshot() -> Result<config::repository::ConfigSnapshot, String> {
+    load_config_snapshot()
+}
+
+#[tauri::command]
+fn update_config(
+    app: AppHandle,
+    patch: serde_json::Value,
+) -> Result<config::repository::ConfigSnapshot, String> {
+    let snapshot = update_config_snapshot(&patch)?;
+    emit_config_updated(&app, &snapshot.config);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 async fn load_config() -> Result<AppConfig, String> {
     tracing::info!("加载配置...");
-    let _guard = CONFIG_LOCK
-        .lock()
-        .map_err(|e| format!("获取配置锁失败: {}", e))?;
     load_persisted_config()
 }
 
@@ -3610,9 +3046,10 @@ async fn start_app(
 
             // 从 state 获取最新词库（支持热更新），并为本次录音追加临时上下文热词。
             let mut dictionary = dictionary_state.lock().unwrap().clone();
-            let context_hotwords_enabled = AppConfig::load()
-                .map(|(config, _)| config.tnl_config.enable_context_hotwords)
-                .unwrap_or(false);
+            let context_hotwords_enabled =
+                crate::application::configuration::load_persisted_config()
+                    .map(|config| config.tnl_config.enable_context_hotwords)
+                    .unwrap_or(false);
             if let Some(hwnd) = target_hwnd.filter(|_| context_hotwords_enabled) {
                 let context_read_start = std::time::Instant::now();
                 match tokio::task::spawn_blocking(move || platform::desktop().read_text(hwnd)).await
@@ -4120,8 +3557,8 @@ async fn handle_assistant_mode(
         let dict = state.dictionary.lock().unwrap().clone();
         dict
     };
-    let tnl_config = config::AppConfig::load()
-        .map(|(c, _)| c.tnl_config)
+    let tnl_config = crate::application::configuration::load_persisted_config()
+        .map(|c| c.tnl_config)
         .unwrap_or_default();
     let tnl_enabled = tnl_config.enabled;
     let (user_instruction, tnl_diagnostics) = if tnl_enabled {
@@ -5765,8 +5202,8 @@ async fn update_runtime_config(
         if enable_pp || enable_dict {
             // 需要处理器但当前为空，从配置文件加载
             if processor_guard.is_none() {
-                match config::AppConfig::load() {
-                    Ok((app_cfg, _)) => {
+                match crate::application::configuration::load_persisted_config() {
+                    Ok(app_cfg) => {
                         let resolved = app_cfg.llm_config.resolve_polishing();
                         if !resolved.api_key.trim().is_empty() {
                             *processor_guard = Some(LlmPostProcessor::new(app_cfg.llm_config));
@@ -5830,8 +5267,8 @@ async fn update_runtime_config(
             llm_cfg.shared.clone()
         } else {
             // 如果没有传递 llm_config，从配置文件加载
-            match config::AppConfig::load() {
-                Ok((app_cfg, _)) => app_cfg.llm_config.shared,
+            match crate::application::configuration::load_persisted_config() {
+                Ok(app_cfg) => app_cfg.llm_config.shared,
                 Err(e) => {
                     tracing::warn!("热更新: 无法加载 LLM 配置: {}", e);
                     config::SharedLlmConfig::default()
@@ -5947,12 +5384,7 @@ async fn add_learned_word(
 async fn get_dictionary_entries() -> Result<Vec<String>, String> {
     tracing::info!("获取词典条目...");
 
-    let config = {
-        let _guard = CONFIG_LOCK
-            .lock()
-            .map_err(|e| format!("获取配置锁失败: {}", e))?;
-        load_persisted_config()?
-    };
+    let config = load_persisted_config()?;
     let entries = dictionary_entries_from_user_terms_or_config(&config.dictionary);
 
     tracing::info!("返回 {} 个词典条目", entries.len());
@@ -6869,6 +6301,8 @@ pub fn run() {
             save_config,
             patch_config_fields,
             load_config,
+            get_config_snapshot,
+            update_config,
             get_builtin_domains_raw,
             load_usage_stats,
             start_app,
