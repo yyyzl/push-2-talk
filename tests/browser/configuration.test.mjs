@@ -89,3 +89,16 @@ test("输入 API Key 的自动保存只写该字段并保留后台的新设置",
   await page.waitForFunction(() => window.testDesktop.calls.some(call => call.command === "update_config"));
   assert.deepEqual((await writes(page)).map(call => call.args.patch), [{ asr_config: { credentials: { qwen_api_key: "fixture-edited-key" } } }]);
 });
+
+test("服务慢启动时保留用户输入，启动完成后才保存并应用最新设置", async t => {
+  const page = await open(t, "?slow-start");
+  await page.getByRole("button", { name: "语音识别引擎", exact: true }).click();
+  await page.getByPlaceholder("sk-...", { exact: true }).first().fill("fixture-during-startup");
+  await page.waitForTimeout(1200);
+  assert.deepEqual(await writes(page), [], "startup must finish before configuration saves can restart the service");
+  await page.evaluate(() => window.testDesktop.finishStartup());
+  await page.waitForFunction(() => window.testDesktop.calls.filter(call => call.command === "start_app").length === 2);
+  const starts = await page.evaluate(() => window.testDesktop.calls.filter(call => call.command === "start_app"));
+  assert.equal(starts[1].args.apiKey, "fixture-during-startup");
+  assert.deepEqual((await writes(page)).map(call => call.args.patch), [{ asr_config: { credentials: { qwen_api_key: "fixture-during-startup" } } }]);
+});

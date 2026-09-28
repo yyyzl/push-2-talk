@@ -157,10 +157,11 @@ function App() {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const hasCheckedUpdateOnStartup = useRef(false);
   const configInitializationRef = useRef(createConfigInitialization());
+  const [configReady, setConfigReady] = useState(false);
   const autoSaveTimerRef = useRef<number | null>(null);
   const syncWindowSnapshot = {
-    isExternalSyncing: false,
-    source: !configView.loaded && !error ? "initial_load" as const : null,
+    isExternalSyncing: !configReady && !error,
+    source: !configReady && !error ? "initial_load" as const : null,
   };
   const handleExternalConfigUpdated = useCallback((snapshot: ConfigSnapshot<AppConfig>) => {
     if (snapshot.revision < configStore.getSnapshot().revision) return;
@@ -367,6 +368,7 @@ function App() {
         await configInitializationRef.current.run(async () => {
           await loadConfig();
         });
+        setConfigReady(true);
         // 启动时自动检查更新（只执行一次）
         if (!hasCheckedUpdateOnStartup.current) {
           hasCheckedUpdateOnStartup.current = true;
@@ -470,7 +472,7 @@ function App() {
 
   // Debounce explicit edits only. Receiving snapshots never schedules a save.
   useEffect(() => {
-    if (!configView.loaded || !configView.dirty || configView.saving) return;
+    if (!configReady || !configView.loaded || !configView.dirty || configView.saving) return;
     if (["recording", "transcribing", "polishing", "assistant_processing"].includes(status)) return;
     autoSaveTimerRef.current = window.setTimeout(() => {
       autoSaveTimerRef.current = null;
@@ -486,7 +488,7 @@ function App() {
       });
     }, 900);
     return () => { if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current); };
-  }, [configView.editVersion, configView.dirty, configView.loaded, status, configStore]);
+  }, [configReady, configView.editVersion, configView.dirty, configView.loaded, status, configStore]);
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);

@@ -51,6 +51,10 @@ mockIPC(async (command, args: any) => {
   if (command === "get_autostart") return false;
   if (command === "plugin:app|version") return "1.6.3";
   if (command === "plugin:updater|check") return null;
+  if (command === "start_app" && new URLSearchParams(location.search).has("slow-start") && !browser.testDesktop.didStart) {
+    browser.testDesktop.didStart = true;
+    await new Promise<void>(resolve => { browser.testDesktop.finishStartup = resolve; });
+  }
   if (command === "start_app" && new URLSearchParams(location.search).has("idle")) throw new Error("测试服务保持停止");
   return null;
 });

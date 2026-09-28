@@ -59,6 +59,8 @@ flowchart TB
 
 主配置仍使用现有 JSON 文件和字段名称，SQLite 词库仍是权威来源。未指定的字段保留，显式 `null` 清空可选模型；未知 patch 字段报错，历史配置读取继续使用原有兼容处理。浏览器里的早期 ASR 缓存迁移和双帧定时抑制逻辑已退出主流程，v1.6.1 文件升级路径有固定样本覆盖。
 
-运行 `npm run test:ts` 与 `cargo test --locked --manifest-path src-tauri/Cargo.toml` 做状态、事务和业务回归。首次执行浏览器验收前运行 `npx playwright install chromium`，再运行 `npm run test:ui`。浏览器测试启动真实 React 页面，以内存 IPC 代替原生后端，检查旧配置启动、不回写、模型/开关保存失败重试和凭据编辑；不使用用户配置或调用云端。这些测试已加入 Windows/macOS CI，不能代替原生麦克风、全局热键和安装覆盖升级验收。
+运行 `npm run test:ts` 与 `cargo test --locked --manifest-path src-tauri/Cargo.toml` 做状态、事务和业务回归。首次执行浏览器验收前运行 `npx playwright install chromium`，再运行 `npm run test:ui`。浏览器测试启动真实 React 页面，以内存 IPC 代替原生后端，检查旧配置启动、不回写、模型/开关保存失败重试、凭据编辑及慢启动期间的输入保存；不使用用户配置或调用云端。这些测试已加入 Windows/macOS CI，不能代替原生麦克风、全局热键和安装覆盖升级验收。
 
-本轮本地验证（2026-09-28）：Rust 全量测试 603 项通过（另有 7 项忽略），TypeScript 162 项通过，浏览器验收 4 项通过，前端构建、`cargo build --locked --features atdd` 与 macOS 原生键盘/剪贴板回归通过。Windows 的验证以集成分支 CI 和后续实机覆盖升级为准。
+本轮本地验证（2026-09-28）：Rust 全量测试 603 项通过（另有 7 项忽略），TypeScript 162 项通过，浏览器验收 5 项通过，前端构建、`cargo build --locked --features atdd` 与 macOS 原生键盘/剪贴板回归通过。Windows 的验证以集成分支 CI 和后续实机覆盖升级为准。
+
+启动期间输入可以保留在编辑状态，但自动保存必须等待应用初始化完成，再将最新配置应用到服务。配置快照已经加载不代表服务初始化已经结束；两者分别跟踪，防止慢启动造成文件与运行状态不一致。
