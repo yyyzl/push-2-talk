@@ -38,7 +38,6 @@ export function createManifest({ version, repository, notes, pubDate, publicKey,
   for (const [platform, suffix, bundle] of [
     ["windows-x86_64", "x64-setup.exe", "nsis"],
     ["darwin-aarch64", "aarch64.app.tar.gz", "app"],
-    ["darwin-x86_64", "x64.app.tar.gz", "app"],
   ]) {
     const name = `PushToTalk_${version}_${suffix}`;
     const data = required(name);
@@ -48,7 +47,7 @@ export function createManifest({ version, repository, notes, pubDate, publicKey,
     platforms[platform] = entry;
     platforms[`${platform}-${bundle}`] = entry;
   }
-  for (const arch of ["aarch64", "x64"]) required(`PushToTalk_${version}_${arch}.dmg`);
+  required(`PushToTalk_${version}_aarch64.dmg`);
   return { version, notes: notes.trim(), pub_date: pubDate, platforms };
 }
 
@@ -80,9 +79,8 @@ function main() {
       copy(`nsis/${name}`, name);
       copy(`nsis/${name}.sig`, `${name}.sig`);
     } else {
-      assert(["aarch64-apple-darwin", "x86_64-apple-darwin"].includes(argument), "未知构建目标");
-      const arch = argument.startsWith("aarch64") ? "aarch64" : "x64";
-      const name = `PushToTalk_${project.version}_${arch}`;
+      assert.equal(argument, "aarch64-apple-darwin", "未知构建目标");
+      const name = `PushToTalk_${project.version}_aarch64`;
       copy(`dmg/${name}.dmg`, `${name}.dmg`);
       copy("macos/PushToTalk.app.tar.gz", `${name}.app.tar.gz`);
       copy("macos/PushToTalk.app.tar.gz.sig", `${name}.app.tar.gz.sig`);
@@ -98,7 +96,7 @@ function main() {
     const checksums = [...files].sort(([a], [b]) => a.localeCompare(b))
       .map(([name, data]) => `${createHash("sha256").update(data).digest("hex")}  ${name}`).join("\n");
     fs.writeFileSync(path.join(argument, "SHA256SUMS.txt"), `${checksums}\n`);
-    console.log(`已验证 ${files.size - 1} 个产物及三个平台的更新签名。`);
+    console.log(`已验证 ${files.size - 1} 个产物及 Windows x64、Apple Silicon 的更新签名。`);
   } else {
     throw new Error("用法：release-artifacts.mjs check-version [tag] | stage <target> <dir> | manifest <dir> <owner/repo>");
   }

@@ -26,23 +26,21 @@ function fixture() {
   for (const name of [
     "PushToTalk_1.7.0_x64-setup.exe",
     "PushToTalk_1.7.0_aarch64.app.tar.gz",
-    "PushToTalk_1.7.0_x64.app.tar.gz",
   ]) {
     const data = Buffer.from(`package: ${name}`);
     files.set(name, data);
     files.set(`${name}.sig`, Buffer.from(signature(data)));
   }
   files.set("PushToTalk_1.7.0_aarch64.dmg", Buffer.from("arm dmg"));
-  files.set("PushToTalk_1.7.0_x64.dmg", Buffer.from("intel dmg"));
   return { version: "1.7.0", repository: "yyyzl/push-2-talk", notes: "实际更新说明", pubDate: "2026-09-28T12:00:00Z", publicKey: encodedPublicKey, files };
 }
 
-test("合并三个平台并保留旧版 Windows 更新键，签名与版本固定到本次发布", () => {
+test("仅发布 Windows x64 与 Apple Silicon，并保留旧版 Windows 更新键", () => {
   const manifest = createManifest(fixture());
   assert.equal(manifest.version, "1.7.0");
   assert.equal(manifest.notes, "实际更新说明");
   assert.deepEqual(Object.keys(manifest.platforms).sort(), [
-    "darwin-aarch64", "darwin-aarch64-app", "darwin-x86_64", "darwin-x86_64-app",
+    "darwin-aarch64", "darwin-aarch64-app",
     "windows-x86_64", "windows-x86_64-nsis",
   ]);
   assert.equal(manifest.platforms["windows-x86_64"].url, "https://github.com/yyyzl/push-2-talk/releases/download/v1.7.0/PushToTalk_1.7.0_x64-setup.exe");
@@ -62,7 +60,7 @@ test("修改包体、替换签名或公钥时拒绝发布", () => {
   modified.files.set("PushToTalk_1.7.0_x64-setup.exe", Buffer.from("modified"));
   assert.throws(() => createManifest(modified), /签名验证失败/);
   const wrongSignature = fixture();
-  wrongSignature.files.set("PushToTalk_1.7.0_x64-setup.exe.sig", wrongSignature.files.get("PushToTalk_1.7.0_x64.app.tar.gz.sig")!);
+  wrongSignature.files.set("PushToTalk_1.7.0_x64-setup.exe.sig", wrongSignature.files.get("PushToTalk_1.7.0_aarch64.app.tar.gz.sig")!);
   assert.throws(() => createManifest(wrongSignature), /签名验证失败/);
   assert.throws(() => createManifest({ ...fixture(), publicKey: "invalid" }), /公钥格式/);
 });

@@ -48,7 +48,7 @@ jobs:
               await github.rest.repos.createRelease({
                 ...context.repo, tag_name: tag, target_commitish: context.sha,
                 name: `${tag} · Windows / macOS`, draft: true, prerelease: false,
-                body: '正在构建 Windows、macOS Apple Silicon 与 Intel 安装包。全部产物校验通过后补充更新说明；此草稿尚未发布。'
+                body: '正在构建 Windows x64 与 macOS Apple Silicon 安装包。全部产物校验通过后补充更新说明；此草稿尚未发布。'
               });
             }
 
@@ -62,8 +62,6 @@ jobs:
             target: x86_64-pc-windows-msvc
           - os: macos-15
             target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     env:
       CMAKE_POLICY_VERSION_MINIMUM: '3.5'
@@ -105,9 +103,7 @@ jobs:
             exit 1
           fi
           codesign --verify --deep --strict "$app"
-          expected="x86_64"
-          if [[ "$BUILD_TARGET" == aarch64-* ]]; then expected="arm64"; fi
-          test "$(lipo -archs "$app/Contents/MacOS/push-to-talk")" = "$expected"
+          test "$(lipo -archs "$app/Contents/MacOS/push-to-talk")" = "arm64"
           for binary in "$app/Contents/MacOS/"*; do
             otool -L "$binary"
           done > "$RUNNER_TEMP/ptt-linked-libraries.txt"

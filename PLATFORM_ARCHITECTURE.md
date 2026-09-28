@@ -85,7 +85,7 @@ OPUS_LIB_DIR=$(brew --prefix opus) OPUS_STATIC=1 npm run tauri build -- --debug 
 
 剪贴板集成测试标为 ignored，因为会修改操作系统剪贴板；在专用测试会话显式运行。核心自动测试不读取第三方应用数据、不录音、不模拟全局输入。
 
-`.github/workflows/platform-check.yml` 提供 Windows/macOS 编译与测试矩阵，不发布版本。`release.yml` 从 v1.7.0 起构建 Windows x64、Mac Apple Silicon 与 Intel 安装包及更新产物，统一校验后填充草稿；详见 [双平台发布](docs/development/releasing.md)。当前 macOS 分发明确采用 ad-hoc 签名，尚无 Developer ID 签名或公证，升级可能需要重新授权；不能把更新签名验证视为 Gatekeeper 或升级体验验收。
+`.github/workflows/platform-check.yml` 提供 Windows/macOS 编译与测试矩阵，不发布版本。`release.yml` 从 v1.7.0 起构建 Windows x64 与 Mac Apple Silicon 安装包及更新产物（暂不发布 Intel Mac 或 Windows ARM64），统一校验后填充草稿；详见 [双平台发布](docs/development/releasing.md)。当前 macOS 分发明确采用 ad-hoc 签名，尚无 Developer ID 签名或公证，升级可能需要重新授权；不能把更新签名验证视为 Gatekeeper 或升级体验验收。
 
 该矩阵也验证默认功能的 debug 原型打包：Windows 生成 NSIS 安装包，macOS 生成 ad-hoc 签名的 `.app`，检查签名及 Homebrew 动态库依赖后压缩保存。构建只合并 `.github/tauri.prototype.conf.json`，不启用 ATDD，也不生成更新产物。Actions 附件保留 7 天，供验收使用，不属于正式发布；打包成功不等于安装、升级或 Gatekeeper 验收通过。
 

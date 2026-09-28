@@ -2,7 +2,7 @@
 
 **把说的话输入到当前应用，也可以用语音修改选中的文字。**
 
-PushToTalk 是面向 Windows 和 macOS 的开源桌面语音输入工具。按下快捷键开始录音，结束后进行语音识别，并把结果写回原来的输入位置；需要时，可以交给大语言模型润色、翻译或回答问题。
+PushToTalk 是面向 Windows x64 和 Apple Silicon macOS 的开源桌面语音输入工具。按下快捷键开始录音，结束后进行语音识别，并把结果写回原来的输入位置；需要时，可以交给大语言模型润色、翻译或回答问题。
 
 [下载版本](https://github.com/yyyzl/push-2-talk/releases/latest) · [更新记录](https://github.com/yyyzl/push-2-talk/releases) · [反馈问题](https://github.com/yyyzl/push-2-talk/issues) · [开发文档](docs/development/README.md)
 
@@ -23,9 +23,10 @@ PushToTalk 是面向 Windows 和 macOS 的开源桌面语音输入工具。按�
 
 | 平台 | 安装包 | 首次使用 |
 | --- | --- | --- |
-| Windows 10 / 11，64 位 | `*_x64-setup.exe`，NSIS 安装器 | 安装后按项目现有方式以管理员身份运行 |
+| Windows 10 / 11，x64（Intel / AMD） | `*_x64-setup.exe`，NSIS 安装器 | 安装后按项目现有方式以管理员身份运行 |
 | macOS 12 及以上，Apple Silicon | `*_aarch64.dmg` | 拖入“应用程序”，完成麦克风、辅助功能、输入监控授权 |
-| macOS 12 及以上，Intel | `*_x64.dmg` | 选择 Intel 包，并完成上述三项授权 |
+
+本次正式支持 Windows x64 和 Apple Silicon macOS，不提供 Intel Mac 或 Windows ARM64 原生安装包。
 
 ### Windows
 
