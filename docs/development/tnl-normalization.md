@@ -71,8 +71,8 @@ PUSHTOTALK_PERSONALIZATION_DIAGNOSTICS=1 /Applications/PushToTalk.app/Contents/M
 
 ```sh
 cargo test --manifest-path src-tauri/Cargo.toml
-cargo run --manifest-path src-tauri/Cargo.toml --bin eval_asr --no-default-features
-cargo run --manifest-path src-tauri/Cargo.toml --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure
+cargo run --manifest-path src-tauri/Cargo.toml --features cli-tools --bin eval_asr --no-default-features
+cargo run --manifest-path src-tauri/Cargo.toml --features cli-tools --bin eval_asr --no-default-features -- --disable-syllable-match-pass --allow-quality-gate-failure
 npx tsx scripts/asr-eval-readiness.ts --allow-not-ready --json
 ```
 

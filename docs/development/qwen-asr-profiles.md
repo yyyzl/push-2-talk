@@ -57,7 +57,7 @@ npm run test:ts
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo check --manifest-path src-tauri/Cargo.toml --all-targets
-cargo run --manifest-path src-tauri/Cargo.toml --bin test_api -- \
+cargo run --manifest-path src-tauri/Cargo.toml --features cli-tools --bin test_api -- \
   --asr qwen --mode realtime --model qwen-audio-3.1-asr-flash-message --file sample.wav
 ```
 

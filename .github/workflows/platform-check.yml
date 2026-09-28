@@ -38,8 +38,8 @@ jobs:
       - run: npx playwright install chromium
       - run: npm run test:ui
       - run: npm run build
-      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo check --locked --all-targets --features cli-tools --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --locked --features cli-tools --manifest-path src-tauri/Cargo.toml
       - name: Mac native keyboard acceptance
         if: runner.os == 'macOS'
         run: sh scripts/test-macos-hotkey-native.sh

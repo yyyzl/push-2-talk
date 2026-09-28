@@ -20,7 +20,12 @@ path = "src/main.rs"
 [[bin]]
 name = "test_api"
 path = "src/test_api.rs"
+required-features = ["cli-tools"]
 
+[[bin]]
+name = "eval_asr"
+path = "src/bin/eval_asr.rs"
+required-features = ["cli-tools"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -100,6 +105,8 @@ windows = { version = "0.58", features = [
 ] }
 
 [features]
+# 开发与评测工具按需启用，避免被 Tauri 自动装入正式安装包。
+cli-tools = []
 # Explicit local acceptance harness. Never enabled by default or allowed in release builds.
 atdd = []
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

@@ -99,6 +99,11 @@ jobs:
         run: |
           set -euo pipefail
           app="src-tauri/target/$BUILD_TARGET/release/bundle/macos/PushToTalk.app"
+          binaries=("$app/Contents/MacOS/"*)
+          if [[ ${#binaries[@]} -ne 1 || "${binaries[0]##*/}" != push-to-talk ]]; then
+            printf '正式包只能包含主程序，实际发现：%s\n' "${binaries[@]}"
+            exit 1
+          fi
           codesign --verify --deep --strict "$app"
           expected="x86_64"
           if [[ "$BUILD_TARGET" == aarch64-* ]]; then expected="arm64"; fi

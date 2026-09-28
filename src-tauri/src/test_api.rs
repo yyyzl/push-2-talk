@@ -68,7 +68,7 @@ fn parse_args(args: &[String]) -> Result<TestArgs> {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: cargo run --bin test_api -- --asr <qwen|doubao_ime> --file <wav_path> [--qwen-profile <qwen_audio_3_1|qwen_audio_3|qwen3_legacy>] [--mode <http|realtime>] [--model <exact-model-id>]"
+                    "Usage: cargo run --features cli-tools --bin test_api -- --asr <qwen|doubao_ime> --file <wav_path> [--qwen-profile <qwen_audio_3_1|qwen_audio_3|qwen3_legacy>] [--mode <http|realtime>] [--model <exact-model-id>]"
                 );
                 std::process::exit(0);
             }

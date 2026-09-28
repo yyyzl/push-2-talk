@@ -124,7 +124,7 @@ npx playwright install chromium
 npm run test:ui
 npm run build
 cargo check --locked --manifest-path src-tauri/Cargo.toml
-cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo test --locked --features cli-tools --manifest-path src-tauri/Cargo.toml
 ```
 
 构建本地验证包（不生成自动更新签名产物）：

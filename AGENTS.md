@@ -36,7 +36,7 @@
 - `npm run tauri dev` runs the desktop app in dev mode; follow the administrator workflow on Windows and grant native privacy permissions on macOS.
 - `npm run tauri build` builds the native platform bundles; Windows uses NSIS and macOS uses `tauri.macos.conf.json`. Output is in `src-tauri/target/release/bundle/`. See `PLATFORM_ARCHITECTURE.md` for Mac dependencies and prototype packaging.
 - `cd src-tauri` then `cargo build`, `cargo check`, or `cargo test` for the Rust backend.
-- `cd src-tauri` then `cargo run --bin test_api` to manually verify ASR API behavior.
+- `cd src-tauri` then `cargo run --features cli-tools --bin test_api` to manually verify ASR API behavior.
 
 ## Coding Style & Naming Conventions
 - TypeScript/React: 2-space indent, double quotes, and semicolons; components use `PascalCase`, hooks use `useX`, and UI files live in `*.tsx`.
@@ -47,8 +47,8 @@
 - Development must follow TDD: write/adjust test methods first, then implement code.
 - Validate test feasibility before implementation by running targeted tests and confirming they execute meaningfully.
 - Implement only after test validation, then make tests pass and refactor within scope.
-- Backend: run `cargo test` in `src-tauri/` for Rust tests.
-- API checks: use `cargo run --bin test_api` when touching ASR integrations.
+- Backend: run `cargo test --features cli-tools` in `src-tauri/` for Rust tests.
+- API checks: use `cargo run --features cli-tools --bin test_api` when touching ASR integrations.
 - Frontend: run `npm run test:ts`; additionally smoke-test via `npm run dev` and `npm run build`.
 - Final quality gate: ensure overall Cargo compilation passes in `src-tauri/` (at least `cargo check`; prefer `cargo build` for release readiness).
 

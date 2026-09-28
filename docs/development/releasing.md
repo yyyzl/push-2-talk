@@ -18,6 +18,7 @@
 - Tauri 更新签名来自 GitHub Actions secrets：`TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。不在日志输出密钥。
 - 本轮 macOS 使用 `APPLE_SIGNING_IDENTITY=-` 进行 ad-hoc 签名，明确不做 Developer ID 签名或公证；发布说明必须告知首次打开及升级权限限制。
 - Cargo 与安装包元信息使用项目名称、MIT 许可证、仓库地址和实际功能描述，不沿用模板作者与空字段。
+- 正式包只包含 `push-to-talk` 主程序。`test_api` 和 `eval_asr` 通过 `cli-tools` feature 按需启用，平台 CI 显式启用该 feature 以保留工具测试覆盖。发布构建不得启用它；macOS 打包后会检查可执行文件清单，避免开发工具混入并导致 Intel Mac 签名失败。
 - macOS 原生构建分别运行在 `macos-15` 与 `macos-15-intel`，设置 `MACOSX_DEPLOYMENT_TARGET=12.0`。
 - Opus 通过 `OPUS_NO_PKG=1` 强制走源码、静态编译，不复用 Homebrew 预编译库的系统版本要求。打包后校验应用签名、主程序架构及动态库引用。
 

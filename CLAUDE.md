@@ -95,7 +95,7 @@ Output location: `src-tauri/target/release/bundle/`
 ### Testing API Integration
 ```bash
 cd src-tauri
-cargo run --bin test_api      # Standalone tool to test Qwen ASR API
+cargo run --features cli-tools --bin test_api      # Standalone tool to test Qwen ASR API
 ```
 
 See `测试工具使用说明.md` for detailed usage.
@@ -521,11 +521,12 @@ Parse via: `result["output"]["choices"][0]["message"]["content"][0]["text"]`
 ```
 
 ### Binary Configuration
-The project has two binaries defined in Cargo.toml:
+The project has three binaries defined in Cargo.toml:
 - `push-to-talk` (main app) - default-run
-- `test_api` (standalone API tester)
+- `test_api` (standalone API tester, requires `cli-tools`)
+- `eval_asr` (ASR evaluation runner, requires `cli-tools`)
 
-Run specific binary: `cargo run --bin test_api`
+Run specific binary: `cargo run --features cli-tools --bin test_api`
 
 ## Common Issues & Solutions
 
