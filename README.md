@@ -328,6 +328,10 @@ npm run tauri build
 
 **注意**：不再支持 MSI 安装包，仅提供 NSIS 安装包，以避免自动更新时创建多实例。
 
+使用项目锁定的 Tauri CLI 2.12.x（`npm ci` 安装），确保能为当前 Rust Tauri 运行时写入 NSIS 安装包类型标识。旧 CLI 2.9.2 会出现 `__TAURI_BUNDLE_TYPE variable not found`，不应忽略该打包警告。
+
+Windows 安装包的连续启动回归使用 `scripts/test-windows-startup.ps1`；隔离配置与执行方法见 [Tauri IPC 启动约定](docs/development/tauri-ipc.md#启动状态必须早于窗口创建)。
+
 ### 前端测试（TypeScript）
 
 ```bash

@@ -1,5 +1,19 @@
 # Tauri IPC 与跨窗口状态
 
+## 启动状态必须早于窗口创建
+
+Tauri 2 的顺序是：初始化插件 → 创建配置中的 WebView → 执行应用 `setup`。隐藏窗口也可能立即发送 IPC，因此在应用 `setup` 中注册 `AppState` 已经太晚：Windows 热启动实测会触发 `state() called before manage()`，让初始配置加载一直等待。
+
+`application::runtime::plugin()` 在单实例插件之后、窗口创建之前完成配置加载和状态注册。第二实例先由单实例插件处理，避免重复迁移配置；首次 IPC 能取得完整的运行状态。应用 `setup` 只创建托盘和启动后台更新，不能再按磁盘快照覆盖可能已由前端启动命令更新的运行状态。不要用固定延时掩盖初始化竞态。
+
+Windows 回归须在隔离测试账号，或备份并隔离现有应用配置后，运行真实打包程序：
+
+```powershell
+.\scripts\test-windows-startup.ps1 -ExecutablePath "D:\PushToTalk\push-to-talk.exe" -OutputDirectory ".\src-tauri\target\startup-smoke" -RunCount 10
+```
+
+脚本拒绝已有运行实例，逐次启动并检查服务就绪与 panic，保留日志后终止本轮创建的进程。每轮默认等待最多 6 秒，整组最多 55 秒；输出目录必须是新的。脚本不会触发录音或连接测试，应用自身的启动请求（如词库更新）仍可能发生；此检查不代替正常退出、开机自启、麦克风和跨窗口回填验收。
+
 ## Tauri IPC Boundary Contracts
 
 ### Mistake 4: IPC Command Name Mismatch Fails Silently

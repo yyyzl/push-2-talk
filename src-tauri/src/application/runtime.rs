@@ -10,6 +10,57 @@ use crate::{
     usage_stats::UsageStats,
 };
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use tauri::Manager;
+
+/// Tauri 先初始化插件，再创建配置中的 WebView，最后才执行应用 setup。
+/// 在单实例插件之后注册状态，既避免提前到达的 IPC panic，也不让第二实例迁移配置。
+pub(crate) fn plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("runtime-state")
+        .setup(|app, _| {
+            let initial_config =
+                super::configuration::load_persisted_config().unwrap_or_else(|e| {
+                    tracing::warn!("初始化运行状态时加载配置失败，使用默认值: {}", e);
+                    config::AppConfig::new()
+                });
+            let usage_stats = UsageStats::load().unwrap_or_else(|e| {
+                tracing::warn!("加载统计数据失败: {}, 使用默认值", e);
+                UsageStats::default()
+            });
+            let builtin_hotwords = crate::builtin_dictionary_updater::load_builtin_hotwords();
+
+            app.manage(AppState {
+                assistant: super::assistant::AssistantState::default(),
+                recording_session: Arc::default(),
+                recording: RecordingResources::default(),
+                text_inserter: Arc::new(Mutex::new(None)),
+                post_processor: Arc::new(Mutex::new(None)),
+                is_running: Arc::new(Mutex::new(false)),
+                use_realtime_asr: Arc::new(Mutex::new(true)),
+                enable_post_process: Arc::new(Mutex::new(initial_config.enable_llm_post_process)),
+                enable_dictionary_enhancement: Arc::new(Mutex::new(
+                    initial_config.enable_dictionary_enhancement,
+                )),
+                enable_fallback: Arc::new(Mutex::new(false)),
+                qwen_client: Arc::new(Mutex::new(None)),
+                sensevoice_client: Arc::new(Mutex::new(None)),
+                doubao_client: Arc::new(Mutex::new(None)),
+                realtime_provider: Arc::new(Mutex::new(Some(
+                    initial_config.asr_config.selection.active_provider,
+                ))),
+                fallback_provider: Arc::new(Mutex::new(None)),
+                hotkey_service: Arc::new(HotkeyService::new()),
+                dictionary: Arc::new(Mutex::new(Vec::new())),
+                asr_correction_pairs: Arc::new(Mutex::new(Vec::new())),
+                doubao_ime_credentials: Arc::new(Mutex::new(None)),
+                usage_stats: Arc::new(Mutex::new(usage_stats)),
+                builtin_hotwords_raw: Arc::new(Mutex::new(builtin_hotwords)),
+                builtin_dictionary_updater_started: Arc::new(AtomicBool::new(false)),
+            });
+            Ok(())
+        })
+        .build()
+}
+
 pub(crate) struct AppState {
     pub assistant: super::assistant::AssistantState,
     pub recording_session: Arc<RecordingSession>,

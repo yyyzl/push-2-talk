@@ -52,7 +52,6 @@ use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
 use personalization::CorrectionPair;
 use platform::AudioMuteManager;
-use platform::HotkeyService;
 use streaming_recorder::StreamingRecorder;
 use text_inserter::TextInserter;
 use usage_stats::UsageStats;
@@ -3132,6 +3131,7 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(application::runtime::plugin())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
@@ -3149,48 +3149,10 @@ pub fn run() {
                 }
             }
 
-            // 初始化应用状态
-            let usage_stats = UsageStats::load().unwrap_or_else(|e| {
-                tracing::warn!("加载统计数据失败: {}, 使用默认值", e);
-                UsageStats::default()
-            });
-            let initial_builtin_hotwords = builtin_dictionary_updater::load_builtin_hotwords();
-            let builtin_hotwords_raw = Arc::new(Mutex::new(initial_builtin_hotwords));
-            let builtin_dictionary_updater_started = Arc::new(AtomicBool::new(false));
-
-            let app_state = AppState {
-                assistant: application::assistant::AssistantState::default(),
-                recording_session: Arc::default(),
-                recording: application::recording_resources::RecordingResources::default(),
-                text_inserter: Arc::new(Mutex::new(None)),
-                post_processor: Arc::new(Mutex::new(None)),
-                is_running: Arc::new(Mutex::new(false)),
-                use_realtime_asr: Arc::new(Mutex::new(true)),
-                enable_post_process: Arc::new(Mutex::new(false)),
-                enable_dictionary_enhancement: Arc::new(Mutex::new(true)),
-                enable_fallback: Arc::new(Mutex::new(false)),
-                qwen_client: Arc::new(Mutex::new(None)),
-                sensevoice_client: Arc::new(Mutex::new(None)),
-                doubao_client: Arc::new(Mutex::new(None)),
-                realtime_provider: Arc::new(Mutex::new(None)),
-                fallback_provider: Arc::new(Mutex::new(None)),
-                hotkey_service: Arc::new(HotkeyService::new()),
-                dictionary: Arc::new(Mutex::new(Vec::new())),
-                asr_correction_pairs: Arc::new(Mutex::new(Vec::new())),
-                doubao_ime_credentials: Arc::new(Mutex::new(None)),
-                usage_stats: Arc::new(Mutex::new(usage_stats)),
-                builtin_hotwords_raw: Arc::clone(&builtin_hotwords_raw),
-                builtin_dictionary_updater_started: Arc::clone(&builtin_dictionary_updater_started),
-            };
-
             let initial_config = load_persisted_config().unwrap_or_else(|e| {
                 tracing::warn!("创建托盘菜单时加载配置失败，使用默认值: {}", e);
                 AppConfig::new()
             });
-
-            let state_enable_post_process = *app_state.enable_post_process.lock().unwrap();
-            let state_enable_dictionary_enhancement =
-                *app_state.enable_dictionary_enhancement.lock().unwrap();
 
             let initial_enable_post_process = initial_config.enable_llm_post_process;
             let initial_enable_dictionary_enhancement =
@@ -3198,26 +3160,6 @@ pub fn run() {
             let initial_enable_web_search = initial_config.assistant_config.enable_web_search;
             let initial_active_provider =
                 initial_config.asr_config.selection.active_provider.clone();
-
-            *app_state.enable_post_process.lock().unwrap() = initial_enable_post_process;
-            *app_state.enable_dictionary_enhancement.lock().unwrap() =
-                initial_enable_dictionary_enhancement;
-            *app_state.realtime_provider.lock().unwrap() = Some(initial_active_provider.clone());
-
-            if state_enable_post_process != initial_enable_post_process {
-                tracing::info!(
-                    "托盘初始化语句润色状态: {} -> {}",
-                    state_enable_post_process,
-                    initial_enable_post_process
-                );
-            }
-            if state_enable_dictionary_enhancement != initial_enable_dictionary_enhancement {
-                tracing::info!(
-                    "托盘初始化词库增强状态: {} -> {}",
-                    state_enable_dictionary_enhancement,
-                    initial_enable_dictionary_enhancement
-                );
-            }
 
             let show_item =
                 MenuItem::with_id(app, TRAY_MENU_ID_SHOW, "显示窗口", true, None::<&str>)?;
@@ -3423,7 +3365,6 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            app.manage(app_state);
             let state = app.state::<AppState>();
             let app_handle = app.handle().clone();
             start_builtin_dictionary_updater(
