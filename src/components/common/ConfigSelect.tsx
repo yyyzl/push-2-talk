@@ -4,7 +4,7 @@
  * 特性：
  * - 乐观更新：UI 立即响应用户操作
  * - 状态指示：loading → success → idle
- * - 错误回滚：失败时自动恢复原值
+ * - 保存失败：保留用户选择，交由配置状态提供重试
  */
 
 import { useState, useEffect, useRef, type ReactNode } from "react";
@@ -51,9 +51,6 @@ export function ConfigSelect<T extends string>({
   const handleChange = async (newValue: T) => {
     if (disabled || status === "syncing") return;
 
-    // 保存旧值用于回滚
-    const previousValue = value;
-
     // 乐观更新
     onChange(newValue);
 
@@ -69,8 +66,6 @@ export function ConfigSelect<T extends string>({
           setInternalStatus("idle");
         }, 1500);
       } catch {
-        // 回滚
-        onChange(previousValue);
         setInternalStatus("error");
 
         // 2s 后回到 idle

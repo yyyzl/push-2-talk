@@ -4,7 +4,7 @@
  * 特性：
  * - 乐观更新：Toggle 动画立即响应
  * - 状态指示：旁边的小点显示同步状态
- * - 错误回滚：失败时自动恢复原值
+ * - 保存失败：保留用户选择，交由配置状态提供重试
  */
 
 import { useState, useEffect, useRef, type ComponentPropsWithoutRef } from "react";
@@ -72,7 +72,6 @@ export function ConfigToggle({
   ...rest
 }: ConfigToggleProps) {
   const [internalStatus, setInternalStatus] = useState<SyncStatus>("idle");
-  const [previousValue, setPreviousValue] = useState<boolean>(checked);
   const successTimeoutRef = useRef<number | null>(null);
 
   const status = externalStatus ?? internalStatus;
@@ -93,9 +92,6 @@ export function ConfigToggle({
 
     const newValue = !checked;
 
-    // 保存旧值用于回滚
-    setPreviousValue(checked);
-
     // 乐观更新
     onCheckedChange(newValue);
 
@@ -110,8 +106,6 @@ export function ConfigToggle({
           setInternalStatus("idle");
         }, 1500);
       } catch {
-        // 回滚
-        onCheckedChange(previousValue);
         setInternalStatus("error");
 
         successTimeoutRef.current = window.setTimeout(() => {

@@ -1,3 +1,4 @@
+import { desktop } from "../services/desktop";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -102,8 +103,8 @@ export default function ResultPanelWindow() {
   // 初始化主题
   // ==========================================
   useEffect(() => {
-    invoke<AppConfig>("load_config")
-      .then((config) => {
+    desktop.getConfig()
+      .then(({ config }) => {
         setTheme(config.theme || "light");
         setWebSearchEnabled(resolveInitialWebSearchEnabled(config));
       })

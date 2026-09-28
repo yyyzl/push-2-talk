@@ -4,57 +4,11 @@ import test from "node:test";
 
 const readSource = (path: string) => readFile(path, "utf8");
 
-test("C1: 网关应优先从 asrConfig.credentials 同步顶层 key", async () => {
-  const source = await readSource("src/hooks/useAppServiceController.ts");
-
-  assert.match(source, /const finalAsrConfig = overrides\.asrConfig \?\? asrConfig;/);
-  assert.match(
-    source,
-    /apiKey:\s*finalAsrConfig\.credentials\.qwen_api_key\s*\|\|\s*overrides\.apiKey\s*\|\|\s*apiKey/,
-  );
-  assert.match(
-    source,
-    /fallbackApiKey:\s*finalAsrConfig\.credentials\.sensevoice_api_key\s*\|\|\s*overrides\.fallbackApiKey\s*\|\|\s*fallbackApiKey/,
-  );
-});
-
-test("M1: learningConfig 应在 resolveSaveConfig 中状态兜底", async () => {
-  const source = await readSource("src/hooks/useAppServiceController.ts");
-
-  assert.match(source, /const finalLearningConfig = normalizeLearningConfig\(/);
-  assert.match(source, /overrides\.learningConfig \?\? learningConfig/);
-  assert.match(source, /learningConfig:\s*finalLearningConfig/);
-});
-
 test("P0: App 初始化 effect 应区分加载中与加载完成，避免重复初始化", async () => {
   const source = await readSource("src/App.tsx");
 
   assert.match(source, /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(configInitializationRef\.current\.isStarted\(\)\)\s*return;/);
 });
-
-test("P1-D: 迁移保存应显式传入 learningConfig，避免默认值覆盖", async () => {
-  const source = await readSource("src/hooks/useAppServiceController.ts");
-
-  assert.match(
-    source,
-    /learningConfig:\s*config\.learning_config\s*\|\|\s*DEFAULT_LEARNING_CONFIG/,
-  );
-});
-
-test("P1-A: saveFieldPatchWithStatus 应主动开启同步窗口并在 finally 释放", async () => {
-  const source = await readSource("src/App.tsx");
-
-  assert.match(
-    source,
-    /const saveFieldPatchWithStatus[\s\S]*cancelAutoSaveDebounce\(\);[\s\S]*const syncToken = configSyncWindowControllerRef\.current\.begin\("external_config_updated"\);/,
-  );
-  assert.match(
-    source,
-    /const saveFieldPatchWithStatus[\s\S]*finally\s*\{[\s\S]*releaseConfigSyncWindow\(syncToken\);/,
-  );
-});
-
-
 
 test("P2-B: save_config 未传 hotkey_config 时应保留旧值", async () => {
   const source = await readSource("src-tauri/src/lib.rs");
@@ -105,19 +59,6 @@ test("m2: 顶部全局提示条应使用高度过渡避免布局抖动", async (
 
 
 
-test("S5: 即时保存 overrides 命名应统一为 dictionaryEntries", async () => {
-  const contextSource = await readSource("src/contexts/ConfigSaveContext.tsx");
-  const controllerSource = await readSource("src/hooks/useAppServiceController.ts");
-
-  assert.match(contextSource, /dictionaryEntries\?:\s*DictionaryEntry\[\];/);
-  assert.doesNotMatch(contextSource, /dictionary\?:\s*DictionaryEntry\[\];/);
-
-  assert.match(controllerSource, /dictionaryEntries\?:\s*DictionaryEntry\[\];/);
-  assert.match(controllerSource, /dictionaryEntries:\s*overrides\?\.dictionaryEntries/);
-  assert.doesNotMatch(controllerSource, /dictionaryEntries:\s*overrides\?\.dictionary\b/);
-  assert.doesNotMatch(controllerSource, /if\s*\(overrides\?\.dictionary\b\)/);
-});
-
 test("S2: 后端应提供 set_learning_enabled 字段级 patch 命令", async () => {
   const source = await readSource("src-tauri/src/lib.rs");
 
@@ -141,19 +82,6 @@ test("S2: Preferences 学习开关应改为调用 set_learning_enabled", async (
 });
 
 
-
-test("S2+: 前端应通过 patch_config_fields 保存轻量字段", async () => {
-  const controllerSource = await readSource("src/hooks/useAppServiceController.ts");
-  const appSource = await readSource("src/App.tsx");
-
-  assert.match(controllerSource, /const\s+patchConfigFields\s*=\s*useCallback\(/);
-  assert.match(controllerSource, /invoke<string>\("patch_config_fields",\s*\{\s*patch\s*\}\)/);
-  assert.match(controllerSource, /await\s+patchConfigFields\(\{\s*closeAction:\s*action\s*\}\)/);
-
-  assert.match(appSource, /await\s+saveFieldPatchWithStatus\(\{\s*theme:\s*newTheme\s*\}\)/);
-  assert.match(appSource, /onSetLearningEnabled=\{async\s*\(enabled\)\s*=>\s*\{/);
-  assert.match(appSource, /onSetEnableMuteOtherApps=\{async\s*\(next\)\s*=>\s*\{/);
-});
 
 test("m4: global notice 相关 import 不应使用 .ts 后缀", async () => {
   const globalNoticeSource = await readSource("src/utils/globalNotice.ts");
@@ -183,19 +111,6 @@ test("A2: AssistantPage 应展示自动保存状态", async () => {
   assert.match(source, /自动保存/);
   assert.match(source, /保存中/);
   assert.match(source, /保存失败/);
-});
-
-test("A3: debounce 自动保存应更新全局保存状态", async () => {
-  const source = await readSource("src/App.tsx");
-
-  assert.match(
-    source,
-    /autoSaveTimerRef\.current = window\.setTimeout\(\(\) => \{[\s\S]*setSyncStatus\("syncing"\)[\s\S]*await handleSaveConfigRef\.current\(\)[\s\S]*setSyncStatus\("success"\)/,
-  );
-  assert.match(
-    source,
-    /autoSaveTimerRef\.current = window\.setTimeout\(\(\) => \{[\s\S]*catch\s*\(err\)[\s\S]*setSyncStatus\("error"\)/,
-  );
 });
 
 test("A4: AssistantPage 联网搜索高级项应配置后再展开", async () => {
@@ -347,41 +262,4 @@ test("A13: 搜索达到轮数上限后应强制基于已有结果生成最终回
     source,
     /response\.tool_calls\.is_empty\(\)[\s\S]*\|\| loop_round >= max_loops/,
   );
-});
-
-test("A14: 口语流畅化模式应通过 tnl_config 字段级 patch 完成前后端闭环", async () => {
-  const typesSource = await readSource("src/types/index.ts");
-  const constantsSource = await readSource("src/constants/index.ts");
-  const appSource = await readSource("src/App.tsx");
-  const preferencesSource = await readSource("src/pages/PreferencesPage.tsx");
-  const controllerSource = await readSource("src/hooks/useAppServiceController.ts");
-  const eventsSource = await readSource("src/hooks/useTauriEventListeners.ts");
-  const backendSource = await readSource("src-tauri/src/lib.rs");
-
-  assert.match(typesSource, /export\s+type\s+DisfluencyMode\s*=\s*"off"\s*\|\s*"conservative"\s*\|\s*"aggressive"/);
-  assert.match(typesSource, /export\s+interface\s+TnlConfig\s*\{[\s\S]*disfluency_mode:\s*DisfluencyMode/);
-  assert.match(typesSource, /tnl_config:\s*TnlConfig;/);
-
-  assert.match(constantsSource, /export\s+const\s+DEFAULT_TNL_CONFIG:\s*TnlConfig/);
-  assert.match(constantsSource, /export\s+function\s+normalizeTnlConfig/);
-
-  assert.match(controllerSource, /setTnlConfig:\s*React\.Dispatch<React\.SetStateAction<TnlConfig>>/);
-  assert.match(controllerSource, /setTnlConfig\(normalizeTnlConfig\(config\.tnl_config\)\)/);
-  assert.match(controllerSource, /tnlConfig\?:\s*\{[\s\S]*disfluencyMode\?:\s*DisfluencyMode/);
-
-  assert.match(eventsSource, /setTnlConfig\?:\s*React\.Dispatch<React\.SetStateAction<TnlConfig>>/);
-  assert.match(eventsSource, /setTnlConfig\?\.\(normalizeTnlConfig\(config\.tnl_config\)\)/);
-
-  assert.match(appSource, /const\s+\[tnlConfig,\s*setTnlConfig\]\s*=\s*useState<TnlConfig>\(DEFAULT_TNL_CONFIG\)/);
-  assert.match(appSource, /previousTnlConfig/);
-  assert.match(appSource, /setTnlConfig\(normalizeTnlConfig\(\{[\s\S]*disfluency_mode:\s*patch\.tnlConfig\.disfluencyMode/);
-  assert.match(appSource, /await\s+saveFieldPatchWithStatus\(\{\s*tnlConfig:\s*\{\s*disfluencyMode:\s*mode\s*\}\s*\}\)/);
-
-  assert.match(preferencesSource, /口语流畅化/);
-  assert.match(preferencesSource, /onSetDisfluencyMode:\s*\(mode:\s*DisfluencyMode\)\s*=>\s*Promise<void>/);
-  assert.match(preferencesSource, /DISFLUENCY_MODE_OPTIONS\.map/);
-
-  assert.match(backendSource, /struct\s+TnlConfigFieldPatch\s*\{[\s\S]*disfluency_mode:\s*Option<crate::tnl::DisfluencyMode>/);
-  assert.match(backendSource, /tnl_config:\s*Option<TnlConfigFieldPatch>/);
-  // Patch application is covered behaviorally by Rust config_field_patch_tests.
 });

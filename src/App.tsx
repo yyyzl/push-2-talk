@@ -1,3 +1,7 @@
+import { useAppConfig } from "./hooks/useAppConfig";
+import { normalizeConfig } from "./state/appConfig";
+import type { ConfigSnapshot } from "./state/configStore";
+import { parseEntry } from "./utils/dictionaryUtils";
 // src/App.tsx
 import { createConfigInitialization } from "./utils/configInitialization";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -9,26 +13,12 @@ import {
 import type {
   AppConfig,
   AppStatus,
-  AsrConfig,
   AssistantConfig,
-  DualHotkeyConfig,
-  LearningConfig,
   LlmConfig,
-  SearchConfig,
   TnlConfig,
   UsageStats,
 } from "./types";
 import type { AppPage } from "./pages/types";
-import {
-  DEFAULT_ASSISTANT_CONFIG,
-  DEFAULT_DUAL_HOTKEY_CONFIG,
-  DEFAULT_LEARNING_CONFIG,
-  DEFAULT_LLM_CONFIG,
-  DEFAULT_QWEN_ASR_PROFILE,
-  DEFAULT_SEARCH_CONFIG,
-  DEFAULT_TNL_CONFIG,
-  normalizeTnlConfig,
-} from "./constants";
 import { loadUsageStats } from "./utils";
 import { desktopOs } from "./utils/platform";
 import { TopStatusBar } from "./components/layout/TopStatusBar";
@@ -56,11 +46,7 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { PreferencesPage } from "./pages/PreferencesPage";
 import { HelpPage } from "./pages/HelpPage";
 import { ConfigSaveContext, type ConfigSyncStatus, type ConfigOverrides } from "./contexts/ConfigSaveContext";
-import {
-  createConfigSyncWindowController,
-  scheduleSyncWindowRelease,
-  type ConfigSyncWindowSnapshot,
-} from "./utils/configSyncWindow";
+
 import { buildRecentHotwordEntries } from "./utils/recentHotwords";
 
 /** 哨兵值：外部配置更新时设置，applyRuntimeConfig effect 据此跳过并重置基准 */
@@ -70,34 +56,13 @@ function App() {
   const [currentVersion, setCurrentVersion] = useState(() =>
     localStorage.getItem('app_version') || ''
   );
-  const [apiKey, setApiKey] = useState("");
-  const [fallbackApiKey, setFallbackApiKey] = useState("");
-
-  const [asrConfig, setAsrConfig] = useState<AsrConfig>({
-    credentials: {
-      qwen_api_key: '',
-      sensevoice_api_key: '',
-      doubao_app_id: '',
-      doubao_access_token: '',
-      doubao_ime_device_id: '',
-      doubao_ime_token: '',
-      doubao_ime_cdid: '',
-    },
-    selection: {
-      active_provider: 'doubao_ime',
-      enable_fallback: false,
-      fallback_provider: null,
-    },
-    qwen_profile: DEFAULT_QWEN_ASR_PROFILE,
-    language_mode: 'auto',
-  });
-
-  const [useRealtime, setUseRealtime] = useState(false);
-  const [enablePostProcess, setEnablePostProcess] = useState(false);
-  const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(false);
-  const [learningConfig, setLearningConfig] = useState<LearningConfig>(DEFAULT_LEARNING_CONFIG);
-  const [tnlConfig, setTnlConfig] = useState<TnlConfig>(DEFAULT_TNL_CONFIG);
-  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
+  const { store: configStore, view: configView,
+    asrConfig, setAsrConfig, useRealtime, setUseRealtime, enablePostProcess, setEnablePostProcess,
+    enableDictionaryEnhancement, setEnableDictionaryEnhancement, learningConfig, setLearningConfig,
+    tnlConfig, llmConfig, setLlmConfig, assistantConfig, setAssistantConfig,
+    searchConfig, setSearchConfig, dualHotkeyConfig, setDualHotkeyConfig,
+    enableMuteOtherApps, theme,
+    builtinDictionaryDomains, setBuiltinDictionaryDomains } = useAppConfig();
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
   const [originalTranscript, setOriginalTranscript] = useState<string | null>(null);
@@ -127,7 +92,6 @@ function App() {
     handleBatchDelete,
     handleUpdateCategory,
   } = useDictionary();
-  const [builtinDictionaryDomains, setBuiltinDictionaryDomains] = useState<string[]>([]);
   const [builtinDictionaryVersion, setBuiltinDictionaryVersion] = useState(0);
   const {
     history,
@@ -154,9 +118,6 @@ function App() {
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
-  const [enableMuteOtherApps, setEnableMuteOtherApps] = useState(false);
-  const [theme, setTheme] = useState("light");
-  const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const {
     updateStatus,
@@ -171,9 +132,6 @@ function App() {
     onError: (message) => setError(message),
   });
   // hotkeyConfig 已迁移到 dualHotkeyConfig，不再单独使用
-  const [dualHotkeyConfig, setDualHotkeyConfig] = useState<DualHotkeyConfig>(DEFAULT_DUAL_HOTKEY_CONFIG);
-  const [assistantConfig, setAssistantConfig] = useState<AssistantConfig>(DEFAULT_ASSISTANT_CONFIG);
-  const [searchConfig, setSearchConfig] = useState<SearchConfig>(DEFAULT_SEARCH_CONFIG);
 
   // 创建 ref 用于在 useHotkeyRecording 中访问 wrappedSaveImmediately
   const saveImmediatelyRef = useRef<((overrides?: ConfigOverrides) => Promise<void>) | null>(null);
@@ -200,53 +158,16 @@ function App() {
   const hasCheckedUpdateOnStartup = useRef(false);
   const configInitializationRef = useRef(createConfigInitialization());
   const autoSaveTimerRef = useRef<number | null>(null);
-  const configSyncWindowControllerRef = useRef(createConfigSyncWindowController());
-  const [syncWindowSnapshot, setSyncWindowSnapshot] = useState<ConfigSyncWindowSnapshot>(
-    () => configSyncWindowControllerRef.current.snapshot(),
-  );
-
-  const syncWindowSnapshotRef = useRef(syncWindowSnapshot);
-  useEffect(() => {
-    syncWindowSnapshotRef.current = syncWindowSnapshot;
-  }, [syncWindowSnapshot]);
-
-  const updateSyncWindowSnapshot = useCallback(() => {
-    const nextSnapshot = configSyncWindowControllerRef.current.snapshot();
-    const prevSnapshot = syncWindowSnapshotRef.current;
-
-    if (
-      prevSnapshot.isSuppressed === nextSnapshot.isSuppressed
-      && prevSnapshot.source === nextSnapshot.source
-      && prevSnapshot.isExternalSyncing === nextSnapshot.isExternalSyncing
-    ) {
-      return;
-    }
-
-    syncWindowSnapshotRef.current = nextSnapshot;
-    setSyncWindowSnapshot(nextSnapshot);
-  }, []);
-  const releaseConfigSyncWindow = useCallback((token: number) => {
-    scheduleSyncWindowRelease({
-      token,
-      complete: (releasedToken) => {
-        configSyncWindowControllerRef.current.complete(releasedToken);
-        updateSyncWindowSnapshot();
-      },
-    });
-  }, [updateSyncWindowSnapshot]);
-
-  const handleExternalConfigUpdated = useCallback((_config: AppConfig) => {
-    if (autoSaveTimerRef.current) {
-      window.clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = null;
-    }
-    const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
-    updateSyncWindowSnapshot();
-    // 标记 applyRuntimeConfig 基准需要重置，防止外部配置触发冗余的后端热更新
-    // （后端已经通过 restart_service_with_config 处理过了）
-    lastAppliedConfigHashRef.current = EXTERNAL_UPDATE_SENTINEL;
-    releaseConfigSyncWindow(syncToken);
-  }, [releaseConfigSyncWindow, updateSyncWindowSnapshot]);
+  const syncWindowSnapshot = {
+    isExternalSyncing: false,
+    source: !configView.loaded && !error ? "initial_load" as const : null,
+  };
+  const handleExternalConfigUpdated = useCallback((snapshot: ConfigSnapshot<AppConfig>) => {
+    if (snapshot.revision < configStore.getSnapshot().revision) return;
+    configStore.receive({ ...snapshot, config: normalizeConfig(snapshot.config) });
+    setDictionary(configStore.getSnapshot().config.dictionary.map(parseEntry));
+    if (!configStore.getSnapshot().dirty) lastAppliedConfigHashRef.current = EXTERNAL_UPDATE_SENTINEL;
+  }, [configStore, setDictionary]);
   const statusRef = useRef(status);
   useEffect(() => {
     statusRef.current = status;
@@ -315,23 +236,6 @@ function App() {
     setLlmTime,
     setTotalTime,
     setShowCloseDialog,
-    setApiKey,
-    setFallbackApiKey,
-    setAsrConfig,
-    setUseRealtime,
-    setEnablePostProcess,
-    setEnableDictionaryEnhancement,
-    setLlmConfig,
-    setAssistantConfig,
-    setSearchConfig,
-    setLearningConfig,
-    setTnlConfig,
-    setEnableMuteOtherApps,
-    setTheme,
-    setCloseAction,
-    setDictionary,
-    setDualHotkeyConfig,
-    setBuiltinDictionaryDomains,
     onExternalConfigUpdated: handleExternalConfigUpdated,
     onBuiltinDictionaryUpdated: handleBuiltinDictionaryUpdated,
     setHistory,
@@ -371,45 +275,14 @@ function App() {
     applyRuntimeConfig,
     patchConfigFields,
   } = useAppServiceController({
-    setAsrConfig,
-    apiKey,
-    setApiKey,
-    fallbackApiKey,
-    setFallbackApiKey,
-    useRealtime,
-    setUseRealtime,
-    enablePostProcess,
-    setEnablePostProcess,
-    enableDictionaryEnhancement,
-    setEnableDictionaryEnhancement,
-    llmConfig,
-    setLlmConfig,
-    assistantConfig,
-    setAssistantConfig,
-    searchConfig,
-    setSearchConfig,
-    asrConfig,
-    dualHotkeyConfig,
-    setDualHotkeyConfig,
-    learningConfig,
-    setLearningConfig,
-    setTnlConfig,
-    dictionary,
+    configStore,
     setDictionary,
     recentHotwordEntries,
-    builtinDictionaryDomains,
-    setBuiltinDictionaryDomains,
     status,
     setStatus,
     setError,
     enableAutostart,
     setEnableAutostart,
-    enableMuteOtherApps,
-    setEnableMuteOtherApps,
-    theme,
-    setTheme,
-    closeAction,
-    setCloseAction,
     rememberChoice,
     setRememberChoice,
     setShowCloseDialog,
@@ -442,11 +315,6 @@ function App() {
     } catch (err) {
       setSyncStatus("error");
 
-      // 2s 后回到 idle
-      syncTimeoutRef.current = window.setTimeout(() => {
-        setSyncStatus("idle");
-      }, 2000);
-
       throw err; // 重新抛出以便调用方处理
     }
   }, [immediatelySaveConfig]);
@@ -462,92 +330,21 @@ function App() {
     };
   }) => {
     cancelAutoSaveDebounce();
-    const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
-    updateSyncWindowSnapshot();
-
-    if (syncTimeoutRef.current) {
-      window.clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = null;
-    }
-
-    const previousTheme = theme;
-    const previousEnableMuteOtherApps = enableMuteOtherApps;
-    const previousLearningConfig = learningConfig;
-    const previousTnlConfig = tnlConfig;
-    const previousCloseAction = closeAction;
-
-    if (typeof patch.theme === "string") {
-      setTheme(patch.theme);
-    }
-    if (typeof patch.enableMuteOtherApps === "boolean") {
-      setEnableMuteOtherApps(patch.enableMuteOtherApps);
-    }
-    if (typeof patch.learningEnabled === "boolean") {
-      const nextLearningEnabled = patch.learningEnabled;
-      setLearningConfig((prev) => ({ ...prev, enabled: nextLearningEnabled }));
-    }
-    if (patch.closeAction !== undefined) {
-      setCloseAction(patch.closeAction);
-    }
-    if (patch.tnlConfig) {
-      setTnlConfig(normalizeTnlConfig({
-        ...tnlConfig,
-        disfluency_mode: patch.tnlConfig.disfluencyMode ?? tnlConfig.disfluency_mode,
-        enable_context_hotwords: patch.tnlConfig.enableContextHotwords ?? tnlConfig.enable_context_hotwords,
-      }));
-    }
-
+    if (syncTimeoutRef.current) window.clearTimeout(syncTimeoutRef.current);
     setSyncStatus("syncing");
-
     try {
       await patchConfigFields(patch);
+      setError(null);
       setSyncStatus("success");
-      syncTimeoutRef.current = window.setTimeout(() => {
-        setSyncStatus("idle");
-      }, 1500);
-    } catch (err) {
-      if (typeof patch.theme === "string") {
-        setTheme(previousTheme);
-      }
-      if (typeof patch.enableMuteOtherApps === "boolean") {
-        setEnableMuteOtherApps(previousEnableMuteOtherApps);
-      }
-      if (typeof patch.learningEnabled === "boolean") {
-        setLearningConfig(previousLearningConfig);
-      }
-      if (patch.closeAction !== undefined) {
-        setCloseAction(previousCloseAction);
-      }
-      if (patch.tnlConfig) {
-        setTnlConfig(previousTnlConfig);
-      }
-
+      syncTimeoutRef.current = window.setTimeout(() => setSyncStatus("idle"), 1500);
+    } catch (error) {
+      // Keep the user's draft. Retrying never requires entering a key/model again.
       setSyncStatus("error");
-      syncTimeoutRef.current = window.setTimeout(() => {
-        setSyncStatus("idle");
-      }, 2000);
-      throw err;
-    } finally {
-      releaseConfigSyncWindow(syncToken);
+      setError(String(error));
+      throw error;
     }
-  }, [
-    theme,
-    enableMuteOtherApps,
-    learningConfig,
-    tnlConfig,
-    closeAction,
-    patchConfigFields,
-    setTheme,
-    setEnableMuteOtherApps,
-    setLearningConfig,
-    setTnlConfig,
-    setCloseAction,
-    cancelAutoSaveDebounce,
-    releaseConfigSyncWindow,
-    updateSyncWindowSnapshot,
-  ]);
+  }, [cancelAutoSaveDebounce, patchConfigFields]);
 
-  // 更新 ref 以便 useHotkeyRecording 可以访问
   useEffect(() => {
     saveImmediatelyRef.current = wrappedSaveImmediately;
   }, [wrappedSaveImmediately]);
@@ -568,14 +365,7 @@ function App() {
     const init = async () => {
       try {
         await configInitializationRef.current.run(async () => {
-          const syncToken = configSyncWindowControllerRef.current.begin("initial_load");
-          updateSyncWindowSnapshot();
-          try {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            await loadConfig();
-          } finally {
-            releaseConfigSyncWindow(syncToken);
-          }
+          await loadConfig();
         });
         // 启动时自动检查更新（只执行一次）
         if (!hasCheckedUpdateOnStartup.current) {
@@ -588,7 +378,7 @@ function App() {
       }
     };
     init();
-  }, [checkForUpdates, loadConfig, releaseConfigSyncWindow]);
+  }, [checkForUpdates, loadConfig]);
   useEffect(() => {
     getVersion().then(v => {
       setCurrentVersion(v);
@@ -678,82 +468,25 @@ function App() {
     });
   }, [status, enablePostProcess, enableDictionaryEnhancement, llmConfig, assistantConfig, searchConfig, enableMuteOtherApps, dictionary, recentHotwordEntries, builtinDictionaryDomains, applyRuntimeConfig]);
 
-  // Auto-save config after changes (debounced).
-  // While the service is running, this applies changes by restarting the backend.
+  // Debounce explicit edits only. Receiving snapshots never schedules a save.
   useEffect(() => {
-    console.log(
-      "[App.tsx] 自动保存 useEffect 触发, theme=",
-      theme,
-      "hasLoaded=",
-      configInitializationRef.current.isReady(),
-      "syncSuppressed=",
-      configSyncWindowControllerRef.current.isSuppressed(),
-      "syncSource=",
-      configSyncWindowControllerRef.current.currentSource(),
-    );
-    if (!configInitializationRef.current.isReady()) return;
-    if (status === "recording" || status === "transcribing") return;
-
-    if (configSyncWindowControllerRef.current.isSuppressed()) {
-      console.log(
-        "[App.tsx] 同步窗口中，跳过自动保存, source=",
-        configSyncWindowControllerRef.current.currentSource(),
-      );
-      return;
-    }
-
-    console.log("[App.tsx] 准备 debounce 保存配置, theme=", theme);
-
-    if (autoSaveTimerRef.current) {
-      window.clearTimeout(autoSaveTimerRef.current);
-    }
-
+    if (!configView.loaded || !configView.dirty || configView.saving) return;
+    if (["recording", "transcribing", "polishing", "assistant_processing"].includes(status)) return;
     autoSaveTimerRef.current = window.setTimeout(() => {
-      if (!configInitializationRef.current.isReady()) return;
-      if (configSyncWindowControllerRef.current.isSuppressed()) return;
-      if (statusRef.current === "recording" || statusRef.current === "transcribing") return;
-      console.log("[App.tsx] debounce 到期，执行 handleSaveConfig");
-      if (syncTimeoutRef.current) {
-        window.clearTimeout(syncTimeoutRef.current);
-        syncTimeoutRef.current = null;
-      }
+      autoSaveTimerRef.current = null;
+      if (!configStore.getSnapshot().dirty) return;
+      if (syncTimeoutRef.current) window.clearTimeout(syncTimeoutRef.current);
       setSyncStatus("syncing");
-      void (async () => {
-        try {
-          await handleSaveConfigRef.current();
-          setSyncStatus("success");
-          syncTimeoutRef.current = window.setTimeout(() => {
-            setSyncStatus("idle");
-          }, 1500);
-        } catch (err) {
-          console.error("[App.tsx] debounce 保存配置失败:", err);
-          setSyncStatus("error");
-          syncTimeoutRef.current = window.setTimeout(() => {
-            setSyncStatus("idle");
-          }, 2000);
-        }
-      })();
+      void handleSaveConfigRef.current().then(() => {
+        setSyncStatus("success");
+        syncTimeoutRef.current = window.setTimeout(() => setSyncStatus("idle"), 1500);
+      }).catch(error => {
+        console.error("自动保存失败，已保留编辑内容:", error);
+        setSyncStatus("error");
+      });
     }, 900);
-
-    return () => {
-      if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current);
-    };
-  }, [
-    asrConfig,
-    useRealtime,
-    enablePostProcess,
-    enableDictionaryEnhancement,
-    llmConfig,
-    assistantConfig,
-    searchConfig,
-    dictionary,
-    builtinDictionaryDomains,
-    enableMuteOtherApps,
-    closeAction,
-    dualHotkeyConfig,
-    learningConfig,
-    theme,
-  ]);
+    return () => { if (autoSaveTimerRef.current) window.clearTimeout(autoSaveTimerRef.current); };
+  }, [configView.editVersion, configView.dirty, configView.loaded, status, configStore]);
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -992,7 +725,14 @@ function App() {
                 {error && (
                   <div className="mx-auto max-w-3xl mb-6 flex items-center gap-3 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 text-sm font-semibold">
                     <AlertCircle size={18} />
-                    <span>{error}</span>
+                    <span className="flex-1">{error}</span>
+                    {configView.dirty && (
+                      <button type="button" disabled={syncStatus === "syncing"}
+                        className="shrink-0 rounded-lg border border-red-200 px-3 py-1.5 disabled:opacity-50"
+                        onClick={() => { void wrappedSaveImmediately().catch(() => {}); }}>
+                        {syncStatus === "syncing" ? "保存中…" : "重试保存"}
+                      </button>
+                    )}
                   </div>
                 )}
 

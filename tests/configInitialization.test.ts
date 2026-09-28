@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createConfigInitialization } from "../src/utils/configInitialization";
-import { createConfigSyncWindowController } from "../src/utils/configSyncWindow";
 
 function deferred() {
   let resolve!: () => void;
@@ -10,16 +9,13 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test("慢加载期间，即使同步窗口已结束且保存计时器到期，也不能写回默认配置", async () => {
+test("慢加载期间不能用默认值启动服务", async () => {
   const gate = createConfigInitialization();
-  const sync = createConfigSyncWindowController();
   const pending = deferred();
   let config = "defaults";
   const writes: string[] = [];
   const loading = gate.run(async () => { await pending.promise; config = "old saved config"; });
-  const external = sync.begin("external_config_updated");
-  sync.complete(external);
-  const onDebounce = () => { if (gate.isReady() && !sync.isSuppressed()) writes.push(config); };
+  const onDebounce = () => { if (gate.isReady()) writes.push(config); };
   onDebounce();
   assert.deepEqual(writes, []);
   pending.resolve();

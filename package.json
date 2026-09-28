@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test:ts": "tsx --test tests/*.test.ts",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:ui": "node --test tests/browser/*.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.11.1",
@@ -30,6 +31,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.20",
+    "playwright": "^1.63.0",
     "png-to-ico": "^3.0.1",
     "postcss": "^8.4.47",
     "sharp": "^0.34.5",

@@ -35,16 +35,3 @@ test("普通配置保存不应把 AppConfig.dictionary 快照默认同步回 sid
     /if should_sync_user_terms_sidecar \{[\s\S]*sync_user_terms_sidecar_from_dictionary_or_warn\(&config\.dictionary,/,
   );
 });
-
-test("前端初始化词库应优先读取 sidecar 命令，失败才回退 config.dictionary", async () => {
-  const source = await readFile("src/hooks/useAppServiceController.ts", "utf8");
-  const loadStart = source.indexOf("const loadConfig = useCallback");
-  const loadEnd = source.indexOf("const handleSaveConfig", loadStart);
-  assert.ok(loadStart >= 0 && loadEnd > loadStart, "应找到 loadConfig 代码块");
-  const loadBlock = source.slice(loadStart, loadEnd);
-
-  assert.match(loadBlock, /invoke<string\[\]>\("get_dictionary_entries"\)/);
-  assert.match(loadBlock, /catch\s*\(.*\)\s*\{[\s\S]*config\.dictionary/);
-  assert.match(loadBlock, /let dictionarySource/);
-  assert.match(loadBlock, /setDictionary\(loadedDictionary\)/);
-});

@@ -17,9 +17,16 @@ pub(crate) fn apply_patch(config: &mut AppConfig, patch: &Value) -> Result<(), S
         }
     }
     let mut document = serde_json::to_value(&*config).map_err(|e| e.to_string())?;
-    merge_known_fields(&mut document, patch, "config")?;
+    merge_fields(&mut document, patch);
+    // Let the actual Rust schema validate optional fields omitted by serialization.
+    // Unknown fields remain errors, while custom_body intentionally accepts vendor JSON.
+    let mut unknown = Vec::new();
     let mut next: AppConfig =
-        serde_json::from_value(document).map_err(|e| format!("配置格式错误: {e}"))?;
+        serde_ignored::deserialize(document, |path| unknown.push(path.to_string()))
+            .map_err(|e| format!("配置格式错误: {e}"))?;
+    if !unknown.is_empty() {
+        return Err(format!("未知配置字段: {}", unknown.join(", ")));
+    }
     if fields.contains_key("theme") && !matches!(next.theme.as_str(), "light" | "dark") {
         return Err("主题必须为 light 或 dark".into());
     }
@@ -47,19 +54,14 @@ pub(crate) fn apply_patch(config: &mut AppConfig, patch: &Value) -> Result<(), S
     Ok(())
 }
 
-fn merge_known_fields(target: &mut Value, patch: &Value, path: &str) -> Result<(), String> {
+fn merge_fields(target: &mut Value, patch: &Value) {
     if let (Value::Object(target), Value::Object(patch)) = (&mut *target, patch) {
         for (key, value) in patch {
-            let child_path = format!("{path}.{key}");
-            let current = target
-                .get_mut(key)
-                .ok_or_else(|| format!("未知配置字段: {child_path}"))?;
-            merge_known_fields(current, value, &child_path)?;
+            merge_fields(target.entry(key).or_insert(Value::Null), value);
         }
     } else {
         *target = patch.clone();
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -69,6 +71,22 @@ mod tests {
 
     fn fixture() -> AppConfig {
         serde_json::from_str(include_str!("../../../tests/fixtures/config/v1.6.1.json")).unwrap()
+    }
+
+    #[test]
+    fn an_omitted_optional_model_can_be_added_and_cleared() {
+        let mut config = fixture();
+        apply_patch(&mut config, &json!({"llm_config":{"feature_override":{"model":"chosen-model", "custom_body":{"vendor_option":true}}}})).unwrap();
+        assert_eq!(
+            config.llm_config.feature_override.model.as_deref(),
+            Some("chosen-model")
+        );
+        apply_patch(
+            &mut config,
+            &json!({"llm_config":{"feature_override":{"model":null}}}),
+        )
+        .unwrap();
+        assert!(config.llm_config.feature_override.model.is_none());
     }
 
     #[test]

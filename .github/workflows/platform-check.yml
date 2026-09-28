@@ -35,6 +35,8 @@ jobs:
         run: '"CMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV'
       - run: npm ci
       - run: npm run test:ts
+      - run: npx playwright install chromium
+      - run: npm run test:ui
       - run: npm run build
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml

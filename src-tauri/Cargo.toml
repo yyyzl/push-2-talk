@@ -82,6 +82,7 @@ tauri-plugin-opener = "2"
 # 单实例支持
 tauri-plugin-single-instance = "2"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde_ignored = "0.1"
 
 # Windows Audio Session API - 录音时静音其他应用
 # Win32 Input API - 键盘模拟（替代 enigo）

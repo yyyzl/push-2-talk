@@ -1,34 +1,23 @@
+import type { ConfigSnapshot } from "../state/configStore";
+import { desktop } from "../services/desktop";
 import type React from "react";
 import { useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { nanoid } from "nanoid";
 import type {
   AppConfig,
   AppStatus,
-  AsrConfig,
-  AssistantConfig,
-  DictionaryEntry,
-  DualHotkeyConfig,
   HistoryRecord,
-  LearningConfig,
   LlmConfig,
-  SearchConfig,
-  TnlConfig,
   TranscriptionResult,
   UsageStats,
 } from "../types";
 import {
-  DEFAULT_LEARNING_CONFIG,
   MAX_HISTORY,
-  normalizeLearningConfig,
-  normalizeTnlConfig,
 } from "../constants";
 import { saveHistory, loadUsageStats } from "../utils";
-import { parseEntry } from "../utils/dictionaryUtils";
 import {
   fetchBuiltinDomains,
-  normalizeBuiltinDictionaryDomains,
   setBuiltinDomainsSnapshot,
 } from "../utils/builtinDictionary";
 
@@ -51,24 +40,7 @@ export type UseTauriEventListenersParams = {
   setTotalTime: React.Dispatch<React.SetStateAction<number | null>>;
   setShowCloseDialog: React.Dispatch<React.SetStateAction<boolean>>;
 
-  setApiKey?: React.Dispatch<React.SetStateAction<string>>;
-  setFallbackApiKey?: React.Dispatch<React.SetStateAction<string>>;
-  setAsrConfig?: React.Dispatch<React.SetStateAction<AsrConfig>>;
-  setUseRealtime?: React.Dispatch<React.SetStateAction<boolean>>;
-  setEnablePostProcess?: React.Dispatch<React.SetStateAction<boolean>>;
-  setEnableDictionaryEnhancement?: React.Dispatch<React.SetStateAction<boolean>>;
-  setLlmConfig?: React.Dispatch<React.SetStateAction<LlmConfig>>;
-  setAssistantConfig?: React.Dispatch<React.SetStateAction<AssistantConfig>>;
-  setSearchConfig?: React.Dispatch<React.SetStateAction<SearchConfig>>;
-  setLearningConfig?: React.Dispatch<React.SetStateAction<LearningConfig>>;
-  setTnlConfig?: React.Dispatch<React.SetStateAction<TnlConfig>>;
-  setEnableMuteOtherApps?: React.Dispatch<React.SetStateAction<boolean>>;
-  setTheme?: React.Dispatch<React.SetStateAction<string>>;
-  setCloseAction?: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
-  setDictionary?: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
-  setDualHotkeyConfig?: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
-  setBuiltinDictionaryDomains?: React.Dispatch<React.SetStateAction<string[]>>;
-  onExternalConfigUpdated?: (config: AppConfig) => void;
+  onExternalConfigUpdated?: (snapshot: ConfigSnapshot<AppConfig>) => void;
   onBuiltinDictionaryUpdated?: () => void;
 
   setHistory: React.Dispatch<React.SetStateAction<HistoryRecord[]>>;
@@ -93,23 +65,6 @@ export function useTauriEventListeners({
   setLlmTime,
   setTotalTime,
   setShowCloseDialog,
-  setApiKey,
-  setFallbackApiKey,
-  setAsrConfig,
-  setUseRealtime,
-  setEnablePostProcess,
-  setEnableDictionaryEnhancement,
-  setLlmConfig,
-  setAssistantConfig,
-  setSearchConfig,
-  setLearningConfig,
-  setTnlConfig,
-  setEnableMuteOtherApps,
-  setTheme,
-  setCloseAction,
-  setDictionary,
-  setDualHotkeyConfig,
-  setBuiltinDictionaryDomains,
   onExternalConfigUpdated,
   onBuiltinDictionaryUpdated,
   setHistory,
@@ -262,56 +217,14 @@ export function useTauriEventListeners({
           setError(null);
         }))) return;
 
-        if (!(await registerListener<AppConfig>("config_updated", (config) => {
-          onExternalConfigUpdated?.(config);
-
-          setApiKey?.(config.dashscope_api_key || "");
-          setFallbackApiKey?.(config.siliconflow_api_key || "");
-          if (config.asr_config) setAsrConfig?.(config.asr_config);
-          setUseRealtime?.(config.use_realtime_asr ?? true);
-          setEnablePostProcess?.(config.enable_llm_post_process ?? false);
-          setEnableDictionaryEnhancement?.(config.enable_dictionary_enhancement ?? true);
-          setLlmConfig?.(config.llm_config || llmConfigRef.current);
-          if (config.assistant_config) setAssistantConfig?.(config.assistant_config);
-          if (config.search_config) setSearchConfig?.(config.search_config);
-          setLearningConfig?.(
-            normalizeLearningConfig(config.learning_config || DEFAULT_LEARNING_CONFIG),
-          );
-          setTnlConfig?.(normalizeTnlConfig(config.tnl_config));
-          setEnableMuteOtherApps?.(config.enable_mute_other_apps ?? false);
-          setTheme?.(config.theme || "light");
-
-          if (config.dual_hotkey_config) {
-            setDualHotkeyConfig?.(config.dual_hotkey_config);
-          }
-
-          const nextCloseAction = config.close_action === "close" || config.close_action === "minimize"
-            ? config.close_action
-            : null;
-          setCloseAction?.(nextCloseAction);
-
-          if (setDictionary) {
-            const configDictionary = Array.isArray(config.dictionary) ? config.dictionary : [];
-            const normalizedDictionary = configDictionary
-              .filter((entry) => typeof entry === "string" && entry.trim())
-              .map((entry) => parseEntry(entry));
-            setDictionary(normalizedDictionary);
-          }
-
-          if (setBuiltinDictionaryDomains) {
-            setBuiltinDictionaryDomains(
-              normalizeBuiltinDictionaryDomains(config.builtin_dictionary_domains || [])
-            );
-          }
+        if (!(await registerListener<ConfigSnapshot<AppConfig>>("config_snapshot_updated", snapshot => {
+          onExternalConfigUpdated?.(snapshot);
         }))) return;
 
         if (!(await registerListener("builtin_dictionary_updated", async () => {
           try {
             const domains = await fetchBuiltinDomains();
             setBuiltinDomainsSnapshot(domains);
-            setBuiltinDictionaryDomains?.((prev) =>
-              normalizeBuiltinDictionaryDomains(prev),
-            );
             onBuiltinDictionaryUpdated?.();
           } catch (error) {
             console.error("刷新内置词库快照失败:", error);
@@ -326,11 +239,11 @@ export function useTauriEventListeners({
 
         if (!(await registerListener("close_requested", async () => {
           try {
-            const config = await invoke<AppConfig>("load_config");
+            const { config } = await desktop.getConfig();
             if (config.close_action === "close") {
-              await invoke("quit_app");
+              await desktop.quit();
             } else if (config.close_action === "minimize") {
-              await invoke("hide_to_tray");
+              await desktop.hide();
             } else {
               setShowCloseDialog(true);
             }
@@ -361,24 +274,7 @@ export function useTauriEventListeners({
     setHistory,
     setLlmTime,
     setOriginalTranscript,
-    setApiKey,
-    setFallbackApiKey,
-    setAsrConfig,
-    setUseRealtime,
-    setEnablePostProcess,
-    setEnableDictionaryEnhancement,
-    setLlmConfig,
-    setAssistantConfig,
-    setSearchConfig,
-    setLearningConfig,
-    setTnlConfig,
-    setEnableMuteOtherApps,
-    setTheme,
-    setCloseAction,
-    setDictionary,
-    setDualHotkeyConfig,
-    setBuiltinDictionaryDomains,
-    onExternalConfigUpdated,
+      onExternalConfigUpdated,
     onBuiltinDictionaryUpdated,
     setShowCloseDialog,
     setStatus,

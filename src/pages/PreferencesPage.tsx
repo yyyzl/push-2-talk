@@ -95,7 +95,6 @@ export function PreferencesPage({
   // 切换自动学习开关
   const handleToggleLearning = async () => {
     const newValue = !learningEnabled;
-    const previousLearningConfig = learningConfig;
     const updatedLearningConfig = normalizeLearningConfig({
       ...learningConfig,
       enabled: newValue,
@@ -106,7 +105,6 @@ export function PreferencesPage({
       await onSetLearningEnabled(newValue);
     } catch (error) {
       console.error("保存自动学习配置失败:", error);
-      setLearningConfig(previousLearningConfig); // 回滚
     }
   };
 

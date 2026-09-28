@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasBackendAsrCredentials } from "../src/utils/asrMigration";
 import { normalizeTnlConfig } from "../src/constants";
-
-test("旧浏览器缓存不能覆盖豆包输入法的完整或部分凭据", () => {
-  for (const field of ["doubao_ime_token", "doubao_ime_device_id", "doubao_ime_cdid"]) {
-    assert.equal(hasBackendAsrCredentials({ [field]: "saved-value" }), true);
-  }
-  assert.equal(hasBackendAsrCredentials({ qwen_api_key: " " }), false);
-});
 
 test("旧配置升级不得自动开启新引入的口语清洗", () => {
   assert.equal(normalizeTnlConfig({ enabled: true }).disfluency_mode, "off");

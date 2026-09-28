@@ -7,6 +7,6 @@ test("loadConfig 应先加载内置词库 snapshot 再构建 runtime dictionary"
   assert.match(source, /fetchBuiltinDomains\(/);
   assert.match(source, /setBuiltinDomainsSnapshot\(/);
   assert.match(source, /buildRuntimeDictionary\(/);
-  assert.match(source, /entriesToRuntimeFormat\(/);
-  assert.match(source, /getBuiltinRuntimeEntriesForDomains\(/);
+  const load = source.slice(source.indexOf("const loadConfig"));
+  assert.ok(load.indexOf("fetchBuiltinDomains()") < load.indexOf("buildRuntimeDictionary("));
 });
