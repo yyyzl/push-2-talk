@@ -5,6 +5,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [架构整顿](architecture.md) | 目标职责图、v1.6.1 兼容基线与五步实施验收 |
+| [Windows 实机验收交接](windows-validation-handoff.md) | 固定代码/安装包、v1.6.1 覆盖升级、P0/P1 用例与结果回填模板 |
 | [平台集成审查](platform-integration.md) | Windows/Mac 分支合并决策、验证证据与合入主线前的验收门槛 |
 | [Windows 功能价值审查](windows-feature-value-audit.md) | 清理依据、保留项与验证局限 |
 | [功能清理验收](windows-feature-cleanup.md) | 本轮清理结果、回归证据与尚未覆盖的桌面验收 |
