@@ -54,6 +54,8 @@ docs/*
 !docs/development/**
 !docs/archive/
 !docs/archive/**
+!docs/releases/
+!docs/releases/**
 .ccg/
 
 # Git worktrees
