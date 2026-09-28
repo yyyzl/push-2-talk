@@ -1,3 +1,4 @@
+import { Select } from "../common/Select";
 import { useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ReasoningEffort } from "../../types";
@@ -41,17 +42,13 @@ export function ReasoningEffortSelect({ value, context, disabled, label = "思�
     <div className="space-y-2 min-w-0">
       <label htmlFor={id} className="text-sm font-semibold text-stone-700">{label}</label>
       {current?.data?.model && <p className="text-xs text-stone-600 break-all">{current.data.model}</p>}
-      <select id={id} value={value ?? "default"} disabled={disabled || !current || current.failed}
-        aria-describedby={`${id}-hint`}
-        onChange={(event) => {
-          const next = event.target.value as ReasoningEffort;
-          if (options.some((option) => option.value === next && !option.disabled)) {
+      <Select id={id} value={value ?? "default"} disabled={disabled || !current || current.failed}
+        aria-describedby={`${id}-hint`} options={options}
+        onChange={next => {
+          if (options.some(option => option.value === next && !option.disabled)) {
             onChange(next === "default" ? undefined : next);
           }
-        }}
-        className="w-full px-4 py-3 bg-white border border-[var(--stone)] rounded-2xl text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--steel)] disabled:opacity-60">
-        {options.map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}
-      </select>
+        }} />
       <p id={`${id}-hint`} className="text-xs text-stone-600 leading-relaxed" role="status">{hint}</p>
       {current?.failed && <button type="button" disabled={disabled} onClick={() => setRetry((n) => n + 1)} className="text-sm text-[var(--steel)] underline underline-offset-4">重新读取</button>}
       {description && <p className="text-xs text-stone-600 leading-relaxed">{description}</p>}

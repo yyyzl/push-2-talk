@@ -930,7 +930,7 @@ pub(crate) async fn handle_assistant_mode(
             .unwrap()
             .clone();
 
-        match http_fallback_provider(active_prov, fallback_prov.clone()) {
+        match http_fallback_provider(active_prov, fallback_prov.clone(), enable_fb) {
             Ok(effective_active_prov) => {
                 transcribe_with_available_clients(
                     qwen,

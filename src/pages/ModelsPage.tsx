@@ -269,6 +269,7 @@ export function ModelsPage({
               <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">默认提供商</label>
             </div>
             <ConfigSelect
+              aria-label="默认提供商"
               value={sharedConfig.default_provider_id}
               onChange={(val) => setSharedConfig(prev => ({ ...prev, default_provider_id: val }))}
               options={providerOptions}
@@ -289,6 +290,7 @@ export function ModelsPage({
               <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">语句润色 · 词库增强</label>
             </div>
             <ConfigSelect
+              aria-label="语句润色 · 词库增强"
               value={sharedConfig.polishing_provider_id || ""}
               onChange={(val) => setSharedConfig(prev => ({ ...prev, polishing_provider_id: val || undefined }))}
               options={[{ value: "", label: "跟随默认" }, ...providerOptions]}
@@ -326,6 +328,7 @@ export function ModelsPage({
               <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">AI 助手</label>
             </div>
             <ConfigSelect
+              aria-label="AI 助手"
               value={sharedConfig.assistant_provider_id || ""}
               onChange={(val) => setSharedConfig(prev => ({ ...prev, assistant_provider_id: val || undefined }))}
               options={[{ value: "", label: "跟随默认" }, ...providerOptions]}
@@ -340,6 +343,7 @@ export function ModelsPage({
               <label className="text-xs font-bold text-stone-600 uppercase tracking-widest">词库学习</label>
             </div>
             <ConfigSelect
+              aria-label="词库学习"
               value={sharedConfig.learning_provider_id || ""}
               onChange={(val) => setSharedConfig(prev => ({ ...prev, learning_provider_id: val || undefined }))}
               options={[{ value: "", label: "跟随默认" }, ...providerOptions]}

@@ -12,9 +12,9 @@ test("能力尚未加载时保留旧值，不展示未经确认的选项或触�
     context: { kind: "polishing", config: DEFAULT_LLM_CONFIG },
     onChange: () => { changes += 1; },
   }));
-  assert.equal((html.match(/<option /g) ?? []).length, 2);
-  assert.match(html, /value="xhigh"[^>]*selected/);
-  assert.doesNotMatch(html, /value="low"/);
+  assert.match(html, /role="combobox"[^>]*disabled/);
+  assert.match(html, /已保存：极高（旧设置）/);
+  assert.doesNotMatch(html, /role="option"/);
   assert.equal(changes, 0);
 });
 

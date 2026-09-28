@@ -66,11 +66,12 @@ test("真实模型选择器失败保留选择，用户可直接重试保存", as
   const page = await open(t, "?idle");
   await page.getByRole("button", { name: "语音识别引擎", exact: true }).click();
   const select = page.locator("#qwen-model-http");
-  const next = await select.locator("option").evaluateAll(options => options.find(option => !option.selected).value);
+  const next = "Audio 3.1 · 录音识别";
   await page.evaluate(() => { window.testDesktop.failWrites = true; });
-  await select.selectOption(next);
+  await select.click();
+  await page.getByRole("option", { name: next, exact: true }).click();
   await page.getByText("模拟配置写入失败", { exact: false }).first().waitFor();
-  assert.equal(await select.inputValue(), next, "failed write must preserve the selected model");
+  assert.equal(await select.innerText(), next, "failed write must preserve the selected model");
   await page.evaluate(() => { window.testDesktop.failWrites = false; });
   await page.getByRole("button", { name: "重试保存" }).click();
   await page.waitForFunction(() => window.testDesktop.calls.filter(call => call.command === "update_config").length === 2);
@@ -78,7 +79,7 @@ test("真实模型选择器失败保留选择，用户可直接重试保存", as
   assert.equal(saved.length, 2);
   assert.deepEqual(saved[0].args.patch, saved[1].args.patch);
   assert.deepEqual(Object.keys(saved[1].args.patch), ["asr_config"]);
-  assert.equal(await select.inputValue(), next);
+  assert.equal(await select.innerText(), next);
 });
 
 test("输入 API Key 的自动保存只写该字段并保留后台的新设置", async t => {
@@ -101,4 +102,118 @@ test("服务慢启动时保留用户输入，启动完成后才保存并应用�
   const starts = await page.evaluate(() => window.testDesktop.calls.filter(call => call.command === "start_app"));
   assert.equal(starts[1].args.apiKey, "fixture-during-startup");
   assert.deepEqual((await writes(page)).map(call => call.args.patch), [{ asr_config: { credentials: { qwen_api_key: "fixture-during-startup" } } }]);
+});
+
+
+test("千问下拉显示分模式的全部模型，键盘取消不保存，选择只改对应模型", async t => {
+  const page = await open(t, "?idle");
+  await page.getByRole("button", { name: "语音识别引擎", exact: true }).click();
+  const http = page.getByRole("combobox", { name: "松开后识别的模型", exact: true });
+  await http.click();
+  await page.getByRole("listbox").waitFor({ timeout: 2000 });
+  assert.equal(await page.getByRole("option").count(), 5);
+  await page.keyboard.press("End");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.activeElement?.id === "qwen-model-http");
+  assert.deepEqual(await writes(page), []);
+  await http.press("Enter");
+  await page.getByRole("option", { name: "Qwen3 · 稳定版", exact: true }).press("Home");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Audio 3.1 · 录音识别");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.testDesktop.calls.some(call => call.command === "update_config"));
+  assert.deepEqual((await writes(page))[0].args.patch, { asr_config: { qwen_models: { http: "qwen-audio-3.1-asr-flash" } } });
+  const realtime = page.getByRole("combobox", { name: "边说边识别的模型", exact: true });
+  await realtime.click();
+  assert.equal(await page.getByRole("option").count(), 6);
+  await page.getByRole("option", { name: "Audio 3.1 Message · 语音输入", exact: true }).click();
+  await page.waitForFunction(() => window.testDesktop.calls.filter(call => call.command === "update_config").length === 2);
+  assert.deepEqual((await writes(page))[1].args.patch, { asr_config: { qwen_models: { realtime: "qwen-audio-3.1-asr-flash-message" } } });
+});
+
+test("备用识别开关保留旧服务，不再静默覆盖为硅基流动", async t => {
+  const page = await open(t, "?idle");
+  await page.evaluate(() => window.testDesktop.emitConfig({ asr_config: { selection: { fallback_provider: "qwen", enable_fallback: true } } }));
+  await page.getByRole("button", { name: "语音识别引擎", exact: true }).click();
+  const toggle = page.getByRole("switch", { name: "启用备用识别", exact: true });
+  await toggle.waitFor({ timeout: 2000 });
+  await toggle.click();
+  await page.waitForFunction(() => window.testDesktop.calls.some(call => call.command === "update_config"));
+  await toggle.click();
+  await page.waitForFunction(() => window.testDesktop.calls.filter(call => call.command === "update_config").length === 2);
+  assert.deepEqual((await writes(page)).map(call => call.args.patch), [
+    { asr_config: { selection: { enable_fallback: false } } },
+    { asr_config: { selection: { enable_fallback: true } } },
+  ]);
+  await page.getByText("已保存的备用服务：阿里千问", { exact: false }).waitFor();
+});
+
+
+test("千问全部 11 个模型可保存并在重载后恢复，凭据和另一模式保持不变", async t => {
+  const page = await open(t, "?idle");
+  const catalogue = JSON.parse(await readFile(new URL("../../src/shared/qwen-models.json", import.meta.url), "utf8"));
+  await page.goto(base + "/tests/ui/asr-model-selection.html");
+  for (const model of [...catalogue].reverse()) {
+    const before = JSON.parse(await page.getByLabel("已保存的验收配置").innerText());
+    await page.locator(`#qwen-model-${model.mode}`).click();
+    await page.getByRole("option", { name: model.label, exact: true }).click();
+    await page.waitForFunction(({ mode, id }) => JSON.parse(localStorage.getItem("ptt-asr-acceptance-fixture") || "{}").qwen_models?.[mode] === id, model);
+    await page.reload();
+    const after = JSON.parse(await page.getByLabel("已保存的验收配置").innerText());
+    assert.deepEqual(after.credentials, before.credentials);
+    assert.equal(after.qwen_models[model.mode], model.id);
+    const other = model.mode === "http" ? "realtime" : "http";
+    assert.equal(after.qwen_models[other], before.qwen_models?.[other]);
+    assert.equal(await page.locator(`#qwen-model-${model.mode}`).innerText(), model.label);
+  }
+  await page.getByRole("button", { name: "载入未知模型", exact: true }).click();
+  assert.match(await page.locator("#qwen-model-http").innerText(), /future-saved-model/);
+  await page.getByLabel("服务运行中").check();
+  assert.equal(await page.locator("#qwen-model-http").isDisabled(), true);
+});
+
+test("豆包输入法的备用服务能选择千问并独立保存 HTTP 模型", async t => {
+  const page = await open(t, "?idle");
+  await page.evaluate(() => window.testDesktop.emitConfig({ asr_config: { selection: { active_provider: "doubao_ime" } } }));
+  await page.getByRole("button", { name: "语音识别引擎", exact: true }).click();
+  await page.getByRole("combobox", { name: "备用服务", exact: true }).click();
+  assert.equal(await page.getByRole("option").count(), 3);
+  await page.getByRole("option", { name: "阿里千问", exact: true }).click();
+  await page.locator("#fallback-qwen-model-http").click();
+  await page.getByRole("option", { name: "Audio 3.0 · 录音识别", exact: true }).click();
+  await page.waitForFunction(() => window.testDesktop.calls.filter(call => call.command === "update_config").length === 2);
+  assert.deepEqual((await writes(page)).map(call => call.args.patch), [
+    { asr_config: { selection: { fallback_provider: "qwen" } } },
+    { asr_config: { qwen_models: { http: "qwen-audio-3.0-asr-flash" } } },
+  ]);
+});
+
+
+test("公共选择器保留未知值，支持空值继承、搜索及禁用项，弹层不受父容器裁切", async t => {
+  const page = await open(t, "?idle");
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(base + "/tests/ui/select-controls.html");
+  const select = page.getByRole("combobox", { name: "模型选择", exact: true });
+  assert.equal(await select.innerText(), "saved-removed");
+  await select.click();
+  const popup = page.getByRole("listbox");
+  const box = await popup.boundingBox();
+  assert.ok(box.y + box.height <= 600 && box.width >= 220 && box.height > 100);
+  assert.equal(await page.getByRole("option", { name: "不可选旧模型", exact: true }).getAttribute("aria-disabled"), "true");
+  await page.getByRole("option", { name: "跟随默认", exact: true }).click();
+  assert.equal(await page.getByLabel("当前值").innerText(), '""');
+  assert.equal(await page.getByLabel("父项点击次数").innerText(), "0");
+  await select.click();
+  await page.getByRole("option", { name: "跟随默认", exact: true }).press("ArrowDown");
+  await page.waitForFunction(() => document.activeElement?.textContent === "Alpha");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.getByLabel("当前值").innerText(), '"alpha"');
+  await select.click();
+  await page.getByRole("option", { name: "Alpha", exact: true }).press("m");
+  await page.waitForFunction(() => document.activeElement?.textContent === "Model 0");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.getByLabel("当前值").innerText(), '"model-0"');
+  await select.click();
+  await page.mouse.click(700, 550);
+  await popup.waitFor({ state: "hidden" });
+  assert.equal(await page.getByRole("combobox", { name: "空列表", exact: true }).isDisabled(), true);
 });

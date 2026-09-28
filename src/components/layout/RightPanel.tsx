@@ -14,7 +14,7 @@ import {
   ASR_PROVIDERS,
 } from "../../constants";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../../utils";
-import { ConfigSelect, ConfigToggle, Tooltip } from "../common";
+import { ConfigSelect, ConfigToggle, Select, Tooltip } from "../common";
 import { useConfigSave } from "../../contexts/ConfigSaveContext";
 
 // 首页词库最多显示的词条数（约两行）
@@ -86,6 +86,7 @@ export function RightPanel({
           </label>
         </div>
         <ConfigSelect
+          aria-label="语音识别引擎"
           value={asrConfig.selection.active_provider}
           onChange={(newProvider) => {
             setAsrConfig((prev) => ({
@@ -173,21 +174,10 @@ export function RightPanel({
               variant="orange"
             />
           </div>
-          <select
-            value={llmConfig.active_preset_id}
-            onChange={(e) => {
-              const id = e.target.value;
-              setLlmConfig((prev) => ({ ...prev, active_preset_id: id }));
-            }}
+          <Select aria-label="语句润色预设" value={llmConfig.active_preset_id}
+            onChange={id => setLlmConfig(prev => ({ ...prev, active_preset_id: id }))}
             disabled={!enablePostProcess || isRunning}
-            className="w-full text-[10px] font-bold text-stone-500 bg-[var(--paper)] rounded-lg px-2 py-2 outline-none border border-[var(--stone)] disabled:opacity-50"
-          >
-            {llmConfig.presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+            options={llmConfig.presets.map(preset => ({ value: preset.id, label: preset.name }))} />
           {/* 虚线分割线 */}
           <div className="my-3 border-t border-dashed border-stone-200" />
           <div className="flex items-center justify-between">

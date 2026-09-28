@@ -14,10 +14,10 @@ export function selectedQwenModel(config: AsrConfig, mode: QwenMode): string {
 
 export function qwenModelOptions(config: AsrConfig, mode: QwenMode) {
   const options = QWEN_MODELS.filter(model => model.mode === mode)
-    .map(model => ({ value: model.id, label: model.label }));
+    .map(model => ({ value: model.id, label: model.label, description: model.id }));
   const selected = selectedQwenModel(config, mode);
   if (!options.some(option => option.value === selected)) {
-    options.unshift({ value: selected, label: `${selected || "空模型名"}（暂不支持，请重新选择）` });
+    options.unshift({ value: selected, label: `${selected || "空模型名"}（暂不支持，请重新选择）`, description: "原配置已保留" });
   }
   return options;
 }

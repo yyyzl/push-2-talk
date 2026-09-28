@@ -602,7 +602,7 @@ pub(crate) async fn fallback_transcription(
         .clone();
 
     let asr_start = std::time::Instant::now();
-    let result = match http_fallback_provider(active_prov, fallback_prov.clone()) {
+    let result = match http_fallback_provider(active_prov, fallback_prov.clone(), enable_fallback) {
         Ok(effective_active_prov) => {
             transcribe_with_available_clients(
                 qwen,
@@ -762,9 +762,11 @@ pub(crate) struct TranscriptionResult {
 pub(crate) fn http_fallback_provider(
     active: Option<config::AsrProvider>,
     fallback: Option<config::AsrProvider>,
+    enabled: bool,
 ) -> anyhow::Result<Option<config::AsrProvider>> {
     match active {
         Some(config::AsrProvider::DoubaoIme) => fallback
+            .filter(|_| enabled)
             .map(Some)
             .ok_or_else(|| anyhow::anyhow!(DOUBAO_IME_MISSING_FALLBACK_ERROR)),
         other => Ok(other),
@@ -776,7 +778,8 @@ mod fallback_tests {
     use super::*;
     #[test]
     fn ime_without_fallback_reports_the_actionable_error() {
-        let error = http_fallback_provider(Some(config::AsrProvider::DoubaoIme), None).unwrap_err();
+        let error =
+            http_fallback_provider(Some(config::AsrProvider::DoubaoIme), None, true).unwrap_err();
         assert_eq!(error.to_string(), DOUBAO_IME_MISSING_FALLBACK_ERROR);
     }
     #[test]
@@ -784,7 +787,8 @@ mod fallback_tests {
         assert_eq!(
             http_fallback_provider(
                 Some(config::AsrProvider::DoubaoIme),
-                Some(config::AsrProvider::Qwen)
+                Some(config::AsrProvider::Qwen),
+                true,
             )
             .unwrap(),
             Some(config::AsrProvider::Qwen)
@@ -792,11 +796,21 @@ mod fallback_tests {
         assert_eq!(
             http_fallback_provider(
                 Some(config::AsrProvider::Doubao),
-                Some(config::AsrProvider::Qwen)
+                Some(config::AsrProvider::Qwen),
+                true,
             )
             .unwrap(),
             Some(config::AsrProvider::Doubao)
         );
+    }
+    #[test]
+    fn disabled_fallback_must_not_send_audio_to_a_saved_provider() {
+        assert!(http_fallback_provider(
+            Some(config::AsrProvider::DoubaoIme),
+            Some(config::AsrProvider::Qwen),
+            false,
+        )
+        .is_err());
     }
     #[tokio::test]
     async fn an_unconfigured_provider_keeps_the_original_error() {

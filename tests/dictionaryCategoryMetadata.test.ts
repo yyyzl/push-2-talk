@@ -73,7 +73,7 @@ test("DictionaryPage 和 useDictionary 应暴露手动修改 category 的保存�
 
   assert.match(pageSource, /DICTIONARY_CATEGORY_OPTIONS/);
   assert.match(pageSource, /handleUpdateCategory:\s*\(word:\s*string,\s*category:\s*DictionaryCategory\)/);
-  assert.match(pageSource, /<select[\s\S]*value=\{entry\.category\}/);
+  assert.match(pageSource, /<Select[\s\S]*value=\{entry\.category\}/);
 
   assert.match(hookSource, /handleUpdateCategory/);
   assert.match(
