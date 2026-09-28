@@ -4,6 +4,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [双平台发布](releasing.md) | 草稿构建、双架构 macOS、更新签名与发布前检查 |
 | [架构整顿](architecture.md) | 目标职责图、v1.6.1 兼容基线与五步实施验收 |
 | [Windows 实机验收交接](windows-validation-handoff.md) | 固定代码/安装包、v1.6.1 覆盖升级、P0/P1 用例与结果回填模板 |
 | [平台集成审查](platform-integration.md) | Windows/Mac 分支合并决策、验证证据与合入主线前的验收门槛 |
